@@ -1,0 +1,11 @@
+{
+	"InstallScripts" : 
+	[
+		"F:/Work/Flutter/AgriKhata/build/cmake_install.cmake",
+		"F:/Work/Flutter/AgriKhata/build/flutter/cmake_install.cmake",
+		"F:/Work/Flutter/AgriKhata/build/runner/cmake_install.cmake",
+		"F:/Work/Flutter/AgriKhata/build/plugins/jni/cmake_install.cmake",
+		"F:/Work/Flutter/AgriKhata/build/plugins/jni/shared/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

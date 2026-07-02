@@ -1,0 +1,14 @@
+F:/Work/Flutter/AgriKhata/build/CMakeFiles/INSTALL.dir
+F:/Work/Flutter/AgriKhata/build/CMakeFiles/ALL_BUILD.dir
+F:/Work/Flutter/AgriKhata/build/CMakeFiles/ZERO_CHECK.dir
+F:/Work/Flutter/AgriKhata/build/flutter/CMakeFiles/flutter_wrapper_plugin.dir
+F:/Work/Flutter/AgriKhata/build/flutter/CMakeFiles/flutter_wrapper_app.dir
+F:/Work/Flutter/AgriKhata/build/flutter/CMakeFiles/flutter_assemble.dir
+F:/Work/Flutter/AgriKhata/build/flutter/CMakeFiles/INSTALL.dir
+F:/Work/Flutter/AgriKhata/build/runner/CMakeFiles/agrikhata.dir
+F:/Work/Flutter/AgriKhata/build/runner/CMakeFiles/INSTALL.dir
+F:/Work/Flutter/AgriKhata/build/runner/CMakeFiles/ALL_BUILD.dir
+F:/Work/Flutter/AgriKhata/build/plugins/jni/CMakeFiles/INSTALL.dir
+F:/Work/Flutter/AgriKhata/build/plugins/jni/CMakeFiles/ALL_BUILD.dir
+F:/Work/Flutter/AgriKhata/build/plugins/jni/shared/CMakeFiles/INSTALL.dir
+F:/Work/Flutter/AgriKhata/build/plugins/jni/shared/CMakeFiles/ALL_BUILD.dir

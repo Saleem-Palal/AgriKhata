@@ -1,0 +1,44 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="F:\Work\Flutter\AgriKhata\build\pdfium-download\CMakeFiles\6a89b0a2a8009fff8ac134bc31c18081\pdfium-download-mkdir.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="F:\Work\Flutter\AgriKhata\build\pdfium-download\CMakeFiles\6a89b0a2a8009fff8ac134bc31c18081\pdfium-download-download.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="F:\Work\Flutter\AgriKhata\build\pdfium-download\CMakeFiles\6a89b0a2a8009fff8ac134bc31c18081\pdfium-download-update.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="F:\Work\Flutter\AgriKhata\build\pdfium-download\CMakeFiles\6a89b0a2a8009fff8ac134bc31c18081\pdfium-download-patch.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="F:\Work\Flutter\AgriKhata\build\pdfium-download\CMakeFiles\6a89b0a2a8009fff8ac134bc31c18081\pdfium-download-configure.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="F:\Work\Flutter\AgriKhata\build\pdfium-download\CMakeFiles\6a89b0a2a8009fff8ac134bc31c18081\pdfium-download-build.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="F:\Work\Flutter\AgriKhata\build\pdfium-download\CMakeFiles\6a89b0a2a8009fff8ac134bc31c18081\pdfium-download-install.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="F:\Work\Flutter\AgriKhata\build\pdfium-download\CMakeFiles\6a89b0a2a8009fff8ac134bc31c18081\pdfium-download-test.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="F:\Work\Flutter\AgriKhata\build\pdfium-download\CMakeFiles\7a1bb90baa8fb5cdaef4f421a1daf6da\pdfium-download-complete.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="F:\Work\Flutter\AgriKhata\build\pdfium-download\CMakeFiles\255c395892100669d22a2e7d779b6f43\pdfium-download.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="F:\Work\Flutter\AgriKhata\build\pdfium-download\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="F:\Work\Flutter\AgriKhata\build\pdfium-download\CMakeFiles\pdfium-download" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{6ECF668E-1106-347C-A3B6-6A0B0F1F52C4}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

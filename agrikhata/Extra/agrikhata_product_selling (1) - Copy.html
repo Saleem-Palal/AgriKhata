@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>AgriKhata — Product Selling</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;background:#F7F9F4}
+.app{display:flex;min-height:100vh;background:#F7F9F4}
+.sidebar{width:200px;flex-shrink:0;background:#1B4332;display:flex;flex-direction:column}
+.logo{padding:18px 16px 14px;border-bottom:0.5px solid rgba(255,255,255,0.1)}
+.logo-name{font-size:16px;font-weight:500;color:#fff}
+.logo-sub{font-size:11px;color:#A7C4A0;margin-top:1px}
+.nav{padding:12px 8px;flex:1}
+.nav-section{font-size:10px;color:#6B9E7A;font-weight:500;letter-spacing:.5px;padding:8px 8px 4px;text-transform:uppercase}
+.nav-item{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:8px;cursor:pointer;color:#A7C4A0;font-size:13px;margin-bottom:1px}
+.nav-item.active{background:#2D6A4F;color:#fff;font-weight:500}
+.nav-item:hover:not(.active){background:rgba(255,255,255,0.07)}
+.ni{width:14px;height:14px;flex-shrink:0}
+.sidebar-footer{padding:12px 8px;border-top:0.5px solid rgba(255,255,255,0.1)}
+.s-avatar{width:28px;height:28px;border-radius:50%;background:#2D6A4F;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:500;color:#B7E4C7;flex-shrink:0;border:1px solid #40916C}
+.user-row{display:flex;align-items:center;gap:8px;padding:6px 8px}
+.user-name{font-size:12px;font-weight:500;color:#fff}
+.user-role{font-size:10px;color:#6B9E7A}
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.topbar{background:#fff;border-bottom:0.5px solid #E2EBE0;padding:12px 24px;display:flex;align-items:center;justify-content:space-between}
+.page-title{font-size:16px;font-weight:500;color:#1B4332}
+.page-sub{font-size:12px;color:#95B89A;margin-top:1px}
+.btn-primary{background:#1B4332;color:#fff;border:none;border-radius:10px;padding:8px 18px;font-size:13px;font-weight:500;cursor:pointer;display:flex;align-items:center;gap:6px}
+.btn-ghost{background:#fff;color:#1B4332;border:0.5px solid #C6DEC9;border-radius:10px;padding:8px 14px;font-size:13px;cursor:pointer}
+.topbar-right{display:flex;gap:8px;align-items:center}
+.sale-id{font-size:12px;color:#95B89A;background:#F7F9F4;padding:5px 12px;border-radius:20px;border:0.5px solid #C6DEC9}
+.content{flex:1;padding:18px 22px;display:flex;gap:18px;min-width:0}
+.left-col{display:flex;flex-direction:column;gap:14px;width:380px;flex-shrink:0}
+.right-col{flex:1;min-width:0;display:flex;flex-direction:column;gap:14px}
+.card{background:#fff;border-radius:14px;border:0.5px solid #E2EBE0;overflow:hidden}
+.card-head{padding:10px 16px;border-bottom:0.5px solid #E2EBE0;display:flex;align-items:center;gap:8px}
+.ch-icon{width:22px;height:22px;border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.card-title{font-size:13px;font-weight:500;color:#1B4332}
+.card-body{padding:14px 16px}
+.field{margin-bottom:12px}
+.field:last-child{margin-bottom:0}
+.fl{font-size:11px;font-weight:500;color:#6B8F71;margin-bottom:5px;display:flex;align-items:center;justify-content:space-between}
+.req{color:#E24B4A}
+.field select,.field input{width:100%;padding:8px 11px;font-size:13px;border:0.5px solid #C6DEC9;border-radius:9px;background:#fff;color:#1B4332;outline:none;font-family:inherit;appearance:none}
+.field select:focus,.field input:focus{border-color:#40916C;box-shadow:0 0 0 3px #D8F3DC}
+.zamindar-pill{display:flex;align-items:center;gap:8px;background:#EAF3DE;border-radius:10px;padding:8px 12px;margin-top:8px}
+.z-avatar{width:30px;height:30px;border-radius:50%;background:#2D6A4F;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:500;color:#B7E4C7;flex-shrink:0}
+.z-name{font-size:13px;font-weight:500;color:#1B4332}
+.z-meta{font-size:11px;color:#6B8F71}
+.z-limit{margin-left:auto;font-size:11px;color:#791F1F;background:#F7C1C1;padding:2px 8px;border-radius:20px;font-weight:500}
+.kisaan-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+.k-card{border:0.5px solid #C6DEC9;border-radius:10px;padding:10px;cursor:pointer;background:#fff}
+.k-card.sel{border-color:#40916C;background:#EAF3DE;border-width:1.5px}
+.k-card:hover:not(.sel){background:#F7F9F4}
+.k-name{font-size:13px;font-weight:500;color:#1B4332}
+.k-village{font-size:11px;color:#95B89A;margin-top:1px}
+.k-crop{display:flex;align-items:center;gap:5px;margin-top:6px}
+.k-crop-badge{font-size:10px;background:#D8F3DC;color:#2D6A4F;padding:2px 7px;border-radius:20px;font-weight:500}
+.k-acres{font-size:10px;color:#6B8F71}
+.rec-box{background:#EAF3DE;border-radius:10px;padding:12px 14px;border:0.5px solid #97C459}
+.rec-head{display:flex;align-items:center;gap:6px;margin-bottom:8px}
+.rec-title{font-size:12px;font-weight:500;color:#27500A}
+.rec-badge{font-size:10px;background:#2D6A4F;color:#B7E4C7;padding:2px 7px;border-radius:20px}
+.rec-row{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:0.5px solid #C0DD97}
+.rec-row:last-child{border-bottom:none}
+.rec-prod{font-size:12px;color:#1B4332;flex:1}
+.rec-qty{font-size:12px;font-weight:500;color:#3B6D11}
+.add-rec-btn{font-size:11px;color:#3B6D11;background:#C0DD97;border:none;border-radius:6px;padding:3px 9px;cursor:pointer;font-weight:500}
+.prod-add-row{display:flex;gap:8px;align-items:flex-end}
+.prod-add-row .field{flex:1;margin-bottom:0}
+.add-btn{background:#1B4332;color:#fff;border:none;border-radius:9px;padding:8px 14px;font-size:13px;cursor:pointer;flex-shrink:0;font-weight:500;white-space:nowrap}
+table{width:100%;border-collapse:collapse;font-size:12px}
+thead th{padding:8px 12px;text-align:left;font-size:11px;font-weight:500;color:#6B8F71;border-bottom:0.5px solid #E2EBE0;background:#F7F9F4;white-space:nowrap}
+tbody td{padding:9px 12px;border-bottom:0.5px solid #E2EBE0;color:#1B4332;vertical-align:middle}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:hover td{background:#F7F9F4}
+.del-btn{width:22px;height:22px;border-radius:5px;border:0.5px solid #E2EBE0;background:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#A32D2D}
+.qty-ctrl{display:flex;align-items:center;gap:5px}
+.qty-btn{width:22px;height:22px;border-radius:5px;border:0.5px solid #C6DEC9;background:#fff;cursor:pointer;font-size:14px;color:#1B4332;display:flex;align-items:center;justify-content:center;font-weight:500}
+.qty-val{font-size:13px;font-weight:500;min-width:28px;text-align:center;color:#1B4332}
+.summary-card{background:#1B4332;border-radius:14px;padding:16px 18px}
+.sum-row{display:flex;justify-content:space-between;align-items:center;padding:5px 0}
+.sum-label{font-size:13px;color:#A7C4A0}
+.sum-val{font-size:13px;color:#fff;font-weight:500}
+.sum-divider{border:none;border-top:0.5px solid rgba(255,255,255,0.15);margin:8px 0}
+.sum-total-label{font-size:15px;color:#fff;font-weight:500}
+.sum-total-val{font-size:20px;color:#B7E4C7;font-weight:500}
+.disc-input{width:80px;background:rgba(255,255,255,0.1);border:0.5px solid rgba(255,255,255,0.2);border-radius:7px;padding:4px 8px;color:#fff;font-size:12px;text-align:right;font-family:inherit;outline:none}
+.pay-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+.pay-btn{padding:8px;border-radius:10px;font-size:12px;font-weight:500;cursor:pointer;text-align:center;border:1.5px solid transparent}
+.pay-btn.active{background:#fff;color:#1B4332;border-color:#fff}
+.pay-btn.inactive{background:rgba(255,255,255,0.1);color:#A7C4A0;border-color:rgba(255,255,255,0.15)}
+.checkout-btn{width:100%;background:#40916C;color:#fff;border:none;border-radius:10px;padding:11px;font-size:14px;font-weight:500;cursor:pointer;margin-top:10px;display:flex;align-items:center;justify-content:center;gap:8px}
+.print-btn{width:100%;background:rgba(255,255,255,0.1);color:#A7C4A0;border:0.5px solid rgba(255,255,255,0.2);border-radius:10px;padding:8px;font-size:12px;cursor:pointer;margin-top:6px}
+.badge{display:inline-block;padding:2px 7px;border-radius:20px;font-size:10px;font-weight:500}
+.b-fert{background:#D8F3DC;color:#2D6A4F}
+.b-pest{background:#FCEBEB;color:#791F1F}
+.b-seed{background:#E6F1FB;color:#0C447C}
+.step-dot{width:20px;height:20px;border-radius:50%;background:#2D6A4F;color:#fff;font-size:10px;font-weight:500;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.table-disc-input{width:70px;border:0.5px solid #C6DEC9;border-radius:6px;padding:4px 6px;text-align:right;font-family:inherit;font-size:12px;color:#1B4332;outline:none;background:#fff}
+.table-disc-input:focus{border-color:#40916C;box-shadow:0 0 0 2px #D8F3DC}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="sidebar">
+    <div class="logo">
+      <div class="logo-name">AgriKhata</div>
+      <div class="logo-sub">Zafar Magsi &amp; Sons</div>
+    </div>
+    <div class="nav">
+      <div class="nav-section">Main</div>
+      <div class="nav-item">
+        <svg class="ni" viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="1" width="6" height="6" rx="1"/><rect x="9" y="1" width="6" height="6" rx="1"/><rect x="1" y="9" width="6" height="6" rx="1"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg>
+        Dashboard
+      </div>
+      <div class="nav-item">
+        <svg class="ni" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="5" r="3"/><path d="M2 13c0-3.3 2.7-6 6-6s6 2.7 6 6H2z"/></svg>
+        Zamindars
+      </div>
+      <div class="nav-item active">
+        <svg class="ni" viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="3" width="14" height="10" rx="1.5"/><path d="M5 7h6M5 9.5h4"/></svg>
+        New Sale
+      </div>
+      <div class="nav-section">Inventory</div>
+      <div class="nav-item">
+        <svg class="ni" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1L14 4v4c0 3.5-2.7 6.2-6 7C2.7 14.2 0 11.5 0 8V4l6-3z"/></svg>
+        Products
+      </div>
+      <div class="nav-item">
+        <svg class="ni" viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="1" width="14" height="14" rx="1.5"/><path d="M4 8h8M8 4v8"/></svg>
+        Purchase
+      </div>
+      <div class="nav-section">Finance</div>
+      <div class="nav-item">
+        <svg class="ni" viewBox="0 0 16 16" fill="currentColor"><path d="M2 4h12v8H2z"/><path d="M5 4V2h6v2"/></svg>
+        Ledger
+      </div>
+      <div class="nav-item">
+        <svg class="ni" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6"/><path d="M8 5v3l2 2"/></svg>
+        Reports
+      </div>
+      <div class="nav-section">System</div>
+      <div class="nav-item">
+        <svg class="ni" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="2.5"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2"/></svg>
+        Settings
+      </div>
+    </div>
+    <div class="sidebar-footer">
+      <div class="user-row">
+        <div class="s-avatar">ZM</div>
+        <div>
+          <div class="user-name">Zafar Magsi</div>
+          <div class="user-role">Owner</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="topbar">
+      <div>
+        <div class="page-title">New sale</div>
+        <div class="page-sub">Tuesday, 7 April 2026 — Rabi Season</div>
+      </div>
+      <div class="topbar-right">
+        <div class="sale-id">Sale # AK-2026-0312</div>
+        <button class="btn-ghost">Discard</button>
+        <button class="btn-primary">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="white"><path d="M2 8l4 4 8-8" stroke="white" stroke-width="2" fill="none"/></svg>
+          Save &amp; Print
+        </button>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="left-col">
+
+        <div class="card">
+          <div class="card-head">
+            <div class="step-dot">1</div>
+            <div class="card-title">Select Zamindar</div>
+          </div>
+          <div class="card-body">
+            <div class="field">
+              <div class="fl">Search Zamindar <span class="req">*</span></div>
+              <input type="text" list="zamindar-suggestions" placeholder="Type to search Zamindar (e.g. Asif, Zafar)..." />
+              <datalist id="zamindar-suggestions">
+                <option value="Zafar Magsi"></option>
+                <option value="Abdul Rehman Buledi"></option>
+                <option value="Mir Miran Khosa"></option>
+                <option value="Asif Ali Umrani"></option>
+              </datalist>
+            </div>
+            <div class="zamindar-pill">
+              <div class="z-avatar">ZM</div>
+              <div>
+                <div class="z-name">Zafar Magsi</div>
+                <div class="z-meta">Jhal Magsi · 4 Kisaans</div>
+              </div>
+              <div class="z-limit">Over limit</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div class="step-dot">2</div>
+            <div class="card-title">Select Kisaan</div>
+          </div>
+          <div class="card-body">
+            <div class="fl" style="margin-bottom:8px">Kisaans under Zafar Magsi</div>
+            <div class="kisaan-grid">
+              <div class="k-card sel">
+                <div class="k-name">Ramzan Ali</div>
+                <div class="k-village">Shahan Palal</div>
+                <div class="k-crop"><span class="k-crop-badge">Rice</span><span class="k-acres">10 acres</span></div>
+              </div>
+              <div class="k-card">
+                <div class="k-name">Muhammad Saeed</div>
+                <div class="k-village">Chak 44</div>
+                <div class="k-crop"><span class="k-crop-badge">Wheat</span><span class="k-acres">6 acres</span></div>
+              </div>
+              <div class="k-card">
+                <div class="k-name">Bashir Ahmed</div>
+                <div class="k-village">Mouza Kalan</div>
+                <div class="k-crop"><span class="k-crop-badge">Cotton</span><span class="k-acres">8 acres</span></div>
+              </div>
+              <div class="k-card">
+                <div class="k-name">Ghulam Rasool</div>
+                <div class="k-village">Chak 12</div>
+                <div class="k-crop"><span class="k-crop-badge">Sugarcane</span><span class="k-acres">5 acres</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div class="ch-icon" style="background:#D8F3DC">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="#2D6A4F"><path d="M8 1l1.5 4.5H15l-4.5 3.3 1.7 5L8 11l-4.2 2.8 1.7-5L1 5.5h5.5z"/></svg>
+            </div>
+            <div class="card-title">Smart recommendations</div>
+          </div>
+          <div class="card-body">
+            <div class="rec-box">
+              <div class="rec-head">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="#27500A"><path d="M8 1l1.5 4.5H15l-4.5 3.3 1.7 5L8 11l-4.2 2.8 1.7-5L1 5.5h5.5z"/></svg>
+                <div class="rec-title">Ramzan Ali · 10 acres Rice</div>
+                <div class="rec-badge">Auto-calculated</div>
+              </div>
+              <div class="rec-row">
+                <div class="rec-prod">Urea Fertilizer</div>
+                <div class="rec-qty">20 bags</div>
+                <button class="add-rec-btn">+ Add</button>
+              </div>
+              <div class="rec-row">
+                <div class="rec-prod">DAP Fertilizer</div>
+                <div class="rec-qty">10 bags</div>
+                <button class="add-rec-btn">+ Add</button>
+              </div>
+              <div class="rec-row">
+                <div class="rec-prod">Karate Insecticide</div>
+                <div class="rec-qty">2,000 ml</div>
+                <button class="add-rec-btn">+ Add</button>
+              </div>
+              <div class="rec-row">
+                <div class="rec-prod">Syngenta Rice Seed</div>
+                <div class="rec-qty">25 kg</div>
+                <button class="add-rec-btn">+ Add</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="right-col">
+
+        <div class="card" style="flex-shrink:0">
+          <div class="card-head">
+            <div class="step-dot">3</div>
+            <div class="card-title">Add products to cart</div>
+          </div>
+          <div class="card-body">
+            <div class="prod-add-row">
+              <div class="field">
+                <div class="fl">Product</div>
+                <input type="text" list="product-suggestions" placeholder="Search or select product..." />
+                <datalist id="product-suggestions">
+                  <option value="Urea Fertilizer"></option>
+                  <option value="DAP Fertilizer"></option>
+                  <option value="Karate Insecticide"></option>
+                  <option value="Syngenta Rice Seed"></option>
+                  <option value="Topik Herbicide"></option>
+                </datalist>
+              </div>
+              <div class="field" style="width:90px">
+                <div class="fl">Qty</div>
+                <input type="number" value="1" min="1" />
+              </div>
+              <div class="field" style="width:110px">
+                <div class="fl">Price</div>
+                <input type="text" value="₨ 3,600" />
+              </div>
+              <button class="add-btn">+ Add to cart</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="flex:1">
+          <div class="card-head">
+            <div class="card-title">Cart</div>
+            <div style="margin-left:auto;font-size:12px;color:#95B89A">4 items</div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th style="width:28%">Product</th>
+                <th style="width:10%">Type</th>
+                <th style="width:14%">Qty</th>
+                <th style="width:12%">Unit price</th>
+                <th style="width:15%">Discount</th>
+                <th style="width:13%">Subtotal</th>
+                <th style="width:8%"></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td style="font-weight:500">Urea Fertilizer</td>
+                <td><span class="badge b-fert">Fertilizer</span></td>
+                <td><div class="qty-ctrl"><div class="qty-btn">−</div><div class="qty-val">20</div><div class="qty-btn">+</div></div></td>
+                <td>₨ 3,600</td>
+                <td><input type="text" class="table-disc-input" value="₨ 0" /></td>
+                <td style="font-weight:500">₨ 72,000</td>
+                <td><div class="del-btn"><svg width="10" height="10" viewBox="0 0 12 12"><path d="M1 1l10 10M11 1L1 11" stroke="#A32D2D" stroke-width="1.5" fill="none"/></svg></div></td>
+              </tr>
+              <tr>
+                <td style="font-weight:500">DAP Fertilizer</td>
+                <td><span class="badge b-fert">Fertilizer</span></td>
+                <td><div class="qty-ctrl"><div class="qty-btn">−</div><div class="qty-val">10</div><div class="qty-btn">+</div></div></td>
+                <td>₨ 9,200</td>
+                <td><input type="text" class="table-disc-input" value="₨ 0" /></td>
+                <td style="font-weight:500">₨ 92,000</td>
+                <td><div class="del-btn"><svg width="10" height="10" viewBox="0 0 12 12"><path d="M1 1l10 10M11 1L1 11" stroke="#A32D2D" stroke-width="1.5" fill="none"/></svg></div></td>
+              </tr>
+              <tr>
+                <td style="font-weight:500">Karate Insecticide</td>
+                <td><span class="badge b-pest">Pesticide</span></td>
+                <td><div class="qty-ctrl"><div class="qty-btn">−</div><div class="qty-val">2</div><div class="qty-btn">+</div></div></td>
+                <td>₨ 1,200</td>
+                <td><input type="text" class="table-disc-input" value="₨ 200" /></td>
+                <td style="font-weight:500">₨ 2,200</td>
+                <td><div class="del-btn"><svg width="10" height="10" viewBox="0 0 12 12"><path d="M1 1l10 10M11 1L1 11" stroke="#A32D2D" stroke-width="1.5" fill="none"/></svg></div></td>
+              </tr>
+              <tr>
+                <td style="font-weight:500">Syngenta Rice Seed</td>
+                <td><span class="badge b-seed">Seed</span></td>
+                <td><div class="qty-ctrl"><div class="qty-btn">−</div><div class="qty-val">25</div><div class="qty-btn">+</div></div></td>
+                <td>₨ 420</td>
+                <td><input type="text" class="table-disc-input" value="₨ 0" /></td>
+                <td style="font-weight:500">₨ 10,500</td>
+                <td><div class="del-btn"><svg width="10" height="10" viewBox="0 0 12 12"><path d="M1 1l10 10M11 1L1 11" stroke="#A32D2D" stroke-width="1.5" fill="none"/></svg></div></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="summary-card">
+          <div class="sum-row">
+            <div class="sum-label">Subtotal</div>
+            <div class="sum-val">₨ 1,76,700</div>
+          </div>
+          <div class="sum-row">
+            <div class="sum-label">Item Discounts</div>
+            <div class="sum-val">₨ 200</div>
+          </div>
+          <div class="sum-row">
+            <div class="sum-label">Overall Discount</div>
+            <input class="disc-input" type="text" value="₨ 1,000" />
+          </div>
+          <hr class="sum-divider"/>
+          <div class="sum-row">
+            <div class="sum-total-label">Total payable</div>
+            <div class="sum-total-val">₨ 1,75,500</div>
+          </div>
+          <div class="pay-row">
+            <div class="pay-btn active">Credit (Udhaar)</div>
+            <div class="pay-btn inactive">Cash</div>
+          </div>
+          <button class="checkout-btn">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="white"><path d="M2 8l4 4 8-8" stroke="white" stroke-width="2" fill="none"/></svg>
+            Save &amp; Print receipt
+          </button>
+          <button class="print-btn">WhatsApp PDF to Zafar Magsi</button>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,46 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "F:/Work/Flutter/AgriKhata/build/pdfium-download/CMakeFiles/pdfium-download"
+		},
+		{
+			"file" : "F:/Work/Flutter/AgriKhata/build/pdfium-download/CMakeFiles/255c395892100669d22a2e7d779b6f43/pdfium-download.rule"
+		},
+		{
+			"file" : "F:/Work/Flutter/AgriKhata/build/pdfium-download/CMakeFiles/7a1bb90baa8fb5cdaef4f421a1daf6da/pdfium-download-complete.rule"
+		},
+		{
+			"file" : "F:/Work/Flutter/AgriKhata/build/pdfium-download/CMakeFiles/6a89b0a2a8009fff8ac134bc31c18081/pdfium-download-build.rule"
+		},
+		{
+			"file" : "F:/Work/Flutter/AgriKhata/build/pdfium-download/CMakeFiles/6a89b0a2a8009fff8ac134bc31c18081/pdfium-download-configure.rule"
+		},
+		{
+			"file" : "F:/Work/Flutter/AgriKhata/build/pdfium-download/CMakeFiles/6a89b0a2a8009fff8ac134bc31c18081/pdfium-download-download.rule"
+		},
+		{
+			"file" : "F:/Work/Flutter/AgriKhata/build/pdfium-download/CMakeFiles/6a89b0a2a8009fff8ac134bc31c18081/pdfium-download-install.rule"
+		},
+		{
+			"file" : "F:/Work/Flutter/AgriKhata/build/pdfium-download/CMakeFiles/6a89b0a2a8009fff8ac134bc31c18081/pdfium-download-mkdir.rule"
+		},
+		{
+			"file" : "F:/Work/Flutter/AgriKhata/build/pdfium-download/CMakeFiles/6a89b0a2a8009fff8ac134bc31c18081/pdfium-download-patch.rule"
+		},
+		{
+			"file" : "F:/Work/Flutter/AgriKhata/build/pdfium-download/CMakeFiles/6a89b0a2a8009fff8ac134bc31c18081/pdfium-download-test.rule"
+		},
+		{
+			"file" : "F:/Work/Flutter/AgriKhata/build/pdfium-download/CMakeFiles/6a89b0a2a8009fff8ac134bc31c18081/pdfium-download-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"pdfium-download"
+		],
+		"name" : "pdfium-download"
+	}
+}

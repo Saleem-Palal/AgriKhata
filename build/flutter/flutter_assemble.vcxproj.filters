@@ -1,0 +1,20 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="F:\Work\Flutter\AgriKhata\build\CMakeFiles\78e47bf1ff041531751f160687985d22\flutter_windows.dll.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="F:\Work\Flutter\AgriKhata\build\CMakeFiles\5dcea182ae405d8ce8703d1f8632a57d\flutter_assemble.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="F:\Work\Flutter\AgriKhata\agrikhata\windows\flutter\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="F:\Work\Flutter\AgriKhata\build\flutter\CMakeFiles\flutter_assemble" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{7D22D4DC-8185-31B3-9E33-476A4DB9EF0A}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>
