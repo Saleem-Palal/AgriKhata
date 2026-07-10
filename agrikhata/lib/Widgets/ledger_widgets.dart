@@ -1,0 +1,1227 @@
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import 'package:path/path.dart' as p;
+import '../models/ledger_models.dart';
+import '../utils/pdf_generator.dart';
+import '../utils/pdf_share.dart';
+
+final _currencyFormat = NumberFormat('#,##,##0');
+final _dateFormat = DateFormat('dd MMM');
+final _timeFormat = DateFormat('hh:mm a');
+
+class SeasonDropdown extends StatelessWidget {
+  final Season selectedSeason;
+  final List<Season> availableSeasons;
+  final ValueChanged<Season?> onChanged;
+
+  const SeasonDropdown({
+    super.key,
+    required this.selectedSeason,
+    required this.availableSeasons,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 36,
+      padding: const EdgeInsets.symmetric(horizontal: 13),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFC6DEC9), width: 0.5),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<Season>(
+          value: selectedSeason,
+          items: availableSeasons.map((season) {
+            return DropdownMenuItem<Season>(
+              value: season,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.calendar_today_outlined,
+                    size: 14,
+                    color: Color(0xFF1B4332),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    season.displayName,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: Color(0xFF1B4332),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }).toList(),
+          onChanged: onChanged,
+          icon: const SizedBox.shrink(),
+          isDense: true,
+        ),
+      ),
+    );
+  }
+}
+
+class LedgerTable extends StatelessWidget {
+  final List<LedgerEntry> entries;
+  final VoidCallback? onRefresh;
+  final Function(LedgerEntry)? onEdit;
+  final Function(LedgerEntry)? onDelete;
+
+  const LedgerTable({
+    super.key,
+    required this.entries,
+    this.onRefresh,
+    this.onEdit,
+    this.onDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (entries.isEmpty) {
+      return Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0xFFE2EBE0), width: 0.5),
+        ),
+        child: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.receipt_long_outlined,
+                size: 64,
+                color: Colors.grey[400],
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'No transactions found',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: Colors.grey[600],
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE2EBE0), width: 0.5),
+      ),
+      child: Column(
+        children: [
+          _buildTableHeader(),
+          Expanded(
+            child: RefreshIndicator(
+              onRefresh: () async {
+                onRefresh?.call();
+              },
+              child: ListView.builder(
+                itemCount: entries.length,
+                itemBuilder: (context, index) {
+                  return _buildTableRow(
+                    context,
+                    entries[index],
+                    index == entries.length - 1,
+                    onEdit,
+                    onDelete,
+                  );
+                },
+              ),
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.all(10),
+            child: Text(
+              'Showing ${entries.length} of 47 entries · ₨ ${_currencyFormat.format(entries.fold<double>(0, (sum, e) => sum + e.outstanding))} currently outstanding',
+              style: const TextStyle(
+                fontSize: 11,
+                color: Color(0xFF95B89A),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTableHeader() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+      decoration: const BoxDecoration(
+        color: Color(0xFFF7F9F4),
+        border: Border(
+          bottom: BorderSide(color: Color(0xFFE2EBE0), width: 0.5),
+        ),
+        borderRadius: BorderRadius.only(
+          topLeft: Radius.circular(12),
+          topRight: Radius.circular(12),
+        ),
+      ),
+      child: const Row(
+        children: [
+          SizedBox(
+            width: 120,
+            child: Text(
+              'INVOICE',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w500,
+                color: Color(0xFF6B8F71),
+                letterSpacing: 0.3,
+              ),
+            ),
+          ),
+          SizedBox(
+            width: 160,
+            child: Text(
+              'STAKEHOLDER',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w500,
+                color: Color(0xFF6B8F71),
+                letterSpacing: 0.3,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              'ITEMS',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w500,
+                color: Color(0xFF6B8F71),
+                letterSpacing: 0.3,
+              ),
+            ),
+          ),
+          SizedBox(
+            width: 90,
+            child: Text(
+              'TOTAL',
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w500,
+                color: Color(0xFF6B8F71),
+                letterSpacing: 0.3,
+              ),
+            ),
+          ),
+          SizedBox(
+            width: 90,
+            child: Text(
+              'PAID',
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w500,
+                color: Color(0xFF6B8F71),
+                letterSpacing: 0.3,
+              ),
+            ),
+          ),
+          SizedBox(
+            width: 140,
+            child: Text(
+              'STATUS',
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w500,
+                color: Color(0xFF6B8F71),
+                letterSpacing: 0.3,
+              ),
+            ),
+          ),
+          SizedBox(width: 110),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTableRow(
+    BuildContext context,
+    LedgerEntry entry,
+    bool isLast,
+    Function(LedgerEntry)? onEdit,
+    Function(LedgerEntry)? onDelete,
+  ) {
+    return InkWell(
+      onTap: () => _showInvoiceDetail(context, entry),
+      hoverColor: const Color(0xFFF0F7EB),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(
+              color: isLast ? Colors.transparent : const Color(0xFFE2EBE0),
+              width: 0.5,
+            ),
+          ),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 120,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    entry.invoiceNumber,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: Color(0xFF1B4332),
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '${_dateFormat.format(entry.date)} · ${_timeFormat.format(entry.date)}',
+                    style: const TextStyle(
+                      fontSize: 10,
+                      color: Color(0xFF95B89A),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            SizedBox(
+              width: 160,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    entry.stakeholderName,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: Color(0xFF1B4332),
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  if (entry.kisaanName != null) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      'Kisaan: ${entry.kisaanName}',
+                      style: const TextStyle(
+                        fontSize: 10,
+                        color: Color(0xFF6B8F71),
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            Expanded(
+              child: Text(
+                entry.itemsSummary,
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: Color(0xFF6B8F71),
+                  height: 1.4,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            SizedBox(
+              width: 90,
+              child: Text(
+                '₨ ${_currencyFormat.format(entry.total)}',
+                textAlign: TextAlign.right,
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: Color(0xFF1B4332),
+                ),
+              ),
+            ),
+            SizedBox(
+              width: 90,
+              child: Text(
+                '₨ ${_currencyFormat.format(entry.paid)}',
+                textAlign: TextAlign.right,
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: Color(0xFF2D6A4F),
+                ),
+              ),
+            ),
+            SizedBox(
+              width: 140,
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: _buildStatusBadge(entry.status, entry.outstanding),
+              ),
+            ),
+            SizedBox(
+              width: 110,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  if (onEdit != null)
+                    InkWell(
+                      onTap: () => onEdit(entry),
+                      borderRadius: BorderRadius.circular(7),
+                      child: Container(
+                        width: 28,
+                        height: 28,
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(7),
+                          border: Border.all(color: const Color(0xFFC6DEC9), width: 0.5),
+                        ),
+                        child: const Icon(
+                          Icons.edit_outlined,
+                          size: 14,
+                          color: Color(0xFF1B4332),
+                        ),
+                      ),
+                    ),
+                  if (onEdit != null) const SizedBox(width: 6),
+                  if (onDelete != null)
+                    InkWell(
+                      onTap: () => onDelete(entry),
+                      borderRadius: BorderRadius.circular(7),
+                      child: Container(
+                        width: 28,
+                        height: 28,
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(7),
+                          border: Border.all(color: const Color(0xFFF5C6C6), width: 0.5),
+                        ),
+                        child: const Icon(
+                          Icons.delete_outline,
+                          size: 14,
+                          color: Color(0xFFDC3545),
+                        ),
+                      ),
+                    ),
+                  if (onDelete != null) const SizedBox(width: 6),
+                  InkWell(
+                    onTap: () => _showInvoiceDetail(context, entry),
+                    borderRadius: BorderRadius.circular(7),
+                    child: Container(
+                      width: 28,
+                      height: 28,
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(7),
+                        border: Border.all(color: const Color(0xFFC6DEC9), width: 0.5),
+                      ),
+                      child: const Icon(
+                        Icons.visibility_outlined,
+                        size: 14,
+                        color: Color(0xFF6B8F71),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatusBadge(PaymentStatus status, double outstanding) {
+    Color backgroundColor;
+    Color textColor;
+    String text;
+
+    switch (status) {
+      case PaymentStatus.paid:
+        backgroundColor = const Color(0xFFD8F3DC);
+        textColor = const Color(0xFF2D6A4F);
+        text = 'Paid';
+        break;
+      case PaymentStatus.partial:
+        backgroundColor = const Color(0xFFFAEEDA);
+        textColor = const Color(0xFF633806);
+        text = 'Partial · ₨ ${_currencyFormat.format(outstanding)} due';
+        break;
+      case PaymentStatus.unpaid:
+        backgroundColor = const Color(0xFFFCEBEB);
+        textColor = const Color(0xFF791F1F);
+        text = 'Unpaid Credit';
+        break;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 9.5,
+          fontWeight: FontWeight.w500,
+          color: textColor,
+        ),
+        overflow: TextOverflow.ellipsis,
+      ),
+    );
+  }
+
+  void _showInvoiceDetail(BuildContext context, LedgerEntry entry) {
+    showDialog(
+      context: context,
+      builder: (context) => InvoiceDetailDialog(entry: entry),
+    );
+  }
+}
+
+class InvoiceDetailDialog extends StatefulWidget {
+  final LedgerEntry entry;
+
+  const InvoiceDetailDialog({
+    super.key,
+    required this.entry,
+  });
+
+  @override
+  State<InvoiceDetailDialog> createState() => _InvoiceDetailDialogState();
+}
+
+class _InvoiceDetailDialogState extends State<InvoiceDetailDialog> {
+  bool _isProcessing = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Container(
+        width: 600,
+        constraints: const BoxConstraints(maxHeight: 700),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _buildHeader(),
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildInvoiceInfo(),
+                    const SizedBox(height: 24),
+                    _buildItemsList(),
+                    const SizedBox(height: 24),
+                    _buildTotalSection(),
+                  ],
+                ),
+              ),
+            ),
+            _buildFooter(context),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHeader() {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: const BoxDecoration(
+        color: Color(0xFF1B4332),
+        borderRadius: BorderRadius.only(
+          topLeft: Radius.circular(16),
+          topRight: Radius.circular(16),
+        ),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.receipt_long,
+            color: Colors.white,
+            size: 28,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Invoice Details',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                  ),
+                ),
+                Text(
+                  widget.entry.invoiceNumber,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    color: Colors.white70,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.close, color: Colors.white),
+            onPressed: () => Navigator.pop(context),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInvoiceInfo() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F9F4),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        children: [
+          _buildInfoRow('Stakeholder:', widget.entry.stakeholderName),
+          if (widget.entry.kisaanName != null)
+            _buildInfoRow('Kisaan:', widget.entry.kisaanName!),
+          _buildInfoRow('Date:', _dateFormat.format(widget.entry.date)),
+          _buildInfoRow('Time:', _timeFormat.format(widget.entry.date)),
+          _buildInfoRow('Season:', widget.entry.season),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInfoRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w500,
+              color: Color(0xFF1B4332),
+            ),
+          ),
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildItemsList() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Items',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.bold,
+            color: Color(0xFF1B4332),
+          ),
+        ),
+        const SizedBox(height: 12),
+        ...widget.entry.items.map((item) => _buildItemCard(item)),
+      ],
+    );
+  }
+
+  Widget _buildItemCard(LineItem item) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        border: Border.all(color: Colors.grey[300]!),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            item.productName,
+            style: const TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Quantity: ${item.quantity} ${item.unit}',
+                style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+              ),
+              Text(
+                'Unit Price: Rs ${_currencyFormat.format(item.unitPrice)}',
+                style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+              ),
+            ],
+          ),
+          if (item.seasonalIncrement > 0) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Seasonal Increment: Rs ${_currencyFormat.format(item.seasonalIncrement)} per unit',
+              style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+            ),
+          ],
+          if (item.discount > 0) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Discount: Rs ${_currencyFormat.format(item.discount)}',
+              style: const TextStyle(fontSize: 12, color: Color(0xFF28A745)),
+            ),
+          ],
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerRight,
+            child: Text(
+              'Subtotal: Rs ${_currencyFormat.format(item.total)}',
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF1B4332),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTotalSection() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F9F4),
+        border: Border.all(color: const Color(0xFF1B4332), width: 2),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        children: [
+          _buildTotalRow('Total Amount:', widget.entry.total, bold: true),
+          const Divider(height: 24),
+          _buildTotalRow('Paid:', widget.entry.paid),
+          const Divider(height: 24),
+          _buildTotalRow(
+            'Outstanding:',
+            widget.entry.outstanding,
+            bold: true,
+            color: widget.entry.outstanding > 0
+                ? const Color(0xFFDC3545)
+                : const Color(0xFF28A745),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTotalRow(
+    String label,
+    double amount, {
+    bool bold = false,
+    Color? color,
+  }) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: bold ? FontWeight.bold : FontWeight.normal,
+          ),
+        ),
+        Text(
+          'Rs ${_currencyFormat.format(amount)}',
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: bold ? FontWeight.bold : FontWeight.normal,
+            color: color,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildFooter(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.grey[100],
+        borderRadius: const BorderRadius.only(
+          bottomLeft: Radius.circular(16),
+          bottomRight: Radius.circular(16),
+        ),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          TextButton.icon(
+            onPressed: _isProcessing ? null : () => _handlePrint(context),
+            icon: const Icon(Icons.print),
+            label: const Text('Print Invoice'),
+            style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFF1B4332),
+            ),
+          ),
+          const SizedBox(width: 8),
+          TextButton.icon(
+            onPressed: _isProcessing ? null : () => _handleShare(context),
+            icon: const Icon(Icons.share),
+            label: const Text('Share via WhatsApp'),
+            style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFF25D366),
+            ),
+          ),
+          const SizedBox(width: 8),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF1B4332),
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _handlePrint(BuildContext context) async {
+    setState(() => _isProcessing = true);
+    try {
+      await PdfGenerator.printInvoice(widget.entry);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Invoice sent to printer'),
+            backgroundColor: Color(0xFF28A745),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to print: $e'),
+            backgroundColor: const Color(0xFFDC3545),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isProcessing = false);
+      }
+    }
+  }
+
+  Future<void> _handleShare(BuildContext context) async {
+    setState(() => _isProcessing = true);
+    try {
+      final file = await PdfGenerator.saveInvoiceToFile(widget.entry);
+
+      try {
+        await PdfShare.sharePdfFile(
+          file: file,
+          fileName: p.basename(file.path),
+          text:
+              'Invoice ${widget.entry.invoiceNumber} - ₨ ${_currencyFormat.format(widget.entry.total)}',
+          subject: 'AgriKhata Invoice',
+        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Invoice ready to share'),
+              backgroundColor: Color(0xFF28A745),
+            ),
+          );
+        }
+      } catch (shareError) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('PDF saved to: ${file.path}'),
+              backgroundColor: const Color(0xFF28A745),
+              duration: const Duration(seconds: 5),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to share: $e'),
+            backgroundColor: const Color(0xFFDC3545),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isProcessing = false);
+      }
+    }
+  }
+}
+
+class PaymentsLedgerTable extends StatelessWidget {
+  final List<PaymentLedgerEntry> entries;
+
+  const PaymentsLedgerTable({
+    super.key,
+    required this.entries,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (entries.isEmpty) {
+      return Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          border: Border.all(color: const Color(0xFFD4E8D8), width: 0.5),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: const [
+              Icon(Icons.receipt_long, size: 48, color: Color(0xFF95B89A)),
+              SizedBox(height: 12),
+              Text(
+                'No payment settlements recorded',
+                style: TextStyle(fontSize: 14, color: Color(0xFF95B89A)),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        border: Border.all(color: const Color(0xFFD4E8D8), width: 0.5),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        children: [
+          _buildHeader(),
+          Expanded(
+            child: ListView.builder(
+              itemCount: entries.length,
+              itemBuilder: (context, index) {
+                return _buildRow(entries[index], index);
+              },
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.all(10),
+            child: Text(
+              'Showing ${entries.length} payment${entries.length == 1 ? '' : 's'} · '
+              '₨ ${_currencyFormat.format(entries.fold<double>(0, (sum, e) => sum + e.amountPaid))} received',
+              style: const TextStyle(
+                fontSize: 11,
+                color: Color(0xFF6B8F71),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHeader() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+      decoration: const BoxDecoration(
+        color: Color(0xFFE8F4EA),
+        border: Border(
+          bottom: BorderSide(color: Color(0xFFD4E8D8), width: 0.5),
+        ),
+        borderRadius: BorderRadius.only(
+          topLeft: Radius.circular(12),
+          topRight: Radius.circular(12),
+        ),
+      ),
+      child: const Row(
+        children: [
+          SizedBox(
+            width: 84,
+            child: Text(
+              'RECEIPT',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF2D6A4F),
+                letterSpacing: 0.3,
+              ),
+            ),
+          ),
+          SizedBox(width: 16),
+          SizedBox(
+            width: 68,
+            child: Text(
+              'INVOICE LINKED',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF2D6A4F),
+                letterSpacing: 0.3,
+              ),
+            ),
+          ),
+          SizedBox(width: 12),
+          Expanded(
+            flex: 3,
+            child: Text(
+              'STAKEHOLDER',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF2D6A4F),
+                letterSpacing: 0.3,
+              ),
+            ),
+          ),
+          SizedBox(
+            width: 88,
+            child: Text(
+              'AMOUNT',
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF2D6A4F),
+                letterSpacing: 0.3,
+              ),
+            ),
+          ),
+          SizedBox(width: 8),
+          Expanded(
+            flex: 2,
+            child: Text(
+              'METHOD',
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF2D6A4F),
+                letterSpacing: 0.3,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCompactTag(
+    String text, {
+    required Color backgroundColor,
+    required Color borderColor,
+    required Color textColor,
+    FontWeight fontWeight = FontWeight.w600,
+    double? maxWidth,
+    int maxLines = 1,
+  }) {
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: maxWidth ?? double.infinity),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+        decoration: BoxDecoration(
+          color: backgroundColor,
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(color: borderColor, width: 0.5),
+        ),
+        child: Text(
+          text,
+          maxLines: maxLines,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontSize: 10,
+            fontWeight: fontWeight,
+            color: textColor,
+            height: 1.1,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRow(PaymentLedgerEntry entry, int index) {
+    final isEven = index.isEven;
+    final isWallet = entry.isWalletDeduction;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+      decoration: BoxDecoration(
+        color: isEven ? const Color(0xFFF3FAF5) : Colors.white,
+        border: const Border(
+          bottom: BorderSide(color: Color(0xFFE8F0EA), width: 0.5),
+        ),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 84,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _buildCompactTag(
+                  entry.paymentId,
+                  backgroundColor: const Color(0xFFE8F4EA),
+                  borderColor: const Color(0xFF52B788),
+                  textColor: const Color(0xFF1B4332),
+                  maxWidth: 84,
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  '${_dateFormat.format(entry.date)} · ${_timeFormat.format(entry.date)}',
+                  style: const TextStyle(
+                    fontSize: 9,
+                    color: Color(0xFF95B89A),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 16),
+          SizedBox(
+            width: 68,
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: entry.invoiceNumber != null
+                  ? _buildCompactTag(
+                      entry.invoiceNumber!,
+                      backgroundColor: const Color(0xFFE8F5E9),
+                      borderColor: const Color(0xFF81C784),
+                      textColor: const Color(0xFF2D6A4F),
+                      fontWeight: FontWeight.w500,
+                      maxWidth: 68,
+                    )
+                  : _buildCompactTag(
+                      'Advance',
+                      backgroundColor: const Color(0xFFFFF8E1),
+                      borderColor: const Color(0xFFFFB74D),
+                      textColor: const Color(0xFFE65100),
+                      fontWeight: FontWeight.w500,
+                      maxWidth: 68,
+                    ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            flex: 3,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  entry.zamindarName,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: Color(0xFF1B4332),
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                if (entry.kisaanName != null) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    entry.kisaanName!,
+                    style: const TextStyle(
+                      fontSize: 10,
+                      color: Color(0xFF6B8F71),
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ],
+            ),
+          ),
+          SizedBox(
+            width: 88,
+            child: Text(
+              '₨ ${_currencyFormat.format(entry.amountPaid)}',
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF2D6A4F),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            flex: 2,
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: isWallet
+                      ? const Color(0xFFE3F2FD)
+                      : entry.paymentMethod.toLowerCase() == 'cash'
+                          ? const Color(0xFFFFF3E0)
+                          : const Color(0xFFF3E5F5),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                    color: isWallet
+                        ? const Color(0xFF64B5F6)
+                        : entry.paymentMethod.toLowerCase() == 'cash'
+                            ? const Color(0xFFFFCC80)
+                            : const Color(0xFFCE93D8),
+                    width: 0.5,
+                  ),
+                ),
+                child: Text(
+                  entry.paymentMethod,
+                  textAlign: TextAlign.right,
+                  softWrap: true,
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w500,
+                    height: 1.25,
+                    color: isWallet
+                        ? const Color(0xFF1565C0)
+                        : entry.paymentMethod.toLowerCase() == 'cash'
+                            ? const Color(0xFFE65100)
+                            : const Color(0xFF6A1B9A),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}

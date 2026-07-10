@@ -1,8 +1,11 @@
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
+import '../utils/season_utils.dart';
 
 /// Singleton database helper for the AgriKhata local relational database.
 ///
@@ -11,17 +14,31 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 /// - table creation scripts
 /// - CRUD helpers for all four tables
 /// - business helpers for zamindar balances and product inventory status
-class DatabaseHelper {
+/// - ChangeNotifier mixin for reactive UI updates
+class DatabaseHelper with ChangeNotifier {
   DatabaseHelper._internal();
   static final DatabaseHelper instance = DatabaseHelper._internal();
 
+  static final NumberFormat _indianCurrencyFormat = NumberFormat('#,##,##0');
+
   static Database? _database;
+  static Future<Database>? _databaseFuture;
   static bool _factoryInitialized = false;
 
   Future<Database> get database async {
     await _ensureDatabaseFactory();
-    _database ??= await _initDatabase();
-    return _database!;
+    if (_database != null) return _database!;
+    _databaseFuture ??= _initDatabase().then((db) async {
+      _database = db;
+      await _repairAdvancePaymentSeasons(db);
+      return db;
+    });
+    try {
+      return await _databaseFuture!;
+    } catch (e) {
+      _databaseFuture = null;
+      rethrow;
+    }
   }
 
   Future<void> close() async {
@@ -29,6 +46,7 @@ class DatabaseHelper {
     if (db != null) {
       await db.close();
       _database = null;
+      _databaseFuture = null;
     }
   }
 
@@ -39,7 +57,7 @@ class DatabaseHelper {
     return databaseFactory.openDatabase(
       path,
       options: OpenDatabaseOptions(
-        version: 6,
+        version: 15,
         onConfigure: (db) async {
           await db.execute('PRAGMA foreign_keys = ON');
         },
@@ -48,6 +66,10 @@ class DatabaseHelper {
           await db.execute(_createKisaansTable());
           await db.execute(_createProductsTable());
           await db.execute(_createLedgerTransactionsTable());
+          await db.execute(_createSalesTable());
+          await db.execute(_createSaleItemsTable());
+          await db.execute(_createPaymentsTable());
+          await db.execute(_createPaymentSequencesTable());
           await _createIndexes(db);
         },
         onUpgrade: (db, oldVersion, newVersion) async {
@@ -86,7 +108,9 @@ class DatabaseHelper {
             }
           }
           if (oldVersion < 5) {
-            debugPrint('Migrating to version 5: Adding seasonal_increment to products');
+            debugPrint(
+              'Migrating to version 5: Adding seasonal_increment to products',
+            );
             try {
               await db.execute(
                 'ALTER TABLE ${ProductTable.name} ADD COLUMN ${ProductTable.seasonalIncrement} INTEGER DEFAULT 0',
@@ -103,9 +127,173 @@ class DatabaseHelper {
             try {
               await db.execute('DROP TABLE IF EXISTS ${ProductTable.name}');
               await db.execute(_createProductsTable());
-              debugPrint('Products table recreated successfully with correct column names');
+              debugPrint(
+                'Products table recreated successfully with correct column names',
+              );
             } catch (e) {
               debugPrint('Error recreating products table: $e');
+            }
+          }
+          if (oldVersion < 7) {
+            debugPrint(
+              'Migrating to version 7: Adding product_type to products',
+            );
+            try {
+              await db.execute(
+                'ALTER TABLE ${ProductTable.name} ADD COLUMN ${ProductTable.productType} TEXT DEFAULT \'Fertilizer\'',
+              );
+              debugPrint('Product type column added successfully');
+            } catch (e) {
+              debugPrint(
+                'Column ${ProductTable.productType} might already exist: $e',
+              );
+            }
+          }
+          if (oldVersion < 8) {
+            debugPrint(
+              'Migrating to version 8: Adding advance_balance to zamindars',
+            );
+            try {
+              await db.execute(
+                'ALTER TABLE ${ZamindarTable.name} ADD COLUMN ${ZamindarTable.advanceBalance} INTEGER DEFAULT 0',
+              );
+              debugPrint('Advance balance column added successfully');
+            } catch (e) {
+              debugPrint(
+                'Column ${ZamindarTable.advanceBalance} might already exist: $e',
+              );
+            }
+          }
+          if (oldVersion < 9) {
+            debugPrint(
+              'Migrating to version 9: Creating three-table relational schema',
+            );
+            try {
+              await db.execute(_createSalesTable());
+              await db.execute(_createSaleItemsTable());
+              await db.execute(_createPaymentsTable());
+              await db.execute('''
+                CREATE INDEX IF NOT EXISTS idx_sale_items_invoice
+                ON sale_items(invoice_number)
+              ''');
+              await db.execute('''
+                CREATE INDEX IF NOT EXISTS idx_payments_invoice
+                ON payments(invoice_number)
+              ''');
+              debugPrint('Three-table schema created successfully');
+            } catch (e) {
+              debugPrint('Error creating three-table schema: $e');
+            }
+          }
+          if (oldVersion < 10) {
+            debugPrint(
+              'Migrating to version 10: Fixing sales table schema with season column',
+            );
+            try {
+              // Drop incomplete version 9 tables and recreate with correct schema
+              await db.execute('DROP TABLE IF EXISTS ${PaymentsTable.name}');
+              await db.execute('DROP TABLE IF EXISTS ${SaleItemsTable.name}');
+              await db.execute('DROP TABLE IF EXISTS ${SalesTable.name}');
+
+              // Recreate with corrected schema including season column
+              await db.execute(_createSalesTable());
+              await db.execute(_createSaleItemsTable());
+              await db.execute(_createPaymentsTable());
+
+              // Recreate indexes
+              await db.execute('''
+                CREATE INDEX IF NOT EXISTS idx_sale_items_invoice
+                ON sale_items(invoice_number)
+              ''');
+              await db.execute('''
+                CREATE INDEX IF NOT EXISTS idx_payments_invoice
+                ON payments(invoice_number)
+              ''');
+
+              debugPrint(
+                'Version 10 migration completed: Sales table now includes season column',
+              );
+            } catch (e) {
+              debugPrint('Error migrating to version 10: $e');
+            }
+          }
+          if (oldVersion < 11) {
+            debugPrint(
+              'Migrating to version 11: Adding audit trail linkage columns to ledger_transactions',
+            );
+            try {
+              // Add invoice_number column for linking DEBITs to sales invoices
+              await db.execute(
+                'ALTER TABLE ${LedgerTransactionTable.name} ADD COLUMN ${LedgerTransactionTable.invoiceNumber} TEXT',
+              );
+              debugPrint('Added invoice_number column to ledger_transactions');
+
+              // Add payment_id column for linking CREDITs to payment records
+              await db.execute(
+                'ALTER TABLE ${LedgerTransactionTable.name} ADD COLUMN ${LedgerTransactionTable.paymentId} TEXT',
+              );
+              debugPrint('Added payment_id column to ledger_transactions');
+
+              debugPrint(
+                'Version 11 migration completed: Audit trail linkage columns added successfully',
+              );
+            } catch (e) {
+              debugPrint('Error migrating to version 11: $e');
+            }
+          }
+          if (oldVersion < 12) {
+            debugPrint(
+              'Migrating to version 12: Backfilling ledger_transactions from sales',
+            );
+            try {
+              await _backfillLedgerFromSales(db);
+              debugPrint('Version 12 migration completed');
+            } catch (e) {
+              debugPrint('Error migrating to version 12: $e');
+            }
+          }
+          if (oldVersion < 13) {
+            debugPrint(
+              'Migrating to version 13: Nullable payment invoice + advance backfill',
+            );
+            try {
+              await _migratePaymentsTableNullableInvoice(db);
+              await _backfillAdvancePayments(db);
+              debugPrint('Version 13 migration completed');
+            } catch (e) {
+              debugPrint('Error migrating to version 13: $e');
+            }
+          }
+          if (oldVersion < 14) {
+            debugPrint(
+              'Migrating to version 14: Payment sequences + ghost payment cleanup',
+            );
+            try {
+              await db.execute(_createPaymentSequencesTable());
+              await _seedPaymentSequences(db);
+              await _cleanupGhostAdvancePayments(db);
+              await db.update(
+                LedgerTransactionTable.name,
+                {LedgerTransactionTable.category: 'WALLET_DEDUCTION'},
+                where:
+                    '${LedgerTransactionTable.category} = ? AND ${LedgerTransactionTable.description} = ?',
+                whereArgs: ['ADVANCE_PAYMENT', 'Advance wallet deduction'],
+              );
+              debugPrint('Version 14 migration completed');
+            } catch (e) {
+              debugPrint('Error migrating to version 14: $e');
+            }
+          }
+          if (oldVersion < 15) {
+            debugPrint(
+              'Migrating to version 15: Renumber legacy payment receipt IDs',
+            );
+            try {
+              await db.execute(_createPaymentSequencesTable());
+              await _renumberLegacyPaymentIds(db);
+              debugPrint('Version 15 migration completed');
+            } catch (e) {
+              debugPrint('Error migrating to version 15: $e');
             }
           }
         },
@@ -136,6 +324,289 @@ class DatabaseHelper {
   static String _formatDateTime(DateTime dateTime) =>
       dateTime.toIso8601String();
 
+  /// Advances were previously hardcoded to "Rabi 2026". Recompute season from
+  /// each row's date_time so filters (e.g. Kharif 2026) show them correctly.
+  Future<void> _repairAdvancePaymentSeasons(Database db) async {
+    try {
+      final rows = await db.query(
+        LedgerTransactionTable.name,
+        where:
+            'UPPER(${LedgerTransactionTable.category}) IN (?, ?)',
+        whereArgs: const ['ADVANCE_PAYMENT', 'ADVANCE'],
+      );
+
+      for (final row in rows) {
+        final id = row[LedgerTransactionTable.id] as int?;
+        final dateRaw = row[LedgerTransactionTable.dateTime] as String?;
+        if (id == null || dateRaw == null || dateRaw.isEmpty) continue;
+
+        final correctSeason = SeasonUtils.getSeasonString(
+          _parseDateTime(dateRaw),
+        );
+        final current =
+            (row[LedgerTransactionTable.season] as String? ?? '').trim();
+        if (current == correctSeason) continue;
+
+        await db.update(
+          LedgerTransactionTable.name,
+          {LedgerTransactionTable.season: correctSeason},
+          where: '${LedgerTransactionTable.id} = ?',
+          whereArgs: [id],
+        );
+
+        final paymentId = row[LedgerTransactionTable.paymentId] as String?;
+        if (paymentId != null && paymentId.isNotEmpty) {
+          await db.update(
+            PaymentsTable.name,
+            {PaymentsTable.season: correctSeason},
+            where: '${PaymentsTable.paymentId} = ?',
+            whereArgs: [paymentId],
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('Advance season repair skipped: $e');
+    }
+  }
+
+  Future<void> _backfillLedgerFromSales(Database db) async {
+    final salesMaps = await db.query(SalesTable.name);
+    for (final sale in salesMaps) {
+      final invoiceNumber = sale[SalesTable.invoiceNumber] as String;
+      final existing = await db.query(
+        LedgerTransactionTable.name,
+        where:
+            '${LedgerTransactionTable.invoiceNumber} = ? AND ${LedgerTransactionTable.category} = ?',
+        whereArgs: [invoiceNumber, 'SALE'],
+        limit: 1,
+      );
+      if (existing.isNotEmpty) continue;
+
+      final zamindarName = sale[SalesTable.zamindarName] as String;
+      final kisaanName = sale[SalesTable.kisaanName] as String?;
+      final paidAmount =
+          (sale[SalesTable.paidAmount] as num?)?.toDouble() ?? 0.0;
+      final paymentMethod = sale[SalesTable.paymentMethod] as String;
+      final season = sale[SalesTable.season] as String;
+      final dateTimeStr = sale[SalesTable.dateTime] as String;
+      final totalPayable =
+          (sale[SalesTable.totalPayable] as num?)?.toDouble() ?? 0.0;
+
+      final itemsMaps = await db.query(
+        SaleItemsTable.name,
+        where: '${SaleItemsTable.invoiceNumber} = ?',
+        whereArgs: [invoiceNumber],
+      );
+      final description = itemsMaps
+          .map(
+            (item) =>
+                '${item[SaleItemsTable.productName]} x${item[SaleItemsTable.quantity]}',
+          )
+          .join(' · ');
+
+      await db.transaction((txn) async {
+        await _insertLedgerEntriesForSale(
+          txn,
+          invoiceNumber: invoiceNumber,
+          zamindarName: zamindarName,
+          kisaanName: kisaanName,
+          description: description.isEmpty ? 'Sale $invoiceNumber' : description,
+          totalPayable: totalPayable,
+          paidAmount: paidAmount,
+          paymentMethod: paymentMethod,
+          season: season,
+          dateTime: _parseDateTime(dateTimeStr),
+        );
+      });
+    }
+  }
+
+  Future<void> _insertLedgerEntriesForSale(
+    DatabaseExecutor txn, {
+    required String invoiceNumber,
+    required String zamindarName,
+    String? kisaanName,
+    required String description,
+    required double totalPayable,
+    required double paidAmount,
+    required String paymentMethod,
+    required String season,
+    required DateTime dateTime,
+    double advanceDrawdown = 0,
+    String? walletPaymentId,
+    String? cashPaymentId,
+  }) async {
+    final zamindarRows = await txn.query(
+      ZamindarTable.name,
+      columns: [ZamindarTable.id],
+      where: '${ZamindarTable.nameColumn} = ?',
+      whereArgs: [zamindarName],
+      limit: 1,
+    );
+    if (zamindarRows.isEmpty) return;
+
+    final zamindarId = zamindarRows.first[ZamindarTable.id] as int;
+    int? kisaanId;
+    if (kisaanName != null && kisaanName.isNotEmpty) {
+      final kisaanRows = await txn.query(
+        KisaanTable.name,
+        columns: [KisaanTable.id],
+        where:
+            '${KisaanTable.zamindarId} = ? AND ${KisaanTable.nameColumn} = ?',
+        whereArgs: [zamindarId, kisaanName],
+        limit: 1,
+      );
+      if (kisaanRows.isNotEmpty) {
+        kisaanId = kisaanRows.first[KisaanTable.id] as int;
+      }
+    }
+
+    final netAmount = totalPayable.round();
+    await txn.insert(LedgerTransactionTable.name, {
+      LedgerTransactionTable.zamindarId: zamindarId,
+      LedgerTransactionTable.kisaanId: kisaanId,
+      LedgerTransactionTable.invoiceNumber: invoiceNumber,
+      LedgerTransactionTable.type: LedgerTransactionType.debit,
+      LedgerTransactionTable.category: 'SALE',
+      LedgerTransactionTable.description: description,
+      LedgerTransactionTable.amount: netAmount,
+      LedgerTransactionTable.dateTime: _formatDateTime(dateTime),
+      LedgerTransactionTable.season: season,
+    });
+
+    if (advanceDrawdown > 0) {
+      await txn.insert(LedgerTransactionTable.name, {
+        LedgerTransactionTable.zamindarId: zamindarId,
+        LedgerTransactionTable.kisaanId: kisaanId,
+        LedgerTransactionTable.invoiceNumber: invoiceNumber,
+        LedgerTransactionTable.paymentId: walletPaymentId,
+        LedgerTransactionTable.type: LedgerTransactionType.credit,
+        LedgerTransactionTable.category: 'WALLET_DEDUCTION',
+        LedgerTransactionTable.description: 'Advance wallet deduction',
+        LedgerTransactionTable.amount: advanceDrawdown.round(),
+        LedgerTransactionTable.dateTime: _formatDateTime(dateTime),
+        LedgerTransactionTable.season: season,
+      });
+    }
+
+    if (paidAmount > 0) {
+      await txn.insert(LedgerTransactionTable.name, {
+        LedgerTransactionTable.zamindarId: zamindarId,
+        LedgerTransactionTable.kisaanId: kisaanId,
+        LedgerTransactionTable.invoiceNumber: invoiceNumber,
+        LedgerTransactionTable.paymentId: cashPaymentId,
+        LedgerTransactionTable.type: LedgerTransactionType.credit,
+        LedgerTransactionTable.category:
+            paymentMethod == 'Cash' ? 'CASH_PAYMENT' : 'PAYMENT',
+        LedgerTransactionTable.description: paymentMethod == 'Cash'
+            ? 'Cash payment for sale'
+            : 'Payment for $invoiceNumber',
+        LedgerTransactionTable.amount: paidAmount.round(),
+        LedgerTransactionTable.dateTime: _formatDateTime(dateTime),
+        LedgerTransactionTable.season: season,
+      });
+    }
+  }
+
+  double _sumPaymentsCollected(
+    double initialPaid,
+    List<Map<String, dynamic>> paymentsMaps,
+  ) {
+    if (paymentsMaps.isEmpty) {
+      return initialPaid;
+    }
+    return paymentsMaps.fold<double>(
+      0.0,
+      (sum, payment) =>
+          sum +
+          ((payment[PaymentsTable.amountPaid] as num?)?.toDouble() ?? 0.0),
+    );
+  }
+
+  String _createPaymentSequencesTable() =>
+      '''
+    CREATE TABLE IF NOT EXISTS payment_sequences (
+      sequence_key TEXT PRIMARY KEY,
+      last_value INTEGER NOT NULL DEFAULT 1000
+    )
+  ''';
+
+  Future<void> _seedPaymentSequences(Database db) async {
+    for (final isAdvance in [false, true]) {
+      final whereClause = isAdvance
+          ? "${PaymentsTable.paymentId} LIKE 'PAY-ADV-%'"
+          : "${PaymentsTable.paymentId} LIKE 'PAY-%' AND ${PaymentsTable.paymentId} NOT LIKE 'PAY-ADV-%'";
+
+      final rows = await db.rawQuery('''
+        SELECT ${PaymentsTable.paymentId}
+        FROM ${PaymentsTable.name}
+        WHERE $whereClause
+      ''');
+
+      var maxSeq = 1000;
+      for (final row in rows) {
+        final id = row[PaymentsTable.paymentId] as String;
+        final seq = _extractPaymentSequence(id, isAdvance: isAdvance);
+        if (seq > maxSeq) maxSeq = seq;
+      }
+
+      final key = isAdvance ? 'advance' : 'standard';
+      await db.insert(
+        'payment_sequences',
+        {'sequence_key': key, 'last_value': maxSeq},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+  }
+
+  Future<void> _cleanupGhostAdvancePayments(Database db) async {
+    await db.rawDelete('''
+      DELETE FROM ${PaymentsTable.name}
+      WHERE ${PaymentsTable.invoiceNumber} IS NULL
+        AND ${PaymentsTable.paymentMethod} = 'Cash'
+        AND ${PaymentsTable.paymentId} IN (
+          SELECT ${LedgerTransactionTable.paymentId}
+          FROM ${LedgerTransactionTable.name}
+          WHERE ${LedgerTransactionTable.category} = 'ADVANCE_PAYMENT'
+            AND ${LedgerTransactionTable.description} = 'Advance wallet deduction'
+            AND ${LedgerTransactionTable.paymentId} IS NOT NULL
+            AND TRIM(${LedgerTransactionTable.paymentId}) != ''
+        )
+    ''');
+
+    final walletLedgers = await db.query(
+      LedgerTransactionTable.name,
+      where:
+          '${LedgerTransactionTable.category} = ? AND ${LedgerTransactionTable.description} = ?',
+      whereArgs: ['ADVANCE_PAYMENT', 'Advance wallet deduction'],
+    );
+
+    for (final ledger in walletLedgers) {
+      final zamindarId = ledger[LedgerTransactionTable.zamindarId] as int?;
+      final amount = (ledger[LedgerTransactionTable.amount] as num).toDouble();
+      final dateTime = ledger[LedgerTransactionTable.dateTime] as String;
+      if (zamindarId == null) continue;
+
+      final zamindarRows = await db.query(
+        ZamindarTable.name,
+        columns: [ZamindarTable.nameColumn],
+        where: '${ZamindarTable.id} = ?',
+        whereArgs: [zamindarId],
+        limit: 1,
+      );
+      if (zamindarRows.isEmpty) continue;
+      final zamindarName =
+          zamindarRows.first[ZamindarTable.nameColumn] as String;
+
+      await db.delete(
+        PaymentsTable.name,
+        where:
+            '${PaymentsTable.invoiceNumber} IS NULL AND ${PaymentsTable.zamindarName} = ? AND ${PaymentsTable.amountPaid} = ? AND ${PaymentsTable.dateTime} = ? AND ${PaymentsTable.paymentMethod} = ?',
+        whereArgs: [zamindarName, amount, dateTime, 'Cash'],
+      );
+    }
+  }
+
   static String _formatDateOnly(DateTime date) {
     return '${date.year.toString().padLeft(4, '0')}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
   }
@@ -156,7 +627,8 @@ class DatabaseHelper {
       ${ZamindarTable.paymentTerms} TEXT NOT NULL,
       ${ZamindarTable.activeSeasons} TEXT,
       ${ZamindarTable.activeCrops} TEXT,
-      ${ZamindarTable.isDraft} INTEGER DEFAULT 0
+      ${ZamindarTable.isDraft} INTEGER DEFAULT 0,
+      ${ZamindarTable.advanceBalance} INTEGER DEFAULT 0
     )
   ''';
 
@@ -198,6 +670,7 @@ class DatabaseHelper {
       ${ProductTable.id} INTEGER PRIMARY KEY AUTOINCREMENT,
       ${ProductTable.nameColumn} TEXT NOT NULL,
       ${ProductTable.brand} TEXT NOT NULL,
+      ${ProductTable.productType} TEXT DEFAULT 'Fertilizer',
       ${ProductTable.packagingSize} TEXT NOT NULL,
       ${ProductTable.costPrice} INTEGER NOT NULL,
       ${ProductTable.retailPrice} INTEGER NOT NULL,
@@ -215,6 +688,8 @@ class DatabaseHelper {
       ${LedgerTransactionTable.id} INTEGER PRIMARY KEY AUTOINCREMENT,
       ${LedgerTransactionTable.zamindarId} INTEGER NOT NULL,
       ${LedgerTransactionTable.kisaanId} INTEGER,
+      ${LedgerTransactionTable.invoiceNumber} TEXT,
+      ${LedgerTransactionTable.paymentId} TEXT,
       ${LedgerTransactionTable.type} TEXT NOT NULL,
       ${LedgerTransactionTable.category} TEXT NOT NULL,
       ${LedgerTransactionTable.description} TEXT NOT NULL,
@@ -224,9 +699,319 @@ class DatabaseHelper {
       FOREIGN KEY (${LedgerTransactionTable.zamindarId}) REFERENCES ${ZamindarTable.name}(${ZamindarTable.id})
         ON DELETE CASCADE,
       FOREIGN KEY (${LedgerTransactionTable.kisaanId}) REFERENCES ${KisaanTable.name}(${KisaanTable.id})
+        ON DELETE SET NULL,
+      FOREIGN KEY (${LedgerTransactionTable.invoiceNumber}) REFERENCES ${SalesTable.name}(${SalesTable.invoiceNumber})
+        ON DELETE SET NULL,
+      FOREIGN KEY (${LedgerTransactionTable.paymentId}) REFERENCES ${PaymentsTable.name}(${PaymentsTable.paymentId})
         ON DELETE SET NULL
     )
   ''';
+
+  String _createSalesTable() =>
+      '''
+    CREATE TABLE IF NOT EXISTS ${SalesTable.name} (
+      ${SalesTable.invoiceNumber} TEXT PRIMARY KEY,
+      ${SalesTable.dateTime} TEXT NOT NULL,
+      ${SalesTable.zamindarName} TEXT NOT NULL,
+      ${SalesTable.kisaanName} TEXT,
+      ${SalesTable.subtotal} REAL NOT NULL,
+      ${SalesTable.itemDiscountsTotal} REAL NOT NULL DEFAULT 0,
+      ${SalesTable.seasonalIncrementTotal} REAL NOT NULL DEFAULT 0,
+      ${SalesTable.overallDiscount} REAL NOT NULL DEFAULT 0,
+      ${SalesTable.totalPayable} REAL NOT NULL,
+      ${SalesTable.paidAmount} REAL NOT NULL DEFAULT 0,
+      ${SalesTable.paymentMethod} TEXT NOT NULL,
+      ${SalesTable.season} TEXT NOT NULL
+    )
+  ''';
+
+  String _createSaleItemsTable() =>
+      '''
+    CREATE TABLE IF NOT EXISTS ${SaleItemsTable.name} (
+      ${SaleItemsTable.id} INTEGER PRIMARY KEY AUTOINCREMENT,
+      ${SaleItemsTable.invoiceNumber} TEXT NOT NULL,
+      ${SaleItemsTable.productName} TEXT NOT NULL,
+      ${SaleItemsTable.productType} TEXT NOT NULL,
+      ${SaleItemsTable.quantity} INTEGER NOT NULL,
+      ${SaleItemsTable.unitPrice} REAL NOT NULL,
+      ${SaleItemsTable.seasonalIncrement} REAL NOT NULL DEFAULT 0,
+      ${SaleItemsTable.itemDiscount} REAL NOT NULL DEFAULT 0,
+      ${SaleItemsTable.subtotal} REAL NOT NULL,
+      FOREIGN KEY (${SaleItemsTable.invoiceNumber}) REFERENCES ${SalesTable.name}(${SalesTable.invoiceNumber})
+        ON DELETE CASCADE
+    )
+  ''';
+
+  String _createPaymentsTable() =>
+      '''
+    CREATE TABLE IF NOT EXISTS ${PaymentsTable.name} (
+      ${PaymentsTable.paymentId} TEXT PRIMARY KEY,
+      ${PaymentsTable.invoiceNumber} TEXT,
+      ${PaymentsTable.dateTime} TEXT NOT NULL,
+      ${PaymentsTable.zamindarName} TEXT NOT NULL,
+      ${PaymentsTable.kisaanName} TEXT,
+      ${PaymentsTable.amountPaid} REAL NOT NULL,
+      ${PaymentsTable.paymentMethod} TEXT NOT NULL,
+      ${PaymentsTable.season} TEXT NOT NULL,
+      FOREIGN KEY (${PaymentsTable.invoiceNumber}) REFERENCES ${SalesTable.name}(${SalesTable.invoiceNumber})
+        ON DELETE CASCADE
+    )
+  ''';
+
+  Future<void> _migratePaymentsTableNullableInvoice(Database db) async {
+    final tableInfo = await db.rawQuery(
+      'PRAGMA table_info(${PaymentsTable.name})',
+    );
+    final invoiceColumn = tableInfo.cast<Map<String, Object?>>().where(
+      (col) => col['name'] == PaymentsTable.invoiceNumber,
+    );
+    if (invoiceColumn.isNotEmpty && invoiceColumn.first['notnull'] == 0) {
+      return;
+    }
+
+    await db.execute('DROP TABLE IF EXISTS payments_new');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS payments_new (
+        ${PaymentsTable.paymentId} TEXT PRIMARY KEY,
+        ${PaymentsTable.invoiceNumber} TEXT,
+        ${PaymentsTable.dateTime} TEXT NOT NULL,
+        ${PaymentsTable.zamindarName} TEXT NOT NULL,
+        ${PaymentsTable.kisaanName} TEXT,
+        ${PaymentsTable.amountPaid} REAL NOT NULL,
+        ${PaymentsTable.paymentMethod} TEXT NOT NULL,
+        ${PaymentsTable.season} TEXT NOT NULL
+      )
+    ''');
+
+    await db.execute('''
+      INSERT INTO payments_new (
+        ${PaymentsTable.paymentId},
+        ${PaymentsTable.invoiceNumber},
+        ${PaymentsTable.dateTime},
+        ${PaymentsTable.zamindarName},
+        ${PaymentsTable.kisaanName},
+        ${PaymentsTable.amountPaid},
+        ${PaymentsTable.paymentMethod},
+        ${PaymentsTable.season}
+      )
+      SELECT
+        ${PaymentsTable.paymentId},
+        ${PaymentsTable.invoiceNumber},
+        ${PaymentsTable.dateTime},
+        ${PaymentsTable.zamindarName},
+        ${PaymentsTable.kisaanName},
+        ${PaymentsTable.amountPaid},
+        ${PaymentsTable.paymentMethod},
+        ${PaymentsTable.season}
+      FROM ${PaymentsTable.name}
+    ''');
+
+    await db.execute('DROP TABLE ${PaymentsTable.name}');
+    await db.execute('ALTER TABLE payments_new RENAME TO ${PaymentsTable.name}');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_payments_invoice
+      ON ${PaymentsTable.name}(${PaymentsTable.invoiceNumber})
+    ''');
+  }
+
+  Future<void> _backfillAdvancePayments(Database db) async {
+    final advanceRows = await db.query(
+      LedgerTransactionTable.name,
+      where:
+          '${LedgerTransactionTable.category} = ? AND ${LedgerTransactionTable.description} = ? AND (${LedgerTransactionTable.paymentId} IS NULL OR ${LedgerTransactionTable.paymentId} = \'\')',
+      whereArgs: ['ADVANCE_PAYMENT', 'Advance payment received'],
+      orderBy: '${LedgerTransactionTable.dateTime} ASC',
+    );
+
+    for (final row in advanceRows) {
+      final zamindarId = row[LedgerTransactionTable.zamindarId] as int?;
+      if (zamindarId == null) continue;
+
+      final zamindarRows = await db.query(
+        ZamindarTable.name,
+        columns: [ZamindarTable.nameColumn],
+        where: '${ZamindarTable.id} = ?',
+        whereArgs: [zamindarId],
+        limit: 1,
+      );
+      if (zamindarRows.isEmpty) continue;
+
+      final zamindarName =
+          zamindarRows.first[ZamindarTable.nameColumn] as String;
+
+      final paymentId = await generateNextPaymentId(db, isAdvance: true);
+      final dateTime = row[LedgerTransactionTable.dateTime] as String;
+      final amount = (row[LedgerTransactionTable.amount] as num).toDouble();
+      final season = row[LedgerTransactionTable.season] as String;
+
+      await db.insert(PaymentsTable.name, {
+        PaymentsTable.paymentId: paymentId,
+        PaymentsTable.invoiceNumber: null,
+        PaymentsTable.dateTime: dateTime,
+        PaymentsTable.zamindarName: zamindarName,
+        PaymentsTable.kisaanName: null,
+        PaymentsTable.amountPaid: amount,
+        PaymentsTable.paymentMethod: 'Cash',
+        PaymentsTable.season: season,
+      });
+
+      await db.update(
+        LedgerTransactionTable.name,
+        {LedgerTransactionTable.paymentId: paymentId},
+        where: '${LedgerTransactionTable.id} = ?',
+        whereArgs: [row[LedgerTransactionTable.id]],
+      );
+    }
+  }
+
+  int _extractPaymentSequence(String paymentId, {required bool isAdvance}) {
+    if (!_isCleanPaymentId(paymentId, isAdvance: isAdvance)) return 0;
+    final prefix = isAdvance ? 'PAY-ADV-' : 'PAY-';
+    return int.parse(paymentId.substring(prefix.length));
+  }
+
+  bool _isCleanPaymentId(String paymentId, {required bool isAdvance}) {
+    final prefix = isAdvance ? 'PAY-ADV-' : 'PAY-';
+    if (!paymentId.startsWith(prefix)) return false;
+    final suffix = paymentId.substring(prefix.length);
+    if (!RegExp(r'^\d+$').hasMatch(suffix)) return false;
+    final seq = int.tryParse(suffix);
+    if (seq == null) return false;
+    return seq >= 1001 && seq <= 99999;
+  }
+
+  Future<void> _renamePaymentId(
+    Database db,
+    String oldId,
+    String newId,
+  ) async {
+    if (oldId == newId) return;
+    await db.update(
+      LedgerTransactionTable.name,
+      {LedgerTransactionTable.paymentId: newId},
+      where: '${LedgerTransactionTable.paymentId} = ?',
+      whereArgs: [oldId],
+    );
+    await db.update(
+      PaymentsTable.name,
+      {PaymentsTable.paymentId: newId},
+      where: '${PaymentsTable.paymentId} = ?',
+      whereArgs: [oldId],
+    );
+  }
+
+  Future<void> _renumberLegacyPaymentIds(Database db) async {
+    await db.execute('PRAGMA foreign_keys = OFF');
+    try {
+      await _renumberPaymentGroup(db, isAdvance: false);
+      await _renumberPaymentGroup(db, isAdvance: true);
+      await _seedPaymentSequences(db);
+    } finally {
+      await db.execute('PRAGMA foreign_keys = ON');
+    }
+  }
+
+  Future<void> _renumberPaymentGroup(
+    Database db, {
+    required bool isAdvance,
+  }) async {
+    final prefix = isAdvance ? 'PAY-ADV-' : 'PAY-';
+    final rows = await db.query(
+      PaymentsTable.name,
+      orderBy:
+          '${PaymentsTable.dateTime} ASC, ${PaymentsTable.paymentId} ASC',
+    );
+
+    final groupRows = rows.where((row) {
+      final id = row[PaymentsTable.paymentId] as String;
+      final invoice = row[PaymentsTable.invoiceNumber] as String?;
+      if (isAdvance) {
+        return id.startsWith('PAY-ADV-') || invoice == null;
+      }
+      return !id.startsWith('PAY-ADV-') && invoice != null;
+    }).toList();
+
+    var maxCleanSeq = 1000;
+    final legacyRows = <Map<String, dynamic>>[];
+
+    for (final row in groupRows) {
+      final id = row[PaymentsTable.paymentId] as String;
+      if (_isCleanPaymentId(id, isAdvance: isAdvance)) {
+        final seq = _extractPaymentSequence(id, isAdvance: isAdvance);
+        if (seq > maxCleanSeq) maxCleanSeq = seq;
+      } else {
+        legacyRows.add(row);
+      }
+    }
+
+    if (legacyRows.isEmpty) return;
+
+    final tempMap = <String, String>{};
+    for (var i = 0; i < legacyRows.length; i++) {
+      final oldId = legacyRows[i][PaymentsTable.paymentId] as String;
+      final tempId =
+          '${isAdvance ? 'TMP-ADV' : 'TMP-PAY'}-$i-${oldId.hashCode.abs()}';
+      tempMap[oldId] = tempId;
+      await _renamePaymentId(db, oldId, tempId);
+    }
+
+    var seq = maxCleanSeq;
+    for (final row in legacyRows) {
+      final oldId = row[PaymentsTable.paymentId] as String;
+      final tempId = tempMap[oldId]!;
+      seq++;
+      await _renamePaymentId(db, tempId, '$prefix$seq');
+    }
+  }
+
+  /// Generates the next sequential receipt ID (starting at PAY-1001 / PAY-ADV-1001).
+  Future<String> generateNextPaymentId(
+    DatabaseExecutor executor, {
+    required bool isAdvance,
+  }) async {
+    final key = isAdvance ? 'advance' : 'standard';
+    final prefix = isAdvance ? 'PAY-ADV-' : 'PAY-';
+
+    await executor.insert(
+      'payment_sequences',
+      {'sequence_key': key, 'last_value': 1000},
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+
+    await executor.rawUpdate(
+      'UPDATE payment_sequences SET last_value = last_value + 1 WHERE sequence_key = ?',
+      [key],
+    );
+
+    final rows = await executor.query(
+      'payment_sequences',
+      columns: ['last_value'],
+      where: 'sequence_key = ?',
+      whereArgs: [key],
+      limit: 1,
+    );
+
+    final seq = rows.isEmpty ? 1001 : rows.first['last_value'] as int;
+    return '$prefix$seq';
+  }
+
+  /// Returns distinct season labels that have ledger transaction data.
+  Future<List<String>> getDistinctLedgerSeasons() async {
+    final db = await database;
+    final results = await db.rawQuery('''
+      SELECT DISTINCT ${LedgerTransactionTable.season} AS season
+      FROM ${LedgerTransactionTable.name}
+      WHERE ${LedgerTransactionTable.season} IS NOT NULL
+        AND TRIM(${LedgerTransactionTable.season}) != ''
+      ORDER BY ${LedgerTransactionTable.season} DESC
+    ''');
+
+    return results
+        .map((row) => row['season'] as String)
+        .where((season) => season.trim().isNotEmpty)
+        .toList();
+  }
 
   // -----------------------------
   // Zamindar CRUD
@@ -234,7 +1019,20 @@ class DatabaseHelper {
 
   Future<int> insertZamindar(Zamindar zamindar) async {
     final db = await database;
-    return db.insert(ZamindarTable.name, zamindar.toMap());
+    final zamindarId = await db.insert(ZamindarTable.name, zamindar.toMap());
+
+    // Auto-create 'Self' Kisaan for this Zamindar
+    await db.insert(KisaanTable.name, {
+      KisaanTable.zamindarId: zamindarId,
+      KisaanTable.nameColumn: 'Self',
+      KisaanTable.village: zamindar.village ?? zamindar.locationGoth ?? 'N/A',
+      KisaanTable.phone: null,
+      KisaanTable.landAcres: 0.0,
+      KisaanTable.currentCrop: 'Direct Purchase',
+    });
+
+    notifyListeners();
+    return zamindarId;
   }
 
   Future<Zamindar?> getZamindar(int id) async {
@@ -261,21 +1059,68 @@ class DatabaseHelper {
 
   Future<int> updateZamindar(Zamindar zamindar) async {
     final db = await database;
-    return db.update(
+    final result = await db.update(
       ZamindarTable.name,
       zamindar.toMap(),
       where: '${ZamindarTable.id} = ?',
       whereArgs: [zamindar.id],
     );
+    notifyListeners();
+    return result;
   }
 
   Future<int> deleteZamindar(int id) async {
     final db = await database;
-    return db.delete(
-      ZamindarTable.name,
-      where: '${ZamindarTable.id} = ?',
-      whereArgs: [id],
-    );
+    final zamindar = await getZamindar(id);
+    if (zamindar == null) return 0;
+
+    final result = await db.transaction((txn) async {
+      final zamindarName = zamindar.name;
+
+      final invoiceRows = await txn.query(
+        SalesTable.name,
+        columns: [SalesTable.invoiceNumber],
+        where: '${SalesTable.zamindarName} = ?',
+        whereArgs: [zamindarName],
+      );
+      for (final row in invoiceRows) {
+        final invoiceNumber = row[SalesTable.invoiceNumber] as String;
+        await txn.delete(
+          SaleItemsTable.name,
+          where: '${SaleItemsTable.invoiceNumber} = ?',
+          whereArgs: [invoiceNumber],
+        );
+      }
+
+      await txn.delete(
+        SalesTable.name,
+        where: '${SalesTable.zamindarName} = ?',
+        whereArgs: [zamindarName],
+      );
+      await txn.delete(
+        PaymentsTable.name,
+        where: '${PaymentsTable.zamindarName} = ?',
+        whereArgs: [zamindarName],
+      );
+      await txn.delete(
+        LedgerTransactionTable.name,
+        where: '${LedgerTransactionTable.zamindarId} = ?',
+        whereArgs: [id],
+      );
+      await txn.delete(
+        KisaanTable.name,
+        where: '${KisaanTable.zamindarId} = ?',
+        whereArgs: [id],
+      );
+      return txn.delete(
+        ZamindarTable.name,
+        where: '${ZamindarTable.id} = ?',
+        whereArgs: [id],
+      );
+    });
+
+    notifyListeners();
+    return result;
   }
 
   // -----------------------------
@@ -284,7 +1129,9 @@ class DatabaseHelper {
 
   Future<int> insertKisaan(Kisaan kisaan) async {
     final db = await database;
-    return db.insert(KisaanTable.name, kisaan.toMap());
+    final result = await db.insert(KisaanTable.name, kisaan.toMap());
+    notifyListeners();
+    return result;
   }
 
   Future<Kisaan?> getKisaan(int id) async {
@@ -322,20 +1169,99 @@ class DatabaseHelper {
 
   Future<int> updateKisaan(Kisaan kisaan) async {
     final db = await database;
-    return db.update(
+    final result = await db.update(
       KisaanTable.name,
       kisaan.toMap(),
       where: '${KisaanTable.id} = ?',
       whereArgs: [kisaan.id],
     );
+    notifyListeners();
+    return result;
   }
 
   Future<int> deleteKisaan(int id) async {
     final db = await database;
-    return db.delete(
-      KisaanTable.name,
-      where: '${KisaanTable.id} = ?',
-      whereArgs: [id],
+    final kisaan = await getKisaan(id);
+    if (kisaan == null) return 0;
+
+    final zamindar = await getZamindar(kisaan.zamindarId);
+    if (zamindar == null) return 0;
+
+    final result = await db.transaction((txn) async {
+      await _purgeKisaanLinkedDataInTxn(
+        txn,
+        kisaanId: id,
+        kisaanName: kisaan.name,
+        zamindarName: zamindar.name,
+      );
+      return txn.delete(
+        KisaanTable.name,
+        where: '${KisaanTable.id} = ?',
+        whereArgs: [id],
+      );
+    });
+
+    notifyListeners();
+    return result;
+  }
+
+  /// Removes all sales, payments, and ledger rows for a kisaan but keeps the record.
+  Future<void> clearKisaanTransactionData(int id) async {
+    final db = await database;
+    final kisaan = await getKisaan(id);
+    if (kisaan == null) return;
+
+    final zamindar = await getZamindar(kisaan.zamindarId);
+    if (zamindar == null) return;
+
+    await db.transaction((txn) async {
+      await _purgeKisaanLinkedDataInTxn(
+        txn,
+        kisaanId: id,
+        kisaanName: kisaan.name,
+        zamindarName: zamindar.name,
+      );
+    });
+
+    notifyListeners();
+  }
+
+  Future<void> _purgeKisaanLinkedDataInTxn(
+    Transaction txn, {
+    required int kisaanId,
+    required String kisaanName,
+    required String zamindarName,
+  }) async {
+    final invoiceRows = await txn.query(
+      SalesTable.name,
+      columns: [SalesTable.invoiceNumber],
+      where: '${SalesTable.kisaanName} = ? AND ${SalesTable.zamindarName} = ?',
+      whereArgs: [kisaanName, zamindarName],
+    );
+    for (final row in invoiceRows) {
+      final invoiceNumber = row[SalesTable.invoiceNumber] as String;
+      await txn.delete(
+        SaleItemsTable.name,
+        where: '${SaleItemsTable.invoiceNumber} = ?',
+        whereArgs: [invoiceNumber],
+      );
+    }
+
+    await txn.delete(
+      SalesTable.name,
+      where: '${SalesTable.kisaanName} = ? AND ${SalesTable.zamindarName} = ?',
+      whereArgs: [kisaanName, zamindarName],
+    );
+    await txn.delete(
+      PaymentsTable.name,
+      where:
+          '${PaymentsTable.kisaanName} = ? AND ${PaymentsTable.zamindarName} = ?',
+      whereArgs: [kisaanName, zamindarName],
+    );
+    await txn.delete(
+      LedgerTransactionTable.name,
+      where: '${LedgerTransactionTable.kisaanId} = ?',
+      whereArgs: [kisaanId],
     );
   }
 
@@ -345,7 +1271,9 @@ class DatabaseHelper {
 
   Future<int> insertProduct(ProductItem product) async {
     final db = await database;
-    return db.insert(ProductTable.name, product.toMap());
+    final result = await db.insert(ProductTable.name, product.toMap());
+    notifyListeners();
+    return result;
   }
 
   Future<ProductItem?> getProduct(int id) async {
@@ -372,21 +1300,25 @@ class DatabaseHelper {
 
   Future<int> updateProduct(ProductItem product) async {
     final db = await database;
-    return db.update(
+    final result = await db.update(
       ProductTable.name,
       product.toMap(),
       where: '${ProductTable.id} = ?',
       whereArgs: [product.id],
     );
+    notifyListeners();
+    return result;
   }
 
   Future<int> deleteProduct(int id) async {
     final db = await database;
-    return db.delete(
+    final result = await db.delete(
       ProductTable.name,
       where: '${ProductTable.id} = ?',
       whereArgs: [id],
     );
+    notifyListeners();
+    return result;
   }
 
   // -----------------------------
@@ -395,7 +1327,12 @@ class DatabaseHelper {
 
   Future<int> insertLedgerTransaction(LedgerTransaction transaction) async {
     final db = await database;
-    return db.insert(LedgerTransactionTable.name, transaction.toMap());
+    final result = await db.insert(
+      LedgerTransactionTable.name,
+      transaction.toMap(),
+    );
+    notifyListeners();
+    return result;
   }
 
   Future<LedgerTransaction?> getLedgerTransaction(int id) async {
@@ -411,17 +1348,124 @@ class DatabaseHelper {
     return LedgerTransaction.fromMap(maps.first);
   }
 
+  /// Unified ledger feed for a zamindar, including joined kisaan name.
+  Future<List<Map<String, dynamic>>> getLedgerTransactions(
+    int zamindarId, {
+    int? limit,
+  }) async {
+    final db = await database;
+    final limitClause = limit != null ? ' LIMIT $limit' : '';
+    return db.rawQuery('''
+      SELECT lt.*, k.${KisaanTable.nameColumn} AS kisaan_name
+      FROM ${LedgerTransactionTable.name} lt
+      LEFT JOIN ${KisaanTable.name} k
+        ON lt.${LedgerTransactionTable.kisaanId} = k.${KisaanTable.id}
+      WHERE lt.${LedgerTransactionTable.zamindarId} = ?
+      ORDER BY lt.${LedgerTransactionTable.dateTime} DESC$limitClause
+    ''', [zamindarId]);
+  }
+
+  /// Seasons that actually appear on this zamindar's ledger rows.
+  Future<List<String>> getDistinctSeasonsForZamindar(int zamindarId) async {
+    final db = await database;
+    final rows = await db.rawQuery(
+      '''
+      SELECT DISTINCT ${LedgerTransactionTable.season} AS season
+      FROM ${LedgerTransactionTable.name}
+      WHERE ${LedgerTransactionTable.zamindarId} = ?
+        AND ${LedgerTransactionTable.season} IS NOT NULL
+        AND TRIM(${LedgerTransactionTable.season}) != ''
+      ORDER BY season ASC
+      ''',
+      [zamindarId],
+    );
+    return rows
+        .map((row) => (row['season'] as String?)?.trim() ?? '')
+        .where((season) => season.isNotEmpty)
+        .toList();
+  }
+
+  /// Compact "Product xQty" summary for an invoice's sale line items.
+  Future<String> getSaleItemsSummaryForInvoice(String invoiceNumber) async {
+    if (invoiceNumber.trim().isEmpty) return '';
+    final db = await database;
+    final items = await db.query(
+      SaleItemsTable.name,
+      columns: [SaleItemsTable.productName, SaleItemsTable.quantity],
+      where: '${SaleItemsTable.invoiceNumber} = ?',
+      whereArgs: [invoiceNumber],
+    );
+    if (items.isEmpty) return '';
+    return items
+        .map((item) {
+          final name = item[SaleItemsTable.productName] as String? ?? 'Item';
+          final qty = item[SaleItemsTable.quantity];
+          return '$name x$qty';
+        })
+        .join(', ');
+  }
+
+  /// Batch item summaries keyed by invoice number.
+  Future<Map<String, String>> getSaleItemsSummariesForInvoices(
+    Iterable<String> invoiceNumbers,
+  ) async {
+    final unique = invoiceNumbers
+        .map((n) => n.trim())
+        .where((n) => n.isNotEmpty)
+        .toSet()
+        .toList();
+    if (unique.isEmpty) return {};
+
+    final db = await database;
+    final placeholders = List.filled(unique.length, '?').join(',');
+    final rows = await db.rawQuery(
+      '''
+      SELECT ${SaleItemsTable.invoiceNumber},
+             ${SaleItemsTable.productName},
+             ${SaleItemsTable.quantity}
+      FROM ${SaleItemsTable.name}
+      WHERE ${SaleItemsTable.invoiceNumber} IN ($placeholders)
+      ORDER BY ${SaleItemsTable.id} ASC
+      ''',
+      unique,
+    );
+
+    final Map<String, List<String>> grouped = {};
+    for (final row in rows) {
+      final invoice = row[SaleItemsTable.invoiceNumber] as String? ?? '';
+      if (invoice.isEmpty) continue;
+      final name = row[SaleItemsTable.productName] as String? ?? 'Item';
+      final qty = row[SaleItemsTable.quantity];
+      grouped.putIfAbsent(invoice, () => []).add('$name x$qty');
+    }
+
+    return {
+      for (final entry in grouped.entries) entry.key: entry.value.join(', '),
+    };
+  }
+
   Future<List<LedgerTransaction>> getLedgerTransactionsForZamindar(
     int zamindarId,
   ) async {
+    final rows = await getLedgerTransactions(zamindarId);
+    return rows.map(LedgerTransaction.fromMap).toList();
+  }
+
+  /// Sum of customer cash received (cash sales + udhar repayments),
+  /// excluding upfront advance wallet deposits.
+  Future<int> getTotalPaymentsReceived(int zamindarId) async {
     final db = await database;
-    final maps = await db.query(
-      LedgerTransactionTable.name,
-      where: '${LedgerTransactionTable.zamindarId} = ?',
-      whereArgs: [zamindarId],
-      orderBy: '${LedgerTransactionTable.dateTime} DESC',
+    final result = await db.rawQuery(
+      '''
+        SELECT COALESCE(SUM(${LedgerTransactionTable.amount}), 0) AS total
+        FROM ${LedgerTransactionTable.name}
+        WHERE ${LedgerTransactionTable.zamindarId} = ?
+          AND ${LedgerTransactionTable.type} = ?
+          AND UPPER(${LedgerTransactionTable.category}) NOT IN ('ADVANCE', 'ADVANCE_PAYMENT')
+      ''',
+      [zamindarId, LedgerTransactionType.credit],
     );
-    return maps.map(LedgerTransaction.fromMap).toList();
+    return _readIntValue(result.first['total']);
   }
 
   Future<List<LedgerTransaction>> getAllLedgerTransactions() async {
@@ -430,26 +1474,38 @@ class DatabaseHelper {
       LedgerTransactionTable.name,
       orderBy: '${LedgerTransactionTable.dateTime} DESC',
     );
+
+    debugPrint(
+      'DATABASE DEBUG: getAllLedgerTransactions() fetched ${maps.length} raw rows',
+    );
+    if (maps.isNotEmpty) {
+      debugPrint('DATABASE DEBUG: First transaction: ${maps.first}');
+    }
+
     return maps.map(LedgerTransaction.fromMap).toList();
   }
 
   Future<int> updateLedgerTransaction(LedgerTransaction transaction) async {
     final db = await database;
-    return db.update(
+    final result = await db.update(
       LedgerTransactionTable.name,
       transaction.toMap(),
       where: '${LedgerTransactionTable.id} = ?',
       whereArgs: [transaction.id],
     );
+    notifyListeners();
+    return result;
   }
 
   Future<int> deleteLedgerTransaction(int id) async {
     final db = await database;
-    return db.delete(
+    final result = await db.delete(
       LedgerTransactionTable.name,
       where: '${LedgerTransactionTable.id} = ?',
       whereArgs: [id],
     );
+    notifyListeners();
+    return result;
   }
 
   // -----------------------------
@@ -489,7 +1545,7 @@ class DatabaseHelper {
 
     final zamindarRows = await db.query(
       ZamindarTable.name,
-      columns: [ZamindarTable.creditLimit],
+      columns: [ZamindarTable.creditLimit, ZamindarTable.nameColumn],
       where: '${ZamindarTable.id} = ?',
       whereArgs: [zamindarId],
       limit: 1,
@@ -499,34 +1555,27 @@ class DatabaseHelper {
 
     final creditLimit =
         (zamindarRows.first[ZamindarTable.creditLimit] as int?) ?? 0;
+    final zamindarName =
+        zamindarRows.first[ZamindarTable.nameColumn] as String? ?? '';
 
-    final salesResult = await db.rawQuery(
-      '''
-        SELECT COALESCE(SUM(${LedgerTransactionTable.amount}), 0) AS total_sales
-        FROM ${LedgerTransactionTable.name}
-        WHERE ${LedgerTransactionTable.zamindarId} = ?
-          AND ${LedgerTransactionTable.type} = ?
-      ''',
-      [zamindarId, LedgerTransactionType.debit],
-    );
+    // Sales schema is the source of truth for invoices and collections.
+    final salesWithDetails = await getSalesForZamindar(zamindarName);
+    var totalSales = 0;
+    var totalPayments = 0;
 
-    final paymentsResult = await db.rawQuery(
-      '''
-        SELECT COALESCE(SUM(${LedgerTransactionTable.amount}), 0) AS total_payments
-        FROM ${LedgerTransactionTable.name}
-        WHERE ${LedgerTransactionTable.zamindarId} = ?
-          AND ${LedgerTransactionTable.type} = ?
-      ''',
-      [zamindarId, LedgerTransactionType.credit],
-    );
+    for (final saleData in salesWithDetails) {
+      final sale = saleData['sale'] as Map<String, dynamic>;
+      totalSales += (sale[SalesTable.totalPayable] as num).round();
+      totalPayments += (saleData['totalCollected'] as num).round();
+    }
 
-    final totalSales = _readIntValue(salesResult.first['total_sales']);
-    final totalPayments = _readIntValue(paymentsResult.first['total_payments']);
-    final outstandingBalance = totalSales - totalPayments;
+    final rawOutstanding = totalSales - totalPayments;
+    final outstandingBalance = rawOutstanding < 0 ? 0 : rawOutstanding;
 
     return {
       'totalSales': totalSales,
       'totalPayments': totalPayments,
+      'totalDebits': totalSales,
       'outstandingBalance': outstandingBalance,
       'isOverLimit': outstandingBalance > creditLimit,
     };
@@ -538,6 +1587,14 @@ class DatabaseHelper {
       throw ArgumentError('Zamindar with id $zamindarId was not found.');
     }
     return balances;
+  }
+
+  /// Centralized formatted outstanding balance for all Zamindar UI screens.
+  Future<String> getOutstandingBalanceString(int zamindarId) async {
+    final balances = await getZamindarBalancesSafe(zamindarId);
+    if (balances == null) return "Rs. 0";
+    final int outstanding = balances['outstandingBalance'] as int? ?? 0;
+    return "Rs. ${_indianCurrencyFormat.format(outstanding)}";
   }
 
   Future<int> countKisaansForZamindar(int zamindarId) async {
@@ -644,6 +1701,10 @@ class DatabaseHelper {
         LedgerTransactionTable.season: season,
       });
 
+      debugPrint(
+        'DATABASE DEBUG: Inserted SALE transaction - season="$season", amount=$netAmount, dateTime=${_formatDateTime(dateTime)}',
+      );
+
       if (!isCredit) {
         await txn.insert(LedgerTransactionTable.name, {
           LedgerTransactionTable.zamindarId: zamindarId,
@@ -679,6 +1740,113 @@ class DatabaseHelper {
         );
       }
     });
+
+    // Notify listeners that database has changed
+    notifyListeners();
+  }
+
+  /// Gets the next invoice number by querying the latest invoice from the sales table
+  /// Returns a String in format 'INV-XXXX' (e.g., 'INV-1000', 'INV-1001', etc.)
+  /// This method is thread-safe and always returns a unique invoice number
+  Future<String> getNextInvoiceNumber() async {
+    final db = await database;
+
+    // Fetch the latest invoice by sorting descending
+    final maps = await db.query(
+      SalesTable.name,
+      columns: [SalesTable.invoiceNumber],
+      orderBy: 'ROWID DESC',
+      limit: 1,
+    );
+
+    if (maps.isEmpty) {
+      return 'INV-1000'; // Default baseline for a completely clean DB
+    }
+
+    final latestInvoice = maps.first[SalesTable.invoiceNumber] as String;
+
+    // Extract digits using a regular expression (e.g., "INV-1024" -> "1024")
+    final numMatch = RegExp(r'\d+').stringMatch(latestInvoice);
+    if (numMatch != null) {
+      final nextNum = int.parse(numMatch) + 1;
+      return 'INV-$nextNum';
+    }
+
+    // Fallback if parsing fails
+    return 'INV-1000';
+  }
+
+  /// Fetches complete invoice data for editing via invoice_number
+  /// Returns a map with all necessary information to reconstruct the sale
+  Future<Map<String, dynamic>?> getInvoiceDataByInvoiceNumber(
+    String invoiceNumber,
+  ) async {
+    final db = await database;
+
+    // Fetch the main sale record
+    final salesMaps = await db.query(
+      SalesTable.name,
+      where: '${SalesTable.invoiceNumber} = ?',
+      whereArgs: [invoiceNumber],
+      limit: 1,
+    );
+
+    if (salesMaps.isEmpty) return null;
+
+    final sale = salesMaps.first;
+
+    // Fetch associated line items
+    final itemsMaps = await db.query(
+      SaleItemsTable.name,
+      where: '${SaleItemsTable.invoiceNumber} = ?',
+      whereArgs: [invoiceNumber],
+    );
+
+    // Fetch associated payments
+    final paymentsMaps = await db.query(
+      PaymentsTable.name,
+      where: '${PaymentsTable.invoiceNumber} = ?',
+      whereArgs: [invoiceNumber],
+    );
+
+    final zamindarName = sale[SalesTable.zamindarName] as String;
+    final kisaanName = sale[SalesTable.kisaanName] as String?;
+    final totalPayable = (sale[SalesTable.totalPayable] as num).toDouble();
+    final initialPaid = (sale[SalesTable.paidAmount] as num).toDouble();
+    final paymentMethod = sale[SalesTable.paymentMethod] as String;
+    final dateTimeStr = sale[SalesTable.dateTime] as String;
+    final season = sale[SalesTable.season] as String;
+
+    // Calculate total collected
+    final totalCollected =
+        _sumPaymentsCollected(initialPaid, paymentsMaps);
+
+    // Convert line items to a format suitable for the edit form
+    final items = itemsMaps.map((item) {
+      return {
+        'productName': item[SaleItemsTable.productName] as String,
+        'productType': item[SaleItemsTable.productType] as String,
+        'qty': (item[SaleItemsTable.quantity] as num).toDouble(),
+        'unitPrice': (item[SaleItemsTable.unitPrice] as num).toDouble(),
+        'seasonalIncrement':
+            (item[SaleItemsTable.seasonalIncrement] as num?)?.toDouble() ?? 0,
+        'discount':
+            (item[SaleItemsTable.itemDiscount] as num?)?.toDouble() ?? 0,
+      };
+    }).toList();
+
+    return {
+      'invoiceNumber': invoiceNumber,
+      'zamindarName': zamindarName,
+      'kisaanName': kisaanName,
+      'items': items,
+      'totalPayable': totalPayable,
+      'totalCollected': totalCollected,
+      'isCredit': paymentMethod.toLowerCase() == 'credit',
+      'season': season,
+      'dateTime': dateTimeStr,
+      'payments': paymentsMaps,
+    };
   }
 
   /// Returns product inventory rows with a runtime-calculated status.
@@ -757,6 +1925,936 @@ class DatabaseHelper {
   static DateTime _parseDateTime(String value) {
     return DateTime.tryParse(value) ?? DateTime.now();
   }
+
+  /// Removes a single invoice and all linked sales, payments, and ledger rows.
+  Future<void> deleteInvoiceEntirely(String invoiceNumber) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      await txn.delete(
+        SaleItemsTable.name,
+        where: '${SaleItemsTable.invoiceNumber} = ?',
+        whereArgs: [invoiceNumber],
+      );
+      await txn.delete(
+        SalesTable.name,
+        where: '${SalesTable.invoiceNumber} = ?',
+        whereArgs: [invoiceNumber],
+      );
+      await txn.delete(
+        PaymentsTable.name,
+        where: '${PaymentsTable.invoiceNumber} = ?',
+        whereArgs: [invoiceNumber],
+      );
+      await txn.delete(
+        LedgerTransactionTable.name,
+        where: '${LedgerTransactionTable.invoiceNumber} = ?',
+        whereArgs: [invoiceNumber],
+      );
+    });
+    notifyListeners();
+  }
+
+  /// Wipes all transactional business data while preserving table schemas.
+  /// Product inventory is intentionally left intact.
+  Future<void> truncateFullDatabase() async {
+    final db = await database;
+    final tables = [
+      SaleItemsTable.name,
+      PaymentsTable.name,
+      LedgerTransactionTable.name,
+      SalesTable.name,
+      KisaanTable.name,
+      ZamindarTable.name,
+    ];
+
+    await db.transaction((txn) async {
+      for (final table in tables) {
+        await txn.delete(table);
+        await txn.rawDelete(
+          'DELETE FROM sqlite_sequence WHERE name = ?',
+          [table],
+        );
+      }
+    });
+
+    notifyListeners();
+  }
+
+  // -----------------------------
+  // New Three-Table Schema CRUD Operations
+  // -----------------------------
+
+  /// Inserts a new sale into the sales table with its line items.
+  /// For Cash sales against a registered Zamindar, automatically draws down
+  /// the advance wallet and returns financial breakdown for the UI overlay.
+  Future<Map<String, dynamic>> insertSale({
+    required String invoiceNumber,
+    required DateTime dateTime,
+    required String zamindarName,
+    String? kisaanName,
+    required List<SaleLineItem> items,
+    required double overallDiscount,
+    required double paidAmount,
+    required String paymentMethod,
+    required String productType,
+    required String season,
+  }) async {
+    final isCashSale = paymentMethod == 'Cash';
+    double totalAdvanceBefore = 0;
+    double drawdown = 0;
+    double remainingAdvance = 0;
+    double remainingPhysicalCash = 0;
+    double effectivePaidAmount = paidAmount;
+
+    final db = await database;
+    await db.transaction((txn) async {
+      // Calculate totals
+      final subtotal = items.fold<double>(
+        0.0,
+        (sum, item) => sum + (item.qty * item.unitPrice),
+      );
+      final itemDiscountsTotal = items.fold<double>(
+        0.0,
+        (sum, item) => sum + item.discount,
+      );
+      final seasonalIncrementTotal = items.fold<double>(0.0, (sum, item) {
+        if (paymentMethod == 'Credit') {
+          return sum + 0;
+        }
+        return sum;
+      });
+      final totalPayable =
+          subtotal +
+          seasonalIncrementTotal -
+          itemDiscountsTotal -
+          overallDiscount;
+
+      remainingPhysicalCash = totalPayable;
+
+      int? advanceZamindarId;
+      if (isCashSale) {
+        final zamindarRows = await txn.query(
+          ZamindarTable.name,
+          columns: [
+            ZamindarTable.id,
+            ZamindarTable.advanceBalance,
+          ],
+          where: '${ZamindarTable.nameColumn} = ?',
+          whereArgs: [zamindarName],
+          limit: 1,
+        );
+
+        if (zamindarRows.isNotEmpty) {
+          advanceZamindarId = zamindarRows.first[ZamindarTable.id] as int;
+          final originalAdvanceBalance = _readIntValue(
+            zamindarRows.first[ZamindarTable.advanceBalance],
+          );
+          totalAdvanceBefore = originalAdvanceBalance.toDouble();
+          drawdown = totalPayable >= originalAdvanceBalance
+              ? originalAdvanceBalance.toDouble()
+              : totalPayable;
+          remainingAdvance = totalAdvanceBefore - drawdown;
+          remainingPhysicalCash = totalPayable - drawdown;
+          effectivePaidAmount = remainingPhysicalCash;
+        }
+      }
+
+      final usesAdvanceWallet =
+          isCashSale && drawdown > 0 && advanceZamindarId != null;
+      final salePaidAmount = usesAdvanceWallet ? 0.0 : effectivePaidAmount;
+
+      // Step 1: Insert the sale parent record first (FK target for payments).
+      await txn.insert(SalesTable.name, {
+        SalesTable.invoiceNumber: invoiceNumber,
+        SalesTable.dateTime: _formatDateTime(dateTime),
+        SalesTable.zamindarName: zamindarName,
+        SalesTable.kisaanName: kisaanName,
+        SalesTable.subtotal: subtotal,
+        SalesTable.itemDiscountsTotal: itemDiscountsTotal,
+        SalesTable.seasonalIncrementTotal: seasonalIncrementTotal,
+        SalesTable.overallDiscount: overallDiscount,
+        SalesTable.totalPayable: totalPayable,
+        SalesTable.paidAmount: salePaidAmount,
+        SalesTable.paymentMethod: paymentMethod,
+        SalesTable.season: season,
+      });
+
+      // Insert line items into sale_items table
+      for (final item in items) {
+        final itemSubtotal = (item.qty * item.unitPrice) - item.discount;
+        await txn.insert(SaleItemsTable.name, {
+          SaleItemsTable.invoiceNumber: invoiceNumber,
+          SaleItemsTable.productName: item.productName,
+          SaleItemsTable.productType: productType,
+          SaleItemsTable.quantity: item.qty.round(),
+          SaleItemsTable.unitPrice: item.unitPrice,
+          SaleItemsTable.seasonalIncrement: 0,
+          SaleItemsTable.itemDiscount: item.discount,
+          SaleItemsTable.subtotal: itemSubtotal,
+        });
+      }
+
+      // Decrement product stock
+      for (final item in items) {
+        if (item.productId == null) continue;
+        final rows = await txn.query(
+          ProductTable.name,
+          columns: [ProductTable.availableStock],
+          where: '${ProductTable.id} = ?',
+          whereArgs: [item.productId],
+          limit: 1,
+        );
+        if (rows.isEmpty) continue;
+        final currentStock = _readIntValue(
+          rows.first[ProductTable.availableStock],
+        );
+        final nextStock = (currentStock - item.qty.ceil()).clamp(0, 1 << 31);
+        await txn.update(
+          ProductTable.name,
+          {ProductTable.availableStock: nextStock},
+          where: '${ProductTable.id} = ?',
+          whereArgs: [item.productId],
+        );
+      }
+
+      // Step 2: Insert ledger transaction log bound to this invoice.
+      String? walletPaymentId;
+      String? cashPaymentId;
+
+      if (usesAdvanceWallet) {
+        walletPaymentId = await generateNextPaymentId(txn, isAdvance: false);
+        if (remainingPhysicalCash > 0) {
+          cashPaymentId = await generateNextPaymentId(txn, isAdvance: false);
+        }
+      }
+
+      await _insertLedgerEntriesForSale(
+        txn,
+        invoiceNumber: invoiceNumber,
+        zamindarName: zamindarName,
+        kisaanName: kisaanName,
+        description: items
+            .map((item) => '${item.productName} x${item.qty.round()}')
+            .join(' · '),
+        totalPayable: totalPayable,
+        paidAmount: usesAdvanceWallet ? remainingPhysicalCash : effectivePaidAmount,
+        paymentMethod: paymentMethod,
+        season: season,
+        dateTime: dateTime,
+        advanceDrawdown: drawdown,
+        walletPaymentId: walletPaymentId,
+        cashPaymentId: cashPaymentId,
+      );
+
+      // Step 3: Advance wallet + physical cash payment rows.
+      if (usesAdvanceWallet) {
+        await txn.update(
+          ZamindarTable.name,
+          {ZamindarTable.advanceBalance: remainingAdvance.round()},
+          where: '${ZamindarTable.id} = ?',
+          whereArgs: [advanceZamindarId],
+        );
+
+        await txn.insert(PaymentsTable.name, {
+          PaymentsTable.paymentId: walletPaymentId,
+          PaymentsTable.invoiceNumber: invoiceNumber,
+          PaymentsTable.dateTime: _formatDateTime(dateTime),
+          PaymentsTable.zamindarName: zamindarName,
+          PaymentsTable.kisaanName: kisaanName,
+          PaymentsTable.amountPaid: drawdown,
+          PaymentsTable.paymentMethod: 'Advance Wallet Deduction',
+          PaymentsTable.season: season,
+        });
+
+        if (cashPaymentId != null && remainingPhysicalCash > 0) {
+          await txn.insert(PaymentsTable.name, {
+            PaymentsTable.paymentId: cashPaymentId,
+            PaymentsTable.invoiceNumber: invoiceNumber,
+            PaymentsTable.dateTime: _formatDateTime(dateTime),
+            PaymentsTable.zamindarName: zamindarName,
+            PaymentsTable.kisaanName: kisaanName,
+            PaymentsTable.amountPaid: remainingPhysicalCash,
+            PaymentsTable.paymentMethod: 'Cash',
+            PaymentsTable.season: season,
+          });
+        }
+      }
+    });
+
+    notifyListeners();
+
+    return {
+      'success': true,
+      'zamindarName': zamindarName,
+      'kisaanName': kisaanName,
+      'totalAdvanceBefore': totalAdvanceBefore,
+      'deductedAmount': drawdown,
+      'remainingAdvance': remainingAdvance,
+      'remainingPhysicalCash': remainingPhysicalCash,
+      'hadAdvanceDeduction': isCashSale && drawdown > 0,
+    };
+  }
+
+  /// Gets all sales with their associated items and payments
+  Future<List<Map<String, dynamic>>> getAllSalesWithDetails({
+    String? season,
+  }) async {
+    final db = await database;
+
+    final salesMaps = await db.query(
+      SalesTable.name,
+      where: season != null ? '${SalesTable.season} = ?' : null,
+      whereArgs: season != null ? [season] : null,
+      orderBy: '${SalesTable.dateTime} DESC',
+    );
+
+    final salesWithDetails = <Map<String, dynamic>>[];
+
+    for (final saleMap in salesMaps) {
+      final invoiceNumber = saleMap[SalesTable.invoiceNumber] as String;
+
+      // Get line items for this invoice
+      final itemsMaps = await db.query(
+        SaleItemsTable.name,
+        where: '${SaleItemsTable.invoiceNumber} = ?',
+        whereArgs: [invoiceNumber],
+      );
+
+      // Get payments for this invoice
+      final paymentsMaps = await db.query(
+        PaymentsTable.name,
+        where: '${PaymentsTable.invoiceNumber} = ?',
+        whereArgs: [invoiceNumber],
+      );
+
+      // Calculate total collected (initial paid + subsequent payments)
+      final initialPaid =
+          (saleMap[SalesTable.paidAmount] as num?)?.toDouble() ?? 0.0;
+      final totalCollected =
+          _sumPaymentsCollected(initialPaid, paymentsMaps);
+
+      salesWithDetails.add({
+        'sale': saleMap,
+        'items': itemsMaps,
+        'payments': paymentsMaps,
+        'totalCollected': totalCollected,
+      });
+    }
+
+    return salesWithDetails;
+  }
+
+  /// Gets sales for a specific zamindar
+  Future<List<Map<String, dynamic>>> getSalesForZamindar(
+    String zamindarName, {
+    String? season,
+  }) async {
+    final db = await database;
+    final salesMaps = await db.query(
+      SalesTable.name,
+      where: '${SalesTable.zamindarName} = ?',
+      whereArgs: [zamindarName],
+      orderBy: '${SalesTable.dateTime} DESC',
+    );
+
+    final salesWithDetails = <Map<String, dynamic>>[];
+
+    for (final saleMap in salesMaps) {
+      final invoiceNumber = saleMap[SalesTable.invoiceNumber] as String;
+
+      final itemsMaps = await db.query(
+        SaleItemsTable.name,
+        where: '${SaleItemsTable.invoiceNumber} = ?',
+        whereArgs: [invoiceNumber],
+      );
+
+      final paymentsMaps = await db.query(
+        PaymentsTable.name,
+        where: '${PaymentsTable.invoiceNumber} = ?',
+        whereArgs: [invoiceNumber],
+      );
+
+      final initialPaid =
+          (saleMap[SalesTable.paidAmount] as num?)?.toDouble() ?? 0.0;
+      final totalCollected =
+          _sumPaymentsCollected(initialPaid, paymentsMaps);
+
+      salesWithDetails.add({
+        'sale': saleMap,
+        'items': itemsMaps,
+        'payments': paymentsMaps,
+        'totalCollected': totalCollected,
+      });
+    }
+
+    return salesWithDetails;
+  }
+
+  /// Inserts a payment settlement for a specific invoice.
+  /// [invoiceNumber] must reference an existing sale — never pass synthetic values.
+  Future<String> insertPayment({
+    String? paymentId,
+    required String invoiceNumber,
+    required int zamindarId,
+    required DateTime dateTime,
+    required String zamindarName,
+    String? kisaanName,
+    int? kisaanId,
+    required double amountPaid,
+    required String paymentMethod,
+    required String season,
+  }) async {
+    if (invoiceNumber.trim().isEmpty) {
+      throw ArgumentError(
+        'invoiceNumber is required for invoice-scoped settlements.',
+      );
+    }
+
+    final remainingBalance = await getInvoiceRemainingBalance(invoiceNumber);
+    if (amountPaid > remainingBalance + 0.01) {
+      throw StateError(
+        'Payment amount exceeds invoice remaining balance '
+        '(Rs ${remainingBalance.toStringAsFixed(0)}).',
+      );
+    }
+
+    final db = await database;
+    late final String resolvedPaymentId;
+    await db.transaction((txn) async {
+      resolvedPaymentId = paymentId ??
+          await generateNextPaymentId(txn, isAdvance: false);
+
+      await txn.insert(PaymentsTable.name, {
+        PaymentsTable.paymentId: resolvedPaymentId,
+        PaymentsTable.invoiceNumber: invoiceNumber,
+        PaymentsTable.dateTime: _formatDateTime(dateTime),
+        PaymentsTable.zamindarName: zamindarName,
+        PaymentsTable.kisaanName: kisaanName,
+        PaymentsTable.amountPaid: amountPaid,
+        PaymentsTable.paymentMethod: paymentMethod,
+        PaymentsTable.season: season,
+      });
+
+      await txn.insert(LedgerTransactionTable.name, {
+        LedgerTransactionTable.zamindarId: zamindarId,
+        LedgerTransactionTable.kisaanId: kisaanId,
+        LedgerTransactionTable.invoiceNumber: invoiceNumber,
+        LedgerTransactionTable.paymentId: resolvedPaymentId,
+        LedgerTransactionTable.type: LedgerTransactionType.credit,
+        LedgerTransactionTable.category: 'PAYMENT',
+        LedgerTransactionTable.description: 'Payment for $invoiceNumber',
+        LedgerTransactionTable.amount: amountPaid.round(),
+        LedgerTransactionTable.dateTime: _formatDateTime(dateTime),
+        LedgerTransactionTable.season: season,
+      });
+    });
+
+    notifyListeners();
+    return resolvedPaymentId;
+  }
+
+  /// Outstanding debt for a Kisaan based on sales minus all payments collected.
+  /// Debt = Sum(total_payable) - Sum(paid_amount + subsequent payments) per invoice.
+  Future<double> getKisaanSalesOutstandingDebt({
+    required int zamindarId,
+    required String kisaanName,
+  }) async {
+    final zamindar = await getZamindar(zamindarId);
+    if (zamindar == null) return 0.0;
+
+    final db = await database;
+    final invoices = await db.rawQuery(
+      '''
+        SELECT s.${SalesTable.invoiceNumber},
+               s.${SalesTable.totalPayable},
+               s.${SalesTable.paidAmount},
+               COALESCE((
+                 SELECT SUM(p.${PaymentsTable.amountPaid})
+                 FROM ${PaymentsTable.name} p
+                 WHERE p.${PaymentsTable.invoiceNumber} = s.${SalesTable.invoiceNumber}
+               ), 0) AS total_collected
+        FROM ${SalesTable.name} s
+        WHERE s.${SalesTable.zamindarName} = ?
+          AND s.${SalesTable.kisaanName} = ?
+      ''',
+      [zamindar.name, kisaanName],
+    );
+
+    double debt = 0.0;
+    for (final inv in invoices) {
+      final totalPayable =
+          (inv[SalesTable.totalPayable] as num?)?.toDouble() ?? 0.0;
+      final initialPaid =
+          (inv[SalesTable.paidAmount] as num?)?.toDouble() ?? 0.0;
+      final additionalPayments =
+          (inv['total_collected'] as num?)?.toDouble() ?? 0.0;
+      final remaining = totalPayable - initialPaid - additionalPayments;
+      if (remaining > 0) debt += remaining;
+    }
+    return debt;
+  }
+
+  Future<double> getKisaanSalesOutstandingDebtById({
+    required int zamindarId,
+    required int kisaanId,
+  }) async {
+    final kisaan = await getKisaan(kisaanId);
+    if (kisaan == null) return 0.0;
+    return getKisaanSalesOutstandingDebt(
+      zamindarId: zamindarId,
+      kisaanName: kisaan.name,
+    );
+  }
+
+  /// Allocates a bulk Kisaan payment across unpaid invoices oldest-first (FIFO).
+  Future<void> settleKisaanBulkPayment({
+    required int zamindarId,
+    required String kisaanName,
+    required double amountPaid,
+    required String paymentMethod,
+    required String season,
+  }) async {
+    if (amountPaid <= 0) {
+      throw ArgumentError('amountPaid must be greater than zero.');
+    }
+
+    final outstanding = await getKisaanSalesOutstandingDebt(
+      zamindarId: zamindarId,
+      kisaanName: kisaanName,
+    );
+    if (amountPaid > outstanding + 0.01) {
+      throw StateError(
+        'Payment amount exceeds Kisaan outstanding debt '
+        '(Rs ${outstanding.toStringAsFixed(0)}).',
+      );
+    }
+
+    final zamindar = await getZamindar(zamindarId);
+    if (zamindar == null) {
+      throw StateError('Zamindar not found.');
+    }
+
+    int? kisaanId;
+    final kisaans = await getKisaansForZamindar(zamindarId);
+    for (final k in kisaans) {
+      if (k.name == kisaanName) {
+        kisaanId = k.id;
+        break;
+      }
+    }
+
+    final db = await database;
+    await db.transaction((txn) async {
+      double remainingCash = amountPaid;
+
+      final List<Map<String, dynamic>> invoices = await txn.rawQuery(
+        '''
+          SELECT s.${SalesTable.invoiceNumber},
+                 s.${SalesTable.totalPayable},
+                 s.${SalesTable.zamindarName},
+                 s.${SalesTable.paidAmount}
+          FROM ${SalesTable.name} s
+          WHERE s.${SalesTable.zamindarName} = ?
+            AND s.${SalesTable.kisaanName} = ?
+          ORDER BY s.${SalesTable.dateTime} ASC
+        ''',
+        [zamindar.name, kisaanName],
+      );
+
+      for (var inv in invoices) {
+        if (remainingCash <= 0) break;
+
+        final invoiceNumber = inv[SalesTable.invoiceNumber] as String;
+        final totalPayable =
+            (inv[SalesTable.totalPayable] as num).toDouble();
+        final initialPaid = (inv[SalesTable.paidAmount] as num).toDouble();
+
+        final paymentsResult = await txn.rawQuery(
+          '''
+            SELECT COALESCE(SUM(${PaymentsTable.amountPaid}), 0) AS total_collected
+            FROM ${PaymentsTable.name}
+            WHERE ${PaymentsTable.invoiceNumber} = ?
+          ''',
+          [invoiceNumber],
+        );
+        final additionalPayments =
+            (paymentsResult.first['total_collected'] as num).toDouble();
+
+        final remainingDebt = totalPayable - initialPaid - additionalPayments;
+        if (remainingDebt <= 0) continue;
+
+        final allocation = remainingCash >= remainingDebt
+            ? remainingDebt
+            : remainingCash;
+        final now = DateTime.now();
+        final paymentId = await generateNextPaymentId(txn, isAdvance: false);
+
+        await txn.insert(PaymentsTable.name, {
+          PaymentsTable.paymentId: paymentId,
+          PaymentsTable.invoiceNumber: invoiceNumber,
+          PaymentsTable.dateTime: _formatDateTime(now),
+          PaymentsTable.zamindarName: inv[SalesTable.zamindarName],
+          PaymentsTable.kisaanName: kisaanName,
+          PaymentsTable.amountPaid: allocation,
+          PaymentsTable.paymentMethod: paymentMethod,
+          PaymentsTable.season: season,
+        });
+
+        await txn.insert(LedgerTransactionTable.name, {
+          LedgerTransactionTable.zamindarId: zamindarId,
+          LedgerTransactionTable.kisaanId: kisaanId,
+          LedgerTransactionTable.invoiceNumber: invoiceNumber,
+          LedgerTransactionTable.paymentId: paymentId,
+          LedgerTransactionTable.type: LedgerTransactionType.credit,
+          LedgerTransactionTable.category: 'PAYMENT',
+          LedgerTransactionTable.description: 'Payment for $invoiceNumber',
+          LedgerTransactionTable.amount: allocation.round(),
+          LedgerTransactionTable.dateTime: _formatDateTime(now),
+          LedgerTransactionTable.season: season,
+        });
+
+        remainingCash -= allocation;
+      }
+    });
+
+    notifyListeners();
+  }
+
+  /// Records a kisaan-level settlement via FIFO invoice allocation.
+  Future<void> recordKisaanSettlement({
+    required int zamindarId,
+    required int kisaanId,
+    required double amountPaid,
+    required String season,
+    String paymentMethod = 'Cash',
+  }) async {
+    final kisaan = await getKisaan(kisaanId);
+    if (kisaan == null) {
+      throw StateError('Kisaan not found.');
+    }
+    await settleKisaanBulkPayment(
+      zamindarId: zamindarId,
+      kisaanName: kisaan.name,
+      amountPaid: amountPaid,
+      paymentMethod: paymentMethod,
+      season: season,
+    );
+  }
+
+  /// Gets all payments
+  Future<List<Map<String, dynamic>>> getAllPayments({String? season}) async {
+    final db = await database;
+    String? whereClause;
+    List<dynamic>? whereArgs;
+
+    if (season != null) {
+      whereClause = '${PaymentsTable.season} = ?';
+      whereArgs = [season];
+    }
+
+    return await db.query(
+      PaymentsTable.name,
+      where: whereClause,
+      whereArgs: whereArgs,
+      orderBy: '${PaymentsTable.dateTime} DESC',
+    );
+  }
+
+  /// Gets payments for a specific invoice
+  Future<List<Map<String, dynamic>>> getPaymentsForInvoice(
+    String invoiceNumber,
+  ) async {
+    final db = await database;
+    return await db.query(
+      PaymentsTable.name,
+      where: '${PaymentsTable.invoiceNumber} = ?',
+      whereArgs: [invoiceNumber],
+      orderBy: '${PaymentsTable.dateTime} DESC',
+    );
+  }
+
+  /// Calculates remaining balance for an invoice
+  Future<double> getInvoiceRemainingBalance(String invoiceNumber) async {
+    final db = await database;
+
+    // Get the sale record
+    final saleMaps = await db.query(
+      SalesTable.name,
+      where: '${SalesTable.invoiceNumber} = ?',
+      whereArgs: [invoiceNumber],
+      limit: 1,
+    );
+
+    if (saleMaps.isEmpty) return 0.0;
+
+    final totalPayable =
+        (saleMaps.first[SalesTable.totalPayable] as num?)?.toDouble() ?? 0.0;
+    final initialPaid =
+        (saleMaps.first[SalesTable.paidAmount] as num?)?.toDouble() ?? 0.0;
+
+    // Get all payments for this invoice
+    final paymentsMaps = await db.query(
+      PaymentsTable.name,
+      where: '${PaymentsTable.invoiceNumber} = ?',
+      whereArgs: [invoiceNumber],
+    );
+
+    final totalCollected = _sumPaymentsCollected(initialPaid, paymentsMaps);
+
+    return totalPayable - totalCollected;
+  }
+
+  /// Updates an existing sale (for edit functionality)
+  Future<void> updateSaleInNewSchema({
+    required String invoiceNumber,
+    required DateTime dateTime,
+    required String zamindarName,
+    String? kisaanName,
+    required List<SaleLineItem> items,
+    required double overallDiscount,
+    required double paidAmount,
+    required String paymentMethod,
+    required String productType,
+    required String season,
+  }) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      // First, get old items to restore stock
+      final oldItems = await txn.query(
+        SaleItemsTable.name,
+        where: '${SaleItemsTable.invoiceNumber} = ?',
+        whereArgs: [invoiceNumber],
+      );
+
+      // Restore stock for old items
+      for (final oldItem in oldItems) {
+        final productName = oldItem[SaleItemsTable.productName] as String;
+        final oldQuantity =
+            (oldItem[SaleItemsTable.quantity] as num?)?.toInt() ?? 0;
+
+        // Find product by name to get ID
+        final products = await txn.query(
+          ProductTable.name,
+          where: '${ProductTable.nameColumn} = ?',
+          whereArgs: [productName],
+          limit: 1,
+        );
+
+        if (products.isNotEmpty) {
+          final productId = products.first[ProductTable.id] as int;
+          final currentStock = _readIntValue(
+            products.first[ProductTable.availableStock],
+          );
+          final restoredStock = (currentStock + oldQuantity).clamp(0, 1 << 31);
+
+          await txn.update(
+            ProductTable.name,
+            {ProductTable.availableStock: restoredStock},
+            where: '${ProductTable.id} = ?',
+            whereArgs: [productId],
+          );
+        }
+      }
+
+      // Delete old items
+      await txn.delete(
+        SaleItemsTable.name,
+        where: '${SaleItemsTable.invoiceNumber} = ?',
+        whereArgs: [invoiceNumber],
+      );
+
+      // Calculate new totals
+      final subtotal = items.fold<double>(
+        0.0,
+        (sum, item) => sum + (item.qty * item.unitPrice),
+      );
+      final itemDiscountsTotal = items.fold<double>(
+        0.0,
+        (sum, item) => sum + item.discount,
+      );
+      final seasonalIncrementTotal = 0.0; // Will be calculated from sale_items
+      final totalPayable =
+          subtotal +
+          seasonalIncrementTotal -
+          itemDiscountsTotal -
+          overallDiscount;
+
+      // Update sales table
+      await txn.update(
+        SalesTable.name,
+        {
+          SalesTable.dateTime: _formatDateTime(dateTime),
+          SalesTable.zamindarName: zamindarName,
+          SalesTable.kisaanName: kisaanName,
+          SalesTable.subtotal: subtotal,
+          SalesTable.itemDiscountsTotal: itemDiscountsTotal,
+          SalesTable.seasonalIncrementTotal: seasonalIncrementTotal,
+          SalesTable.overallDiscount: overallDiscount,
+          SalesTable.totalPayable: totalPayable,
+          SalesTable.paidAmount: paidAmount,
+          SalesTable.paymentMethod: paymentMethod,
+          SalesTable.season: season,
+        },
+        where: '${SalesTable.invoiceNumber} = ?',
+        whereArgs: [invoiceNumber],
+      );
+
+      // Insert new items
+      for (final item in items) {
+        final itemSubtotal = (item.qty * item.unitPrice) - item.discount;
+        await txn.insert(SaleItemsTable.name, {
+          SaleItemsTable.invoiceNumber: invoiceNumber,
+          SaleItemsTable.productName: item.productName,
+          SaleItemsTable.productType: productType,
+          SaleItemsTable.quantity: item.qty.round(),
+          SaleItemsTable.unitPrice: item.unitPrice,
+          SaleItemsTable.seasonalIncrement: 0,
+          SaleItemsTable.itemDiscount: item.discount,
+          SaleItemsTable.subtotal: itemSubtotal,
+        });
+      }
+
+      // Decrement stock for new items
+      for (final item in items) {
+        if (item.productId == null) continue;
+        final rows = await txn.query(
+          ProductTable.name,
+          columns: [ProductTable.availableStock],
+          where: '${ProductTable.id} = ?',
+          whereArgs: [item.productId],
+          limit: 1,
+        );
+        if (rows.isEmpty) continue;
+        final currentStock = _readIntValue(
+          rows.first[ProductTable.availableStock],
+        );
+        final nextStock = (currentStock - item.qty.ceil()).clamp(0, 1 << 31);
+        await txn.update(
+          ProductTable.name,
+          {ProductTable.availableStock: nextStock},
+          where: '${ProductTable.id} = ?',
+          whereArgs: [item.productId],
+        );
+      }
+    });
+
+    // Notify listeners that database has changed
+    notifyListeners();
+  }
+
+  // -----------------------------
+  // Advance Payment Methods
+  // -----------------------------
+
+  /// Updates the advance balance for a Zamindar
+  Future<int> updateAdvanceBalance(int zamindarId, int newBalance) async {
+    final db = await database;
+    final result = await db.update(
+      ZamindarTable.name,
+      {ZamindarTable.advanceBalance: newBalance},
+      where: '${ZamindarTable.id} = ?',
+      whereArgs: [zamindarId],
+    );
+    notifyListeners();
+    return result;
+  }
+
+  /// Gets the current advance balance for a Zamindar
+  Future<int> getAdvanceBalance(int zamindarId) async {
+    final db = await database;
+    final result = await db.query(
+      ZamindarTable.name,
+      columns: [ZamindarTable.advanceBalance],
+      where: '${ZamindarTable.id} = ?',
+      whereArgs: [zamindarId],
+      limit: 1,
+    );
+
+    if (result.isEmpty) return 0;
+    return _readIntValue(result.first[ZamindarTable.advanceBalance]);
+  }
+
+  /// Adds to the advance balance and creates a ledger entry
+  Future<void> receiveAdvancePayment({
+    required int zamindarId,
+    required int amount,
+    required DateTime dateTime,
+    required String season,
+  }) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      final zamindarMaps = await txn.query(
+        ZamindarTable.name,
+        columns: [
+          ZamindarTable.advanceBalance,
+          ZamindarTable.nameColumn,
+        ],
+        where: '${ZamindarTable.id} = ?',
+        whereArgs: [zamindarId],
+        limit: 1,
+      );
+
+      if (zamindarMaps.isEmpty) {
+        throw StateError('Zamindar not found.');
+      }
+
+      final zamindarName =
+          zamindarMaps.first[ZamindarTable.nameColumn] as String;
+      final currentBalance =
+          _readIntValue(zamindarMaps.first[ZamindarTable.advanceBalance]);
+      final newBalance = currentBalance + amount;
+
+      await txn.update(
+        ZamindarTable.name,
+        {ZamindarTable.advanceBalance: newBalance},
+        where: '${ZamindarTable.id} = ?',
+        whereArgs: [zamindarId],
+      );
+
+      final paymentId = await generateNextPaymentId(txn, isAdvance: true);
+      final formattedDateTime = _formatDateTime(dateTime);
+
+      await txn.insert(PaymentsTable.name, {
+        PaymentsTable.paymentId: paymentId,
+        PaymentsTable.invoiceNumber: null,
+        PaymentsTable.dateTime: formattedDateTime,
+        PaymentsTable.zamindarName: zamindarName,
+        PaymentsTable.kisaanName: null,
+        PaymentsTable.amountPaid: amount,
+        PaymentsTable.paymentMethod: 'Cash',
+        PaymentsTable.season: season,
+      });
+
+      await txn.insert(LedgerTransactionTable.name, {
+        LedgerTransactionTable.zamindarId: zamindarId,
+        LedgerTransactionTable.kisaanId: null,
+        LedgerTransactionTable.invoiceNumber: null,
+        LedgerTransactionTable.paymentId: paymentId,
+        LedgerTransactionTable.type: LedgerTransactionType.credit,
+        LedgerTransactionTable.category: 'ADVANCE_PAYMENT',
+        LedgerTransactionTable.description: 'Advance payment received',
+        LedgerTransactionTable.amount: amount,
+        LedgerTransactionTable.dateTime: formattedDateTime,
+        LedgerTransactionTable.season: season,
+      });
+    });
+
+    notifyListeners();
+  }
+
+  /// Gets the 'Self' Kisaan for a Zamindar
+  Future<Kisaan?> getSelfKisaan(int zamindarId) async {
+    final db = await database;
+    final maps = await db.query(
+      KisaanTable.name,
+      where: '${KisaanTable.zamindarId} = ? AND ${KisaanTable.nameColumn} = ?',
+      whereArgs: [zamindarId, 'Self'],
+      limit: 1,
+    );
+
+    if (maps.isEmpty) return null;
+    return Kisaan.fromMap(maps.first);
+  }
 }
 
 /// =========================
@@ -779,6 +2877,7 @@ class ZamindarTable {
   static const String activeSeasons = 'active_seasons';
   static const String activeCrops = 'active_crops';
   static const String isDraft = 'is_draft';
+  static const String advanceBalance = 'advance_balance';
 }
 
 class KisaanTable {
@@ -797,6 +2896,7 @@ class ProductTable {
   static const String id = 'id';
   static const String nameColumn = 'name';
   static const String brand = 'brand';
+  static const String productType = 'product_type';
   static const String packagingSize = 'packaging_size';
   static const String costPrice = 'cost_price';
   static const String retailPrice = 'retail_price';
@@ -813,6 +2913,11 @@ class LedgerTransactionTable {
   static const String id = 'id';
   static const String zamindarId = 'zamindar_id';
   static const String kisaanId = 'kisaan_id';
+
+  // ➕ New Explicit Linkage Keys
+  static const String invoiceNumber = 'invoice_number';
+  static const String paymentId = 'payment_id';
+
   static const String type = 'type';
   static const String category = 'category';
   static const String description = 'description';
@@ -824,6 +2929,47 @@ class LedgerTransactionTable {
 class LedgerTransactionType {
   static const String debit = 'DEBIT';
   static const String credit = 'CREDIT';
+}
+
+class SalesTable {
+  static const String name = 'sales';
+  static const String invoiceNumber = 'invoice_number';
+  static const String dateTime = 'date_time';
+  static const String zamindarName = 'zamindar_name';
+  static const String kisaanName = 'kisaan_name';
+  static const String subtotal = 'subtotal';
+  static const String itemDiscountsTotal = 'item_discounts_total';
+  static const String seasonalIncrementTotal = 'seasonal_increment_total';
+  static const String overallDiscount = 'overall_discount';
+  static const String totalPayable = 'total_payable';
+  static const String paidAmount = 'paid_amount';
+  static const String paymentMethod = 'payment_method';
+  static const String season = 'season';
+}
+
+class SaleItemsTable {
+  static const String name = 'sale_items';
+  static const String id = 'id';
+  static const String invoiceNumber = 'invoice_number';
+  static const String productName = 'product_name';
+  static const String productType = 'product_type';
+  static const String quantity = 'quantity';
+  static const String unitPrice = 'unit_price';
+  static const String seasonalIncrement = 'seasonal_increment';
+  static const String itemDiscount = 'item_discount';
+  static const String subtotal = 'subtotal';
+}
+
+class PaymentsTable {
+  static const String name = 'payments';
+  static const String paymentId = 'payment_id';
+  static const String invoiceNumber = 'invoice_number';
+  static const String dateTime = 'date_time';
+  static const String zamindarName = 'zamindar_name';
+  static const String kisaanName = 'kisaan_name';
+  static const String amountPaid = 'amount_paid';
+  static const String paymentMethod = 'payment_method';
+  static const String season = 'season';
 }
 
 /// =========================
@@ -848,6 +2994,7 @@ class Zamindar {
   final int activeKisaans;
   final bool isOverLimit;
   final bool isDraft;
+  final int advanceBalance;
 
   const Zamindar({
     this.id,
@@ -867,6 +3014,7 @@ class Zamindar {
     this.activeKisaans = 0,
     this.isOverLimit = false,
     this.isDraft = false,
+    this.advanceBalance = 0,
   });
 
   double get totalLandAcres => landArea;
@@ -890,6 +3038,7 @@ class Zamindar {
     int? activeKisaans,
     bool? isOverLimit,
     bool? isDraft,
+    int? advanceBalance,
   }) {
     return Zamindar(
       id: id ?? this.id,
@@ -909,6 +3058,7 @@ class Zamindar {
       activeKisaans: activeKisaans ?? this.activeKisaans,
       isOverLimit: isOverLimit ?? this.isOverLimit,
       isDraft: isDraft ?? this.isDraft,
+      advanceBalance: advanceBalance ?? this.advanceBalance,
     );
   }
 
@@ -934,6 +3084,7 @@ class Zamindar {
     ZamindarTable.activeSeasons: activeSeasons.join(','),
     ZamindarTable.activeCrops: activeCrops.join(','),
     ZamindarTable.isDraft: isDraft ? 1 : 0,
+    ZamindarTable.advanceBalance: advanceBalance,
   };
 
   factory Zamindar.fromMap(Map<String, Object?> map) {
@@ -958,6 +3109,7 @@ class Zamindar {
           .where((item) => item.isNotEmpty)
           .toList(),
       isDraft: _parseIntValue(map[ZamindarTable.isDraft]) == 1,
+      advanceBalance: _parseIntValue(map[ZamindarTable.advanceBalance]),
     );
   }
 }
@@ -1007,6 +3159,7 @@ class ProductItem {
   final int? id;
   final String name;
   final String brand;
+  final String productType;
   final String packagingSize;
   final int costPrice;
   final int retailPrice;
@@ -1021,6 +3174,7 @@ class ProductItem {
     this.id,
     required this.name,
     required this.brand,
+    this.productType = 'Fertilizer',
     required this.packagingSize,
     required this.costPrice,
     required this.retailPrice,
@@ -1045,6 +3199,7 @@ class ProductItem {
   Map<String, Object?> toMap() => {
     ProductTable.nameColumn: name,
     ProductTable.brand: brand,
+    ProductTable.productType: productType,
     ProductTable.packagingSize: packagingSize,
     ProductTable.costPrice: costPrice,
     ProductTable.retailPrice: retailPrice,
@@ -1061,6 +3216,7 @@ class ProductItem {
       id: map[ProductTable.id] as int?,
       name: map[ProductTable.nameColumn] as String,
       brand: map[ProductTable.brand] as String,
+      productType: map[ProductTable.productType] as String? ?? 'Fertilizer',
       packagingSize: map[ProductTable.packagingSize] as String,
       costPrice: map[ProductTable.costPrice] as int,
       retailPrice: map[ProductTable.retailPrice] as int,
@@ -1080,6 +3236,8 @@ class LedgerTransaction {
   final int? id;
   final int zamindarId;
   final int? kisaanId;
+  final String? invoiceNumber;
+  final String? paymentId;
   final String type;
   final String category;
   final String description;
@@ -1091,6 +3249,8 @@ class LedgerTransaction {
     this.id,
     required this.zamindarId,
     this.kisaanId,
+    this.invoiceNumber,
+    this.paymentId,
     required this.type,
     required this.category,
     required this.description,
@@ -1102,6 +3262,8 @@ class LedgerTransaction {
   Map<String, Object?> toMap() => {
     LedgerTransactionTable.zamindarId: zamindarId,
     LedgerTransactionTable.kisaanId: kisaanId,
+    LedgerTransactionTable.invoiceNumber: invoiceNumber,
+    LedgerTransactionTable.paymentId: paymentId,
     LedgerTransactionTable.type: type,
     LedgerTransactionTable.category: category,
     LedgerTransactionTable.description: description,
@@ -1115,6 +3277,8 @@ class LedgerTransaction {
       id: map[LedgerTransactionTable.id] as int?,
       zamindarId: map[LedgerTransactionTable.zamindarId] as int,
       kisaanId: map[LedgerTransactionTable.kisaanId] as int?,
+      invoiceNumber: map[LedgerTransactionTable.invoiceNumber] as String?,
+      paymentId: map[LedgerTransactionTable.paymentId] as String?,
       type: map[LedgerTransactionTable.type] as String,
       category: map[LedgerTransactionTable.category] as String,
       description: map[LedgerTransactionTable.description] as String,

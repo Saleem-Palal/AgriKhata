@@ -12,8 +12,9 @@ class ProductsScreen extends StatefulWidget {
 
 class _ProductsScreenState extends State<ProductsScreen> {
   final TextEditingController _searchController = TextEditingController();
-  String _selectedBrand = "All brands";
-  String _selectedStatus = "All status";
+  String _selectedCategory = "All";
+  ProductItem? _selectedProduct;
+  bool _showAddForm = false;
 
   List<ProductItem> _products = [];
   bool _isLoading = true;
@@ -31,17 +32,14 @@ class _ProductsScreenState extends State<ProductsScreen> {
     180, // Actions (Edit, Delete, Restock)
   ];
 
-  final List<String> _statusOptions = [
-    "All status",
-    "In Stock",
-    "Low Stock",
-    "Expired",
+  final List<String> _categories = [
+    "All",
+    "Fertilizer",
+    "Pesticide",
+    "Herbicide",
+    "Seed",
+    "Equipment",
   ];
-
-  List<String> get _brandOptions {
-    final brands = _products.map((p) => p.brand).toSet().toList()..sort();
-    return ["All brands", ...brands];
-  }
 
   List<ProductItem> get _filteredProducts {
     return _products.where((p) {
@@ -51,14 +49,25 @@ class _ProductsScreenState extends State<ProductsScreen> {
           p.name.toLowerCase().contains(query) ||
           p.brand.toLowerCase().contains(query);
 
-      final matchesBrand =
-          _selectedBrand == "All brands" || p.brand == _selectedBrand;
+      final matchesCategory = _selectedCategory == "All" || p.productType == _selectedCategory;
 
-      final matchesStatus =
-          _selectedStatus == "All status" || p.statusLabel == _selectedStatus;
-
-      return matchesSearch && matchesBrand && matchesStatus;
+      return matchesSearch && matchesCategory;
     }).toList();
+  }
+
+  double get _totalInventoryVolume {
+    return _products.fold(0.0, (sum, p) => sum + p.availableStock);
+  }
+
+  double get _totalInventoryValue {
+    return _products.fold(
+      0.0,
+      (sum, p) => sum + (p.retailPrice * p.availableStock),
+    );
+  }
+
+  int get _alertsCount {
+    return _products.where((p) => p.isLowStock || p.isExpired).length;
   }
 
   @override
@@ -66,10 +75,15 @@ class _ProductsScreenState extends State<ProductsScreen> {
     super.initState();
     _searchController.addListener(() => setState(() {}));
     _loadProducts();
+    
+    // Listen for database changes and auto-refresh
+    DatabaseHelper.instance.addListener(_onDatabaseChanged);
   }
 
-  Future<void> _loadProducts() async {
-    setState(() => _isLoading = true);
+  void _onDatabaseChanged() => _loadProducts(showLoading: false);
+
+  Future<void> _loadProducts({bool showLoading = true}) async {
+    if (showLoading) setState(() => _isLoading = true);
     try {
       final products = await DatabaseHelper.instance.getAllProducts();
       setState(() {
@@ -85,94 +99,57 @@ class _ProductsScreenState extends State<ProductsScreen> {
   @override
   void dispose() {
     _searchController.dispose();
+    // Remove database listener to prevent memory leaks
+    DatabaseHelper.instance.removeListener(_onDatabaseChanged);
     super.dispose();
   }
 
-  Future<void> _openAddProductPanel() async {
-    await showGeneralDialog(
-      context: context,
-      barrierDismissible: true,
-      barrierLabel: "Add New Product",
-      barrierColor: AppColors.darkGreen.withValues(alpha: 0.3),
-      transitionDuration: const Duration(milliseconds: 250),
-      pageBuilder: (context, anim1, anim2) {
-        return Align(
-          alignment: Alignment.centerRight,
-          child: SizedBox(
-            width: 360,
-            height: double.infinity,
-            child: _AddProductPanel(
-              onSaved: (product) async {
-                try {
-                  await DatabaseHelper.instance.insertProduct(product);
-                  await _loadProducts();
-                  if (mounted) Navigator.pop(context);
-                } catch (e) {
-                  debugPrint('Error saving product: $e');
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Error saving product: $e')),
-                    );
-                  }
-                }
-              },
-              onCancel: () => Navigator.pop(context),
-            ),
-          ),
-        );
-      },
-      transitionBuilder: (context, anim1, anim2, child) {
-        final offset = Tween<Offset>(
-          begin: const Offset(1, 0),
-          end: Offset.zero,
-        ).animate(CurvedAnimation(parent: anim1, curve: Curves.easeOut));
-        return SlideTransition(position: offset, child: child);
-      },
-    );
+  void _openAddProductPanel() {
+    setState(() {
+      _showAddForm = true;
+      _selectedProduct = null;
+    });
   }
 
-  Future<void> _openEditProductPanel(ProductItem product) async {
-    await showGeneralDialog(
-      context: context,
-      barrierDismissible: true,
-      barrierLabel: "Edit Product",
-      barrierColor: AppColors.darkGreen.withValues(alpha: 0.3),
-      transitionDuration: const Duration(milliseconds: 250),
-      pageBuilder: (context, anim1, anim2) {
-        return Align(
-          alignment: Alignment.centerRight,
-          child: SizedBox(
-            width: 360,
-            height: double.infinity,
-            child: _AddProductPanel(
-              product: product,
-              onSaved: (updatedProduct) async {
-                try {
-                  await DatabaseHelper.instance.updateProduct(updatedProduct);
-                  await _loadProducts();
-                  if (mounted) Navigator.pop(context);
-                } catch (e) {
-                  debugPrint('Error updating product: $e');
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Error updating product: $e')),
-                    );
-                  }
-                }
-              },
-              onCancel: () => Navigator.pop(context),
-            ),
+  void _openEditProductPanel(ProductItem product) {
+    setState(() {
+      _showAddForm = true;
+      _selectedProduct = product;
+    });
+  }
+
+  Future<void> _saveProduct(ProductItem product) async {
+    try {
+      if (product.id == null) {
+        await DatabaseHelper.instance.insertProduct(product);
+      } else {
+        await DatabaseHelper.instance.updateProduct(product);
+      }
+      await _loadProducts();
+      setState(() {
+        _showAddForm = false;
+        _selectedProduct = null;
+      });
+    } catch (e) {
+      debugPrint('Error saving product: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(
+          SnackBar(
+            content: Text('Error saving product: $e'),
+            duration: const Duration(minutes: 1),
           ),
         );
-      },
-      transitionBuilder: (context, anim1, anim2, child) {
-        final offset = Tween<Offset>(
-          begin: const Offset(1, 0),
-          end: Offset.zero,
-        ).animate(CurvedAnimation(parent: anim1, curve: Curves.easeOut));
-        return SlideTransition(position: offset, child: child);
-      },
-    );
+      }
+    }
+  }
+
+  void _closePanel() {
+    setState(() {
+      _showAddForm = false;
+      _selectedProduct = null;
+    });
   }
 
   Future<void> _deleteProduct(ProductItem product) async {
@@ -204,14 +181,22 @@ class _ProductsScreenState extends State<ProductsScreen> {
         await _loadProducts();
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Product deleted successfully')),
+            const SnackBar(
+              content: Text('Product deleted successfully'),
+              duration: Duration(minutes: 1),
+            ),
           );
         }
       } catch (e) {
         debugPrint('Error deleting product: $e');
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error deleting product: $e')),
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(
+            SnackBar(
+              content: Text('Error deleting product: $e'),
+              duration: const Duration(minutes: 1),
+            ),
           );
         }
       }
@@ -219,7 +204,11 @@ class _ProductsScreenState extends State<ProductsScreen> {
   }
 
   Future<void> _restockProduct(ProductItem product) async {
-    final controller = TextEditingController();
+    final qtyController = TextEditingController();
+    final costController = TextEditingController(
+      text: product.costPrice.toString(),
+    );
+    
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -234,14 +223,72 @@ class _ProductsScreenState extends State<ProductsScreen> {
             ),
             const SizedBox(height: 12),
             TextField(
-              controller: controller,
+              controller: qtyController,
               keyboardType: TextInputType.number,
               autofocus: true,
               decoration: InputDecoration(
                 labelText: 'Add Quantity',
                 hintText: 'Enter quantity to add',
+                isDense: true,
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(8),
+                  borderSide: const BorderSide(
+                    color: Color(0xFFC6DEC9),
+                    width: 1.0,
+                  ),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: const BorderSide(
+                    color: Color(0xFFC6DEC9),
+                    width: 1.0,
+                  ),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: const BorderSide(
+                    color: AppColors.accentGreen,
+                    width: 1.5,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: costController,
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(
+                labelText: 'New Cost Price (per unit)',
+                hintText: 'Enter cost price',
+                isDense: true,
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: const BorderSide(
+                    color: Color(0xFFC6DEC9),
+                    width: 1.0,
+                  ),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: const BorderSide(
+                    color: Color(0xFFC6DEC9),
+                    width: 1.0,
+                  ),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: const BorderSide(
+                    color: AppColors.accentGreen,
+                    width: 1.5,
+                  ),
                 ),
               ),
             ),
@@ -254,6 +301,10 @@ class _ProductsScreenState extends State<ProductsScreen> {
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF2D6A4F),
+              foregroundColor: Colors.white,
+            ),
             child: const Text('Restock'),
           ),
         ],
@@ -261,15 +312,18 @@ class _ProductsScreenState extends State<ProductsScreen> {
     );
 
     if (confirmed == true && product.id != null) {
-      final addQty = int.tryParse(controller.text) ?? 0;
-      if (addQty > 0) {
+      final addQty = int.tryParse(qtyController.text) ?? 0;
+      final newCostPrice = int.tryParse(costController.text) ?? 0;
+      
+      if (addQty > 0 && newCostPrice > 0) {
         try {
           final updatedProduct = ProductItem(
             id: product.id,
             name: product.name,
             brand: product.brand,
+            productType: product.productType,
             packagingSize: product.packagingSize,
-            costPrice: product.costPrice,
+            costPrice: newCostPrice,
             retailPrice: product.retailPrice,
             seasonalIncrement: product.seasonalIncrement,
             availableStock: product.availableStock + addQty,
@@ -283,7 +337,10 @@ class _ProductsScreenState extends State<ProductsScreen> {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text('Added $addQty ${product.uom} to stock'),
+                content: Text(
+                  'Added $addQty ${product.uom} to stock · Cost price updated to Rs $newCostPrice',
+                ),
+                duration: const Duration(minutes: 1),
               ),
             );
           }
@@ -291,13 +348,26 @@ class _ProductsScreenState extends State<ProductsScreen> {
           debugPrint('Error restocking product: $e');
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Error restocking product: $e')),
+              SnackBar(
+                content: Text('Error restocking product: $e'),
+                duration: const Duration(minutes: 1),
+              ),
             );
           }
         }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Please enter valid quantity and cost price'),
+              duration: Duration(minutes: 1),
+            ),
+          );
+        }
       }
     }
-    controller.dispose();
+    qtyController.dispose();
+    costController.dispose();
   }
 
   @override
@@ -322,108 +392,185 @@ class _ProductsScreenState extends State<ProductsScreen> {
         Expanded(
           child: _isLoading
               ? const Center(child: CircularProgressIndicator())
-              : SingleChildScrollView(
-                  padding: const EdgeInsets.all(20),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _buildSearchRow(),
-                      const SizedBox(height: 14),
-                      _buildTable(filtered),
-                      const SizedBox(height: 8),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 2),
-                        child: Text(
-                          "Showing ${filtered.length} of ${_products.length} products  ·  $lowStockCount low stock  ·  $expiredCount expired",
-                          style: const TextStyle(
-                            fontSize: 11,
-                            color: AppColors.textMuted,
-                          ),
+              : Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: SingleChildScrollView(
+                        padding: const EdgeInsets.all(20),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _buildKPICards(),
+                            const SizedBox(height: 20),
+                            _buildTabFilters(),
+                            const SizedBox(height: 14),
+                            _buildTable(filtered),
+                            const SizedBox(height: 8),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 2,
+                              ),
+                              child: Text(
+                                "Showing ${filtered.length} of ${_products.length} products  ·  $lowStockCount low stock  ·  $expiredCount expired",
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  color: AppColors.textMuted,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                    ],
-                  ),
+                    ),
+                    if (_selectedProduct != null || _showAddForm)
+                      Container(
+                        width: 360,
+                        height: double.infinity,
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          border: Border(
+                            left: BorderSide(
+                              color: AppColors.border,
+                              width: 1.0,
+                            ),
+                          ),
+                        ),
+                        child: _showAddForm
+                            ? _AddProductPanel(
+                                product: _selectedProduct,
+                                onSaved: _saveProduct,
+                                onCancel: _closePanel,
+                              )
+                            : _ProductDetailPanel(
+                                product: _selectedProduct!,
+                                onClose: () =>
+                                    setState(() => _selectedProduct = null),
+                                onEdit: () =>
+                                    _openEditProductPanel(_selectedProduct!),
+                              ),
+                      ),
+                  ],
                 ),
         ),
       ],
     );
   }
 
-  Widget _buildSearchRow() {
+  Widget _buildKPICards() {
     return Row(
       children: [
         Expanded(
-          child: Container(
-            height: 38,
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(9),
-              border: Border.all(color: AppColors.sidebarBg, width: 0.5),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.search, size: 16, color: AppColors.textMuted),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: TextField(
-                    controller: _searchController,
-                    style: const TextStyle(fontSize: 12),
-                    decoration: const InputDecoration(
-                      isDense: true,
-                      border: InputBorder.none,
-                      hintText: "Search products by name or brand...",
-                      hintStyle: TextStyle(
-                        fontSize: 12,
-                        color: AppColors.sidebarText,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
+          child: _buildKPICard(
+            value: _totalInventoryVolume.toStringAsFixed(0),
+            label: "Total inventory volume",
+            valueColor: AppColors.darkGreen,
           ),
         ),
-        const SizedBox(width: 10),
-        _buildFilterDropdown(_brandOptions, _selectedBrand, (val) {
-          setState(() => _selectedBrand = val!);
-        }),
-        const SizedBox(width: 10),
-        _buildFilterDropdown(_statusOptions, _selectedStatus, (val) {
-          setState(() => _selectedStatus = val!);
-        }),
+        const SizedBox(width: 12),
+        Expanded(
+          child: _buildKPICard(
+            value: "Rs ${_fmt(_totalInventoryValue)}",
+            label: "Total value in Rs",
+            valueColor: AppColors.accentGreen,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: _buildKPICard(
+            value: _alertsCount.toString(),
+            label: "Alerts count",
+            valueColor: const Color(0xFFA32D2D),
+          ),
+        ),
       ],
     );
   }
 
-  Widget _buildFilterDropdown(
-    List<String> options,
-    String value,
-    ValueChanged<String?> onChanged,
-  ) {
+  Widget _buildKPICard({
+    required String value,
+    required String label,
+    required Color valueColor,
+  }) {
     return Container(
-      height: 38,
-      padding: const EdgeInsets.symmetric(horizontal: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(9),
-        border: Border.all(color: AppColors.sidebarBg, width: 0.5),
-      ),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<String>(
-          value: value,
-          icon: const Icon(
-            Icons.keyboard_arrow_down,
-            size: 16,
-            color: AppColors.textMuted,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.border, width: 1.0),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
           ),
-          style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
-          items: options
-              .map((opt) => DropdownMenuItem(value: opt, child: Text(opt)))
-              .toList(),
-          onChanged: onChanged,
-        ),
+          BoxShadow(
+            color: valueColor.withValues(alpha: 0.05),
+            blurRadius: 16,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 40,
+              fontWeight: FontWeight.w800,
+              color: valueColor,
+              height: 1.0,
+              letterSpacing: -1.0,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: AppColors.textMuted,
+              letterSpacing: 0.2,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTabFilters() {
+    return Row(
+      children: [
+        ..._categories.map((category) {
+          final isSelected = _selectedCategory == category;
+          return Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: InkWell(
+              onTap: () => setState(() => _selectedCategory = category),
+              borderRadius: BorderRadius.circular(6),
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 9,
+                ),
+                decoration: BoxDecoration(
+                  color: isSelected ? AppColors.darkGreen : Colors.transparent,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  category,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: isSelected ? Colors.white : AppColors.textMuted,
+                  ),
+                ),
+              ),
+            ),
+          );
+        }),
+      ],
     );
   }
 
@@ -500,90 +647,103 @@ class _ProductsScreenState extends State<ProductsScreen> {
   }
 
   Widget _buildDataRow(ProductItem p, {required bool isLast}) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-      decoration: BoxDecoration(
-        border: isLast
-            ? null
-            : const Border(
-                bottom: BorderSide(color: Color(0xFFC6DEC9), width: 1.0),
-              ),
-      ),
-      child: Row(
-        children: [
-          _cell(
-            0,
-            Text(
-              p.name,
-              style: const TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
-                color: AppColors.darkGreen,
-              ),
-            ),
-          ),
-          _cell(1, Text(p.brand, style: const TextStyle(fontSize: 12))),
-          _cell(2, Text(p.packagingSize, style: const TextStyle(fontSize: 12))),
-          _cell(
-            3,
-            Text(
-              "Rs ${_fmt(p.costPrice.toDouble())}",
-              style: const TextStyle(fontSize: 12),
-            ),
-          ),
-          _cell(
-            4,
-            Text(
-              "Rs ${_fmt(p.retailPrice.toDouble())}",
-              style: const TextStyle(fontSize: 12),
-            ),
-          ),
-          _cell(
-            5,
-            Text(
-              p.availableStock.toStringAsFixed(
-                p.availableStock.truncateToDouble() == p.availableStock ? 0 : 1,
-              ),
-              style: const TextStyle(fontSize: 12),
-            ),
-          ),
-          _cell(6, Text(p.uom, style: const TextStyle(fontSize: 12))),
-          _cell(
-            7,
-            Text(
-              _formatDate(p.expiryDate),
-              style: const TextStyle(fontSize: 12),
-            ),
-          ),
-          _cell(8, _buildStatusBadge(p)),
-          _cell(
-            9,
-            Row(
-              children: [
-                _actionButton(
-                  icon: Icons.edit,
-                  label: 'Edit',
-                  color: AppColors.accentGreen,
-                  onTap: () => _openEditProductPanel(p),
+    final isSelected = _selectedProduct?.id == p.id;
+    return InkWell(
+      onTap: () => setState(() {
+        _selectedProduct = p;
+        _showAddForm = false;
+      }),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFFEAF3DE) : Colors.transparent,
+          border: isLast
+              ? null
+              : const Border(
+                  bottom: BorderSide(color: Color(0xFFC6DEC9), width: 1.0),
                 ),
-                const SizedBox(width: 4),
-                _actionButton(
-                  icon: Icons.add_box,
-                  label: 'Restock',
-                  color: const Color(0xFF2D6A4F),
-                  onTap: () => _restockProduct(p),
+        ),
+        child: Row(
+          children: [
+            _cell(
+              0,
+              Text(
+                p.name,
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: AppColors.darkGreen,
                 ),
-                const SizedBox(width: 4),
-                _actionButton(
-                  icon: Icons.delete,
-                  label: 'Delete',
-                  color: const Color(0xFFA32D2D),
-                  onTap: () => _deleteProduct(p),
-                ),
-              ],
+              ),
             ),
-          ),
-        ],
+            _cell(1, Text(p.brand, style: const TextStyle(fontSize: 12))),
+            _cell(
+              2,
+              Text(p.packagingSize, style: const TextStyle(fontSize: 12)),
+            ),
+            _cell(
+              3,
+              Text(
+                "Rs ${_fmt(p.costPrice.toDouble())}",
+                style: const TextStyle(fontSize: 12),
+              ),
+            ),
+            _cell(
+              4,
+              Text(
+                "Rs ${_fmt(p.retailPrice.toDouble())}",
+                style: const TextStyle(fontSize: 12),
+              ),
+            ),
+            _cell(
+              5,
+              Text(
+                p.availableStock.toStringAsFixed(
+                  p.availableStock.truncateToDouble() == p.availableStock
+                      ? 0
+                      : 1,
+                ),
+                style: const TextStyle(fontSize: 12),
+              ),
+            ),
+            _cell(6, Text(p.uom, style: const TextStyle(fontSize: 12))),
+            _cell(
+              7,
+              Text(
+                _formatDate(p.expiryDate),
+                style: const TextStyle(fontSize: 12),
+              ),
+            ),
+            _cell(8, _buildStatusBadge(p)),
+            _cell(
+              9,
+              Row(
+                children: [
+                  _actionButton(
+                    icon: Icons.edit,
+                    label: 'Edit',
+                    color: AppColors.accentGreen,
+                    onTap: () => _openEditProductPanel(p),
+                  ),
+                  const SizedBox(width: 4),
+                  _actionButton(
+                    icon: Icons.add_box,
+                    label: 'Restock',
+                    color: const Color(0xFF2D6A4F),
+                    onTap: () => _restockProduct(p),
+                  ),
+                  const SizedBox(width: 4),
+                  _actionButton(
+                    icon: Icons.delete,
+                    label: 'Delete',
+                    color: const Color(0xFFA32D2D),
+                    onTap: () => _deleteProduct(p),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -671,6 +831,360 @@ class _ProductsScreenState extends State<ProductsScreen> {
   }
 }
 
+class _ProductDetailPanel extends StatelessWidget {
+  final ProductItem product;
+  final VoidCallback onClose;
+  final VoidCallback onEdit;
+
+  const _ProductDetailPanel({
+    required this.product,
+    required this.onClose,
+    required this.onEdit,
+  });
+
+  String _fmt(double value) {
+    final formatted = value.toStringAsFixed(0);
+    final chars = formatted.split('').reversed.toList();
+    final buffer = StringBuffer();
+    for (int i = 0; i < chars.length; i++) {
+      buffer.write(chars[i]);
+      final pos = i + 1;
+      if (pos == 3 || (pos > 3 && (pos - 3) % 2 == 0)) {
+        if (i != chars.length - 1) buffer.write(',');
+      }
+    }
+    return buffer.toString().split('').reversed.join('');
+  }
+
+  String _formatDate(DateTime date) {
+    return "${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year}";
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.white,
+      child: Column(
+        children: [
+          Container(
+            color: AppColors.darkGreen,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    product.name,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                InkWell(
+                  onTap: onClose,
+                  child: const Icon(
+                    Icons.close,
+                    size: 18,
+                    color: Color(0xFFA7C4A0),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: const BoxDecoration(
+              color: Color(0xFFF7F9F4),
+              border: Border(
+                bottom: BorderSide(color: Color(0xFFC6DEC9), width: 1.0),
+              ),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: onEdit,
+                    icon: const Icon(Icons.edit, size: 14),
+                    label: const Text("Edit"),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.accentGreen,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 10,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    "Product info",
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.darkGreen,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  _buildInfoRow("SKU", product.id?.toString() ?? "N/A"),
+                  _buildInfoRow(
+                    "Price",
+                    "Rs ${_fmt(product.retailPrice.toDouble())}",
+                  ),
+                  _buildInfoRow("Product Type", product.productType),
+                  _buildInfoRow("Brand", product.brand),
+                  _buildInfoRow("Available Stock", product.availableStock.toString()),
+                  _buildInfoRow("Status", product.statusLabel),
+                  const SizedBox(height: 24),
+                  const Text(
+                    "Sales statistics",
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.darkGreen,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  _SalesTrendChart(product: product),
+                  const SizedBox(height: 24),
+                  const Text(
+                    "Additional details",
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.darkGreen,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  _buildInfoRow(
+                    "Cost Price",
+                    "Rs ${_fmt(product.costPrice.toDouble())}",
+                  ),
+                  _buildInfoRow("Pack Size", product.packagingSize),
+                  _buildInfoRow("Unit of Measure", product.uom),
+                  _buildInfoRow("Expiry Date", _formatDate(product.expiryDate)),
+                  _buildInfoRow(
+                    "Low Stock Threshold",
+                    product.lowStockThreshold.toString(),
+                  ),
+                  if (product.description != null &&
+                      product.description!.isNotEmpty)
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const SizedBox(height: 8),
+                        const Text(
+                          "Description",
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.textMuted,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          product.description!,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: AppColors.darkGreen,
+                          ),
+                        ),
+                      ],
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInfoRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w500,
+              color: AppColors.textMuted,
+            ),
+          ),
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+              color: AppColors.darkGreen,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SalesTrendChart extends StatelessWidget {
+  final ProductItem product;
+
+  const _SalesTrendChart({required this.product});
+
+  @override
+  Widget build(BuildContext context) {
+    final dataPoints = _generateTrendData();
+    
+    return Container(
+      height: 180,
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F9F4),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppColors.border, width: 0.5),
+      ),
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                "Stock trend",
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textMuted,
+                ),
+              ),
+              Text(
+                "Current: ${product.availableStock}",
+                style: const TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w500,
+                  color: AppColors.accentGreen,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Expanded(
+            child: CustomPaint(
+              size: Size.infinite,
+              painter: _TrendChartPainter(dataPoints: dataPoints),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<double> _generateTrendData() {
+    final currentStock = product.availableStock.toDouble();
+    final random = currentStock.hashCode;
+    
+    final points = <double>[];
+    var value = currentStock * 0.6;
+    
+    for (int i = 0; i < 12; i++) {
+      final variation = ((random + i * 137) % 20 - 10) / 100;
+      value = value * (1 + variation);
+      value = value.clamp(0, currentStock * 1.5);
+      points.add(value);
+    }
+    
+    points.add(currentStock);
+    return points;
+  }
+}
+
+class _TrendChartPainter extends CustomPainter {
+  final List<double> dataPoints;
+
+  _TrendChartPainter({required this.dataPoints});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (dataPoints.isEmpty) return;
+
+    final maxValue = dataPoints.reduce((a, b) => a > b ? a : b);
+    final minValue = dataPoints.reduce((a, b) => a < b ? a : b);
+    final range = maxValue - minValue;
+
+    if (range == 0) return;
+
+    final paint = Paint()
+      ..color = AppColors.accentGreen
+      ..strokeWidth = 2.0
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+
+    final fillPaint = Paint()
+      ..color = AppColors.accentGreen.withValues(alpha: 0.1)
+      ..style = PaintingStyle.fill;
+
+    final path = Path();
+    final fillPath = Path();
+    final stepX = size.width / (dataPoints.length - 1);
+
+    for (int i = 0; i < dataPoints.length; i++) {
+      final x = i * stepX;
+      final normalizedValue = (dataPoints[i] - minValue) / range;
+      final y = size.height - (normalizedValue * size.height * 0.9);
+
+      if (i == 0) {
+        path.moveTo(x, y);
+        fillPath.moveTo(x, size.height);
+        fillPath.lineTo(x, y);
+      } else {
+        path.lineTo(x, y);
+        fillPath.lineTo(x, y);
+      }
+    }
+
+    fillPath.lineTo(size.width, size.height);
+    fillPath.close();
+
+    canvas.drawPath(fillPath, fillPaint);
+    canvas.drawPath(path, paint);
+
+    final dotPaint = Paint()
+      ..color = AppColors.accentGreen
+      ..style = PaintingStyle.fill;
+
+    final lastX = (dataPoints.length - 1) * stepX;
+    final lastNormalizedValue = (dataPoints.last - minValue) / range;
+    final lastY = size.height - (lastNormalizedValue * size.height * 0.9);
+    
+    canvas.drawCircle(Offset(lastX, lastY), 4, dotPaint);
+    
+    final whiteDotPaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.fill;
+    canvas.drawCircle(Offset(lastX, lastY), 2, whiteDotPaint);
+  }
+
+  @override
+  bool shouldRepaint(_TrendChartPainter oldDelegate) {
+    return oldDelegate.dataPoints != dataPoints;
+  }
+}
+
 class _AddProductPanel extends StatefulWidget {
   final void Function(ProductItem product) onSaved;
   final VoidCallback onCancel;
@@ -698,21 +1212,31 @@ class _AddProductPanelState extends State<_AddProductPanel> {
   late final TextEditingController _descriptionController;
 
   late String _selectedUom;
+  late String _selectedProductType;
   late DateTime? _expiryDate;
 
   bool get _isEditing => widget.product != null;
 
   final List<String> _uoms = ["Bags", "Bottles", "Packets", "kg", "L"];
+  final List<String> _productTypes = [
+    "Fertilizer",
+    "Pesticide",
+    "Herbicide",
+    "Seed",
+    "Equipment",
+  ];
 
   @override
   void initState() {
     super.initState();
-    
+
     final product = widget.product;
-    
+
     _nameController = TextEditingController(text: product?.name ?? '');
     _brandController = TextEditingController(text: product?.brand ?? 'Engro');
-    _packSizeController = TextEditingController(text: product?.packagingSize ?? '');
+    _packSizeController = TextEditingController(
+      text: product?.packagingSize ?? '',
+    );
     _purchaseController = TextEditingController(
       text: product != null ? _fmt(product.costPrice.toDouble()) : '3,200',
     );
@@ -728,11 +1252,15 @@ class _AddProductPanelState extends State<_AddProductPanel> {
     _thresholdController = TextEditingController(
       text: product != null ? product.lowStockThreshold.toString() : '5',
     );
-    _descriptionController = TextEditingController(text: product?.description ?? '');
-    
+    _descriptionController = TextEditingController(
+      text: product?.description ?? '',
+    );
+
     _selectedUom = product?.uom ?? 'Bags';
-    _expiryDate = product?.expiryDate ?? DateTime.now().add(const Duration(days: 365));
-    
+    _selectedProductType = product?.productType ?? 'Fertilizer';
+    _expiryDate =
+        product?.expiryDate ?? DateTime.now().add(const Duration(days: 365));
+
     for (final c in [
       _nameController,
       _brandController,
@@ -821,6 +1349,7 @@ class _AddProductPanelState extends State<_AddProductPanel> {
         id: widget.product?.id,
         name: _nameController.text.trim(),
         brand: _brandController.text.trim(),
+        productType: _selectedProductType,
         packagingSize: _packSizeController.text.trim(),
         costPrice: _purchasePrice.round(),
         retailPrice: _sellingPrice.round(),
@@ -886,6 +1415,14 @@ class _AddProductPanelState extends State<_AddProductPanel> {
                         _brandController,
                         required: true,
                         hint: "e.g. Engro, FFC",
+                      ),
+                      const SizedBox(height: 12),
+                      _dropdownField(
+                        "Product type",
+                        _selectedProductType,
+                        _productTypes,
+                        (val) => setState(() => _selectedProductType = val!),
+                        required: true,
                       ),
                       const SizedBox(height: 12),
                       _field(

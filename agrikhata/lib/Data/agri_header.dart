@@ -67,7 +67,7 @@ class AgriHeader extends StatelessWidget {
                   ),
               ],
             );
-          }).toList(),
+          }),
 
           const Spacer(),
 

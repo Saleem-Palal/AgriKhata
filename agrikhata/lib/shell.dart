@@ -1,8 +1,10 @@
 import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Database/database_helper.dart';
 import 'package:agrikhata/screens/add_zamindar_screen.dart';
+import 'package:agrikhata/screens/main_ledger_screen.dart';
 import 'package:agrikhata/screens/new_sale_screen.dart';
 import 'package:agrikhata/screens/products_screen.dart';
+import 'package:agrikhata/screens/settings_screen.dart';
 import 'package:agrikhata/screens/zamindar_directory.dart';
 import 'package:agrikhata/screens/zamindar_profile_screen.dart';
 import 'package:flutter/material.dart';
@@ -21,20 +23,43 @@ class _ShellState extends State<Shell> {
   ZamindarView _zamindarView = ZamindarView.directory;
   Zamindar? _selectedZamindar;
   int _directoryRefreshToken = 0;
-
-  static const _placeholderScreens = [
-    Center(child: Text("Dashboard")),
-    SizedBox.shrink(), // Zamindars slot — built dynamically
-    NewSaleScreen(),
-    ProductsScreen(),
-    Center(child: Text("Purchase")),
-    Center(child: Text("Ledger")),
-    Center(child: Text("Reports")),
-    Center(child: Text("Settings")),
-  ];
+  int? _preSelectedZamindarIdForSale;
+  int? _preSelectedKisaanIdForSale;
+  String? _editInvoiceNumber; // For edit mode
+  int _ledgerRefreshToken = 0; // For forcing ledger refresh
 
   void _refreshDirectory() {
     setState(() => _directoryRefreshToken++);
+  }
+
+  void _navigateToSaleWithZamindar(int zamindarId, {int? kisaanId}) {
+    setState(() {
+      _preSelectedZamindarIdForSale = zamindarId;
+      _preSelectedKisaanIdForSale = kisaanId;
+      _editInvoiceNumber =
+          null; // Clear edit mode when navigating from zamindar
+      _selectedIndex = 2; // Navigate to New Sale screen
+    });
+  }
+
+  void _navigateToEditInvoice(String invoiceNumber) {
+    setState(() {
+      _editInvoiceNumber = invoiceNumber;
+      _preSelectedZamindarIdForSale = null; // Clear pre-selection
+      _preSelectedKisaanIdForSale = null;
+      _selectedIndex = 2; // Navigate to New Sale screen in edit mode
+      _ledgerRefreshToken++; // Increment to trigger refresh when coming back
+    });
+  }
+
+  void _clearEditState() {
+    print('🧹 Shell: Clearing edit state (was: $_editInvoiceNumber)');
+    setState(() {
+      _editInvoiceNumber = null;
+      _preSelectedZamindarIdForSale = null;
+      _preSelectedKisaanIdForSale = null;
+    });
+    print('🧹 Shell: Edit state cleared (now: $_editInvoiceNumber)');
   }
 
   Widget _buildZamindarsScreen() {
@@ -82,6 +107,15 @@ class _ShellState extends State<Shell> {
             _zamindarView = ZamindarView.directory;
             _refreshDirectory();
           }),
+          onNavigateToSaleWithZamindar: selected.id != null
+              ? () => _navigateToSaleWithZamindar(selected.id!)
+              : null,
+          onNavigateToSaleWithKisaan: selected.id != null
+              ? (kisaanId) => _navigateToSaleWithZamindar(
+                  selected.id!,
+                  kisaanId: kisaanId,
+                )
+              : null,
         );
       case ZamindarView.directory:
         return ZamindarDirectoryScreen(
@@ -98,15 +132,40 @@ class _ShellState extends State<Shell> {
     }
   }
 
+  void _handleApplicationDataReset() {
+    setState(() {
+      _selectedZamindar = null;
+      _zamindarView = ZamindarView.directory;
+      _editInvoiceNumber = null;
+      _preSelectedZamindarIdForSale = null;
+      _preSelectedKisaanIdForSale = null;
+      _directoryRefreshToken++;
+      _ledgerRefreshToken++;
+    });
+  }
+
   List<Widget> get _screens => [
-    _placeholderScreens[0],
+    const Center(child: Text("Dashboard")),
     _buildZamindarsScreen(),
-    _placeholderScreens[2],
-    _placeholderScreens[3],
-    _placeholderScreens[4],
-    _placeholderScreens[5],
-    _placeholderScreens[6],
-    _placeholderScreens[7],
+    NewSaleScreen(
+      key: ValueKey(
+        '$_preSelectedZamindarIdForSale-$_preSelectedKisaanIdForSale-$_editInvoiceNumber',
+      ),
+      preSelectedZamindarId: _preSelectedZamindarIdForSale,
+      preSelectedKisaanId: _preSelectedKisaanIdForSale,
+      editInvoiceNumber: _editInvoiceNumber,
+      onCancelEdit: _clearEditState,
+    ),
+    const ProductsScreen(),
+    const Center(child: Text("Purchase")),
+    MainLedgerScreen(
+      key: ValueKey(
+        'ledger-$_ledgerRefreshToken',
+      ), // Refresh when token changes
+      onEditInvoice: _navigateToEditInvoice,
+    ),
+    const Center(child: Text("Reports")),
+    SettingsScreen(onDataReset: _handleApplicationDataReset),
   ];
 
   @override
@@ -213,6 +272,12 @@ class _ShellState extends State<Shell> {
         onTap: () => setState(() {
           _selectedIndex = index;
           if (index == 1) _zamindarView = ZamindarView.directory;
+          // Clear edit mode when manually navigating to New Sale screen
+          if (index == 2) {
+            _editInvoiceNumber = null;
+            _preSelectedZamindarIdForSale = null;
+            _preSelectedKisaanIdForSale = null;
+          }
         }),
         borderRadius: BorderRadius.circular(10),
         child: Container(

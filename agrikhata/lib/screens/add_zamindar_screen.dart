@@ -143,9 +143,12 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
     }
 
     if (mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Draft saved successfully')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Draft saved successfully'),
+          duration: Duration(minutes: 1),
+        ),
+      );
     }
 
     if (widget.onSaveZamindar != null) {
@@ -246,428 +249,441 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
                   Expanded(
                     flex: 2,
                     child: Column(
-                    children: [
-                      Column(
-                        children: [
-                          _buildFormSection(
-                            title: "Personal information",
-                            dotColor: Colors.teal,
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8.0,
-                                vertical: 4,
-                              ),
-                              child: Column(
-                                children: [
-                                  Row(
-                                    children: [
-                                      Expanded(
-                                        child: _buildTextField(
-                                          "Full name",
-                                          "e.g. Atta Muhammad",
-                                          isRequired: true,
-                                          prefixIcon:
-                                              Icons.person_outline_rounded,
-                                          controller: _nameController,
-                                        ),
-                                      ),
-                                      const SizedBox(width: 20),
-                                      Expanded(
-                                        child: _buildTextField(
-                                          "Father's name",
-                                          "e.g. Abdul Ghani",
-                                          prefixIcon: Icons.family_restroom,
-                                          controller: _fatherNameController,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  Row(
-                                    children: [
-                                      Expanded(
-                                        child: _buildTextField(
-                                          "Whatsapp number",
-                                          "e.g. 03001234567",
-                                          isRequired: true,
-                                          prefixText: "+92",
-                                          controller: _phoneController,
-                                        ),
-                                      ),
-                                      const SizedBox(width: 20),
-                                      Expanded(
-                                        child: _buildTextField(
-                                          "Village",
-                                          "e.g. Shahan Palal",
-                                          prefixIcon:
-                                              Icons.location_on_outlined,
-                                          controller: _villageController,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  _buildTextField(
-                                    "Description (optional)",
-                                    "Additional notes",
-                                    prefixIcon: Icons.description_outlined,
-                                    controller: _descriptionController,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          _buildFormSection(
-                            title: "Credit Limit & Land Details",
-                            dotColor: Colors.redAccent,
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8.0,
-                                vertical: 4,
-                              ),
-                              child: Column(
-                                children: [
-                                  _buildDropdownField(
-                                    "Payment terms",
-                                    _selectedTerm,
-                                    _paymentTerms,
-                                    (newValue) {
-                                      setState(() {
-                                        _selectedTerm = newValue!;
-                                      });
-                                    },
-                                  ),
-                                  if (_selectedTerm != 'Advance Payment') ...[
-                                    const SizedBox(height: 10),
-                                    _buildTextField(
-                                      controller: _udhaarController,
-                                      "Udhaar Limit (Rs)",
-                                      "e.g. 10000",
-                                      isRequired: true,
-                                      prefixText: "Rs",
-                                    ),
-                                    const SizedBox(height: 10),
+                      children: [
+                        Column(
+                          children: [
+                            _buildFormSection(
+                              title: "Personal information",
+                              dotColor: Colors.teal,
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8.0,
+                                  vertical: 4,
+                                ),
+                                child: Column(
+                                  children: [
                                     Row(
-                                      mainAxisAlignment:
-                                          MainAxisAlignment.start,
                                       children: [
-                                        _buildAmountPill(
-                                          "Rs 50,000",
-                                          _udhaarController,
+                                        Expanded(
+                                          child: _buildTextField(
+                                            "Full name",
+                                            "e.g. Atta Muhammad",
+                                            isRequired: true,
+                                            prefixIcon:
+                                                Icons.person_outline_rounded,
+                                            controller: _nameController,
+                                          ),
                                         ),
-                                        _buildAmountPill(
-                                          "Rs 1,00,000",
-                                          _udhaarController,
-                                        ),
-                                        _buildAmountPill(
-                                          "Rs 1,50,000",
-                                          _udhaarController,
-                                        ),
-                                        _buildAmountPill(
-                                          "Rs 2,00,000",
-                                          _udhaarController,
-                                        ),
-                                        _buildAmountPill(
-                                          "Rs 2,50,000",
-                                          _udhaarController,
-                                        ),
-                                        _buildAmountPill(
-                                          "Rs 3,00,000",
-                                          _udhaarController,
+                                        const SizedBox(width: 20),
+                                        Expanded(
+                                          child: _buildTextField(
+                                            "Father's name",
+                                            "e.g. Abdul Ghani",
+                                            prefixIcon: Icons.family_restroom,
+                                            controller: _fatherNameController,
+                                          ),
                                         ),
                                       ],
                                     ),
-                                  ],
-                                  const SizedBox(height: 10),
-                                  Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Row(
-                                        children: const [
-                                          Text(
-                                            'Land Area',
-                                            style: TextStyle(
-                                              fontSize: 12,
-                                              color: AppColors.textMuted,
-                                            ),
+                                    Row(
+                                      children: [
+                                        Expanded(
+                                          child: _buildTextField(
+                                            "Whatsapp number",
+                                            "e.g. 03001234567",
+                                            isRequired: true,
+                                            prefixText: "+92",
+                                            controller: _phoneController,
                                           ),
-                                          Text(
-                                            ' *',
-                                            style: TextStyle(
-                                              color: Colors.red,
-                                              fontSize: 12,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                      const SizedBox(height: 6),
-                                      Row(
-                                        children: [
-                                          Expanded(
-                                            flex: 2,
-                                            child: SizedBox(
-                                              height: 35,
-                                              child: TextField(
-                                                controller: _landController,
-                                                keyboardType:
-                                                    const TextInputType.numberWithOptions(
-                                                      decimal: true,
-                                                    ),
-                                                style: const TextStyle(
-                                                  fontSize: 13,
-                                                  fontWeight: FontWeight.w500,
-                                                  color: AppColors.darkGreen,
-                                                ),
-                                                textAlignVertical:
-                                                    TextAlignVertical.center,
-                                                decoration: InputDecoration(
-                                                  isDense: true,
-                                                  contentPadding:
-                                                      const EdgeInsets.symmetric(
-                                                        horizontal: 12,
-                                                        vertical: 10,
-                                                      ),
-                                                  border: OutlineInputBorder(
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                          9,
-                                                        ),
-                                                    borderSide:
-                                                        const BorderSide(
-                                                          color: AppColors
-                                                              .sidebarBg,
-                                                          width: 0.5,
-                                                        ),
-                                                  ),
-                                                  enabledBorder:
-                                                      OutlineInputBorder(
-                                                        borderRadius:
-                                                            BorderRadius.circular(
-                                                              9,
-                                                            ),
-                                                        borderSide:
-                                                            const BorderSide(
-                                                              color: AppColors
-                                                                  .sidebarBg,
-                                                              width: 0.5,
-                                                            ),
-                                                      ),
-                                                  focusedBorder:
-                                                      OutlineInputBorder(
-                                                        borderRadius:
-                                                            BorderRadius.circular(
-                                                              9,
-                                                            ),
-                                                        borderSide:
-                                                            const BorderSide(
-                                                              color: AppColors
-                                                                  .darkGreen,
-                                                              width: 1,
-                                                            ),
-                                                      ),
-                                                  hintText: 'e.g. 12',
-                                                  hintStyle: const TextStyle(
-                                                    color: AppColors.sidebarBg,
-                                                    fontWeight: FontWeight.w400,
-                                                  ),
-                                                ),
-                                                onChanged: (_) =>
-                                                    setState(() {}),
-                                              ),
-                                            ),
-                                          ),
-                                          const SizedBox(width: 10),
-                                          ...['Acre', 'Athaas'].map((unit) {
-                                            final isActive =
-                                                unit == _selectedLandUnit;
-                                            return Padding(
-                                              padding: const EdgeInsets.only(
-                                                right: 8,
-                                              ),
-                                              child: GestureDetector(
-                                                onTap: () => setState(
-                                                  () =>
-                                                      _selectedLandUnit = unit,
-                                                ),
-                                                child: Container(
-                                                  height: 35,
-                                                  padding:
-                                                      const EdgeInsets.symmetric(
-                                                        horizontal: 16,
-                                                      ),
-                                                  decoration: BoxDecoration(
-                                                    color: isActive
-                                                        ? AppColors.lightGreen
-                                                              .withValues(
-                                                                alpha: 0.15,
-                                                              )
-                                                        : Colors.white,
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                          9,
-                                                        ),
-                                                    border: Border.all(
-                                                      color: isActive
-                                                          ? AppColors.darkGreen
-                                                          : AppColors.sidebarBg,
-                                                      width: isActive ? 1 : 0.5,
-                                                    ),
-                                                  ),
-                                                  alignment: Alignment.center,
-                                                  child: Text(
-                                                    unit,
-                                                    style: TextStyle(
-                                                      fontSize: 12,
-                                                      fontWeight:
-                                                          FontWeight.w500,
-                                                      color: isActive
-                                                          ? AppColors.darkGreen
-                                                          : AppColors.textMuted,
-                                                    ),
-                                                  ),
-                                                ),
-                                              ),
-                                            );
-                                          }).toList(),
-                                        ],
-                                      ),
-                                      const SizedBox(height: 5),
-                                      if (_landController.text.isNotEmpty)
-                                        Builder(
-                                          builder: (_) {
-                                            final val =
-                                                double.tryParse(
-                                                  _landController.text,
-                                                ) ??
-                                                0;
-                                            final converted =
-                                                _selectedLandUnit == 'Acre'
-                                                ? '= ${(val / 4).toStringAsFixed(2)} Athaas'
-                                                : '= ${(val * 4).toStringAsFixed(0)} Acres';
-                                            return Text(
-                                              converted,
-                                              style: const TextStyle(
-                                                fontSize: 11,
-                                                color: AppColors.accentGreen,
-                                                fontWeight: FontWeight.w500,
-                                              ),
-                                            );
-                                          },
                                         ),
-                                    ],
-                                  ),
-                                ],
+                                        const SizedBox(width: 20),
+                                        Expanded(
+                                          child: _buildTextField(
+                                            "Village",
+                                            "e.g. Shahan Palal",
+                                            prefixIcon:
+                                                Icons.location_on_outlined,
+                                            controller: _villageController,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    _buildTextField(
+                                      "Description (optional)",
+                                      "Additional notes",
+                                      prefixIcon: Icons.description_outlined,
+                                      controller: _descriptionController,
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
-                          ),
-                          _buildFormSection(
-                            title: "Seasons & crops",
-                            dotColor: AppColors.cropDotColor,
-                            child: SeasonSelector(
-                              onSeasonsChanged: (seasons) {
-                                setState(() {
-                                  selectedSeasons = seasons;
-                                });
-                              },
-                              onCropsChanged: (crops) {
-                                setState(() {
-                                  selectedCrops = crops;
-                                });
-                              },
+                            _buildFormSection(
+                              title: "Credit Limit & Land Details",
+                              dotColor: Colors.redAccent,
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8.0,
+                                  vertical: 4,
+                                ),
+                                child: Column(
+                                  children: [
+                                    _buildDropdownField(
+                                      "Payment terms",
+                                      _selectedTerm,
+                                      _paymentTerms,
+                                      (newValue) {
+                                        setState(() {
+                                          _selectedTerm = newValue!;
+                                        });
+                                      },
+                                    ),
+                                    if (_selectedTerm != 'Advance Payment') ...[
+                                      const SizedBox(height: 10),
+                                      _buildTextField(
+                                        controller: _udhaarController,
+                                        "Udhaar Limit (Rs)",
+                                        "e.g. 10000",
+                                        isRequired: true,
+                                        prefixText: "Rs",
+                                      ),
+                                      const SizedBox(height: 10),
+                                      Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.start,
+                                        children: [
+                                          _buildAmountPill(
+                                            "Rs 50,000",
+                                            _udhaarController,
+                                          ),
+                                          _buildAmountPill(
+                                            "Rs 1,00,000",
+                                            _udhaarController,
+                                          ),
+                                          _buildAmountPill(
+                                            "Rs 1,50,000",
+                                            _udhaarController,
+                                          ),
+                                          _buildAmountPill(
+                                            "Rs 2,00,000",
+                                            _udhaarController,
+                                          ),
+                                          _buildAmountPill(
+                                            "Rs 2,50,000",
+                                            _udhaarController,
+                                          ),
+                                          _buildAmountPill(
+                                            "Rs 3,00,000",
+                                            _udhaarController,
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                    const SizedBox(height: 10),
+                                    Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: const [
+                                            Text(
+                                              'Land Area',
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                color: AppColors.textMuted,
+                                              ),
+                                            ),
+                                            Text(
+                                              ' *',
+                                              style: TextStyle(
+                                                color: Colors.red,
+                                                fontSize: 12,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 6),
+                                        Row(
+                                          children: [
+                                            Expanded(
+                                              flex: 2,
+                                              child: SizedBox(
+                                                height: 35,
+                                                child: TextField(
+                                                  controller: _landController,
+                                                  keyboardType:
+                                                      const TextInputType.numberWithOptions(
+                                                        decimal: true,
+                                                      ),
+                                                  style: const TextStyle(
+                                                    fontSize: 13,
+                                                    fontWeight: FontWeight.w500,
+                                                    color: AppColors.darkGreen,
+                                                  ),
+                                                  textAlignVertical:
+                                                      TextAlignVertical.center,
+                                                  decoration: InputDecoration(
+                                                    isDense: true,
+                                                    contentPadding:
+                                                        const EdgeInsets.symmetric(
+                                                          horizontal: 12,
+                                                          vertical: 10,
+                                                        ),
+                                                    border: OutlineInputBorder(
+                                                      borderRadius:
+                                                          BorderRadius.circular(
+                                                            9,
+                                                          ),
+                                                      borderSide:
+                                                          const BorderSide(
+                                                            color: AppColors
+                                                                .sidebarBg,
+                                                            width: 0.5,
+                                                          ),
+                                                    ),
+                                                    enabledBorder:
+                                                        OutlineInputBorder(
+                                                          borderRadius:
+                                                              BorderRadius.circular(
+                                                                9,
+                                                              ),
+                                                          borderSide:
+                                                              const BorderSide(
+                                                                color: AppColors
+                                                                    .sidebarBg,
+                                                                width: 0.5,
+                                                              ),
+                                                        ),
+                                                    focusedBorder:
+                                                        OutlineInputBorder(
+                                                          borderRadius:
+                                                              BorderRadius.circular(
+                                                                9,
+                                                              ),
+                                                          borderSide:
+                                                              const BorderSide(
+                                                                color: AppColors
+                                                                    .darkGreen,
+                                                                width: 1,
+                                                              ),
+                                                        ),
+                                                    hintText: 'e.g. 12',
+                                                    hintStyle: const TextStyle(
+                                                      color:
+                                                          AppColors.sidebarBg,
+                                                      fontWeight:
+                                                          FontWeight.w400,
+                                                    ),
+                                                  ),
+                                                  onChanged: (_) =>
+                                                      setState(() {}),
+                                                ),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 10),
+                                            ...['Acre', 'Athaas'].map((unit) {
+                                              final isActive =
+                                                  unit == _selectedLandUnit;
+                                              return Padding(
+                                                padding: const EdgeInsets.only(
+                                                  right: 8,
+                                                ),
+                                                child: GestureDetector(
+                                                  onTap: () => setState(
+                                                    () => _selectedLandUnit =
+                                                        unit,
+                                                  ),
+                                                  child: Container(
+                                                    height: 35,
+                                                    padding:
+                                                        const EdgeInsets.symmetric(
+                                                          horizontal: 16,
+                                                        ),
+                                                    decoration: BoxDecoration(
+                                                      color: isActive
+                                                          ? AppColors.lightGreen
+                                                                .withValues(
+                                                                  alpha: 0.15,
+                                                                )
+                                                          : Colors.white,
+                                                      borderRadius:
+                                                          BorderRadius.circular(
+                                                            9,
+                                                          ),
+                                                      border: Border.all(
+                                                        color: isActive
+                                                            ? AppColors
+                                                                  .darkGreen
+                                                            : AppColors
+                                                                  .sidebarBg,
+                                                        width: isActive
+                                                            ? 1
+                                                            : 0.5,
+                                                      ),
+                                                    ),
+                                                    alignment: Alignment.center,
+                                                    child: Text(
+                                                      unit,
+                                                      style: TextStyle(
+                                                        fontSize: 12,
+                                                        fontWeight:
+                                                            FontWeight.w500,
+                                                        color: isActive
+                                                            ? AppColors
+                                                                  .darkGreen
+                                                            : AppColors
+                                                                  .textMuted,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ),
+                                              );
+                                            }),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 5),
+                                        if (_landController.text.isNotEmpty)
+                                          Builder(
+                                            builder: (_) {
+                                              final val =
+                                                  double.tryParse(
+                                                    _landController.text,
+                                                  ) ??
+                                                  0;
+                                              final converted =
+                                                  _selectedLandUnit == 'Acre'
+                                                  ? '= ${(val / 4).toStringAsFixed(2)} Athaas'
+                                                  : '= ${(val * 4).toStringAsFixed(0)} Acres';
+                                              return Text(
+                                                converted,
+                                                style: const TextStyle(
+                                                  fontSize: 11,
+                                                  color: AppColors.accentGreen,
+                                                  fontWeight: FontWeight.w500,
+                                                ),
+                                              );
+                                            },
+                                          ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
                             ),
+                            _buildFormSection(
+                              title: "Seasons & crops",
+                              dotColor: AppColors.cropDotColor,
+                              child: SeasonSelector(
+                                onSeasonsChanged: (seasons) {
+                                  setState(() {
+                                    selectedSeasons = seasons;
+                                  });
+                                },
+                                onCropsChanged: (crops) {
+                                  setState(() {
+                                    selectedCrops = crops;
+                                  });
+                                },
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  SizedBox(
+                    width: 240,
+                    child: Column(
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(
+                            right: 16.0,
+                            top: 8,
+                            bottom: 5,
                           ),
-                        ],
-                      ),
-                    ],
+                          child: _buildPreviewCard(),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.only(
+                            right: 16.0,
+                            bottom: 5,
+                          ),
+                          child: _buildChecklistCard(),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.only(
+                            right: 16.0,
+                            top: 8,
+                            bottom: 5,
+                          ),
+                          child: _buildInfoCard(
+                            _nameController.text.isEmpty
+                                ? "Zamindar"
+                                : _nameController.text,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
+                ],
+              ),
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+            decoration: const BoxDecoration(
+              color: AppColors.cardSurface,
+              border: Border(
+                top: BorderSide(color: Color.fromARGB(255, 65, 113, 54)),
+              ),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: _allFieldsFilled
+                      ? Row(
+                          children: const [
+                            Icon(
+                              Icons.check_circle,
+                              size: 14,
+                              color: AppColors.accentGreen,
+                            ),
+                            SizedBox(width: 6),
+                            Text(
+                              "All required fields filled — ready to save",
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w400,
+                                color: AppColors.accentGreen,
+                              ),
+                            ),
+                          ],
+                        )
+                      : const Text(
+                          "Fill name & phone to save draft, or all fields to complete",
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w300,
+                            color: AppColors.textMuted,
+                          ),
+                        ),
                 ),
-                SizedBox(
-                  width: 240,
-                  child: Column(
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.only(
-                          right: 16.0,
-                          top: 8,
-                          bottom: 5,
-                        ),
-                        child: _buildPreviewCard(),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.only(right: 16.0, bottom: 5),
-                        child: _buildChecklistCard(),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.only(
-                          right: 16.0,
-                          top: 8,
-                          bottom: 5,
-                        ),
-                        child: _buildInfoCard(
-                          _nameController.text.isEmpty
-                              ? "Zamindar"
-                              : _nameController.text,
-                        ),
-                      ),
-                    ],
-                  ),
+                OutlinedButton(
+                  onPressed: _minimalFieldsFilled ? _handleSaveDraft : null,
+                  child: const Text("Save as Draft"),
+                ),
+                const SizedBox(width: 12),
+                ElevatedButton.icon(
+                  onPressed: _allFieldsFilled
+                      ? _handleSaveAndGoToProfile
+                      : null,
+                  icon: const Icon(Icons.arrow_forward, size: 16),
+                  label: const Text("Save & go to profile"),
                 ),
               ],
             ),
           ),
-        ),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-          decoration: const BoxDecoration(
-            color: AppColors.cardSurface,
-            border: Border(
-              top: BorderSide(color: Color.fromARGB(255, 65, 113, 54)),
-            ),
-          ),
-          child: Row(
-            children: [
-              Expanded(
-                child: _allFieldsFilled
-                    ? Row(
-                        children: const [
-                          Icon(
-                            Icons.check_circle,
-                            size: 14,
-                            color: AppColors.accentGreen,
-                          ),
-                          SizedBox(width: 6),
-                          Text(
-                            "All required fields filled — ready to save",
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w400,
-                              color: AppColors.accentGreen,
-                            ),
-                          ),
-                        ],
-                      )
-                    : const Text(
-                        "Fill name & phone to save draft, or all fields to complete",
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w300,
-                          color: AppColors.textMuted,
-                        ),
-                      ),
-              ),
-              OutlinedButton(
-                onPressed: _minimalFieldsFilled ? _handleSaveDraft : null,
-                child: const Text("Save as Draft"),
-              ),
-              const SizedBox(width: 12),
-              ElevatedButton.icon(
-                onPressed: _allFieldsFilled ? _handleSaveAndGoToProfile : null,
-                icon: const Icon(Icons.arrow_forward, size: 16),
-                label: const Text("Save & go to profile"),
-              ),
-            ],
-          ),
-        ),
-      ],
+        ],
       ),
     );
   }

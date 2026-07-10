@@ -1,9 +1,25 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import '../models/sale_models.dart';
 import '../widgets/sale_widgets.dart';
+import '../Database/database_helper.dart' as db;
+import '../utils/season_utils.dart';
+import '../utils/advance_checkout_overlay.dart';
 
 class NewSaleScreen extends StatefulWidget {
-  const NewSaleScreen({Key? key}) : super(key: key);
+  final int? preSelectedZamindarId;
+  final int? preSelectedKisaanId;
+  final String? editInvoiceNumber;
+  final VoidCallback?
+  onCancelEdit; // Callback to notify parent when edit is cancelled
+
+  const NewSaleScreen({
+    super.key,
+    this.preSelectedZamindarId,
+    this.preSelectedKisaanId,
+    this.editInvoiceNumber,
+    this.onCancelEdit,
+  });
 
   @override
   State<NewSaleScreen> createState() => _NewSaleScreenState();
@@ -11,12 +27,20 @@ class NewSaleScreen extends StatefulWidget {
 
 class _NewSaleScreenState extends State<NewSaleScreen> {
   // Controllers
-  final TextEditingController _zamindarSearchController = TextEditingController();
-  final TextEditingController _productSearchController = TextEditingController();
+  final TextEditingController _zamindarSearchController =
+      TextEditingController();
+  final TextEditingController _productSearchController =
+      TextEditingController();
   final TextEditingController _qtyController = TextEditingController(text: '1');
-  final TextEditingController _priceController = TextEditingController(text: '0');
-  final TextEditingController _seasonalIncrementController = TextEditingController(text: '0');
-  final TextEditingController _overallDiscountController = TextEditingController(text: '0');
+  final TextEditingController _priceController = TextEditingController(
+    text: '0',
+  );
+  final TextEditingController _seasonalIncrementController =
+      TextEditingController(text: '0');
+  final TextEditingController _overallDiscountController =
+      TextEditingController(text: '0');
+  final TextEditingController _walkInCustomerNameController =
+      TextEditingController();
 
   // State
   Zamindar? _selectedZamindar;
@@ -25,219 +49,507 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
   final List<CartItem> _cartItems = [];
   PaymentMethod _paymentMethod = PaymentMethod.credit;
   double _overallDiscount = 0;
-  int _invoiceNumber = 312;
+  String _invoiceNumber =
+      'INV-1000'; // Display only - actual number generated at save time
+  bool _isWalkInCustomer = false;
+  DateTime _selectedDateTime = DateTime.now();
+  bool _isDateTimeLocked = false;
+  bool _isEditMode = false;
+  String? _editingInvoiceNumber;
 
-  // Mock data
-  late final List<Zamindar> _zamindars;
-  late final List<Product> _products;
+  // Database data
+  List<Zamindar> _zamindars = [];
+  List<Product> _products = [];
+  bool _isLoading = true;
+  bool _isSaving = false;
 
   @override
   void initState() {
     super.initState();
-    _initializeMockData();
+    _loadDataFromDatabase();
+
+    // Keep zamindar/product pickers in sync across the app without clearing cart state.
+    db.DatabaseHelper.instance.addListener(_onDatabaseChanged);
   }
 
-  void _initializeMockData() {
-    _zamindars = [
-      Zamindar(
-        id: '1',
-        name: 'Zafar Magsi',
-        location: 'Jhal Magsi',
-        kisaanCount: 4,
-        isOverLimit: true,
-        kisaans: [
-          Kisaan(
-            id: 'k1',
-            name: 'Ramzan Ali',
-            village: 'Shahan Palal',
-            crop: 'Rice',
-            acres: 10,
-            zamindarId: '1',
-          ),
-          Kisaan(
-            id: 'k2',
-            name: 'Muhammad Saeed',
-            village: 'Chak 44',
-            crop: 'Wheat',
-            acres: 6,
-            zamindarId: '1',
-          ),
-          Kisaan(
-            id: 'k3',
-            name: 'Bashir Ahmed',
-            village: 'Mouza Kalan',
-            crop: 'Cotton',
-            acres: 8,
-            zamindarId: '1',
-          ),
-          Kisaan(
-            id: 'k4',
-            name: 'Ghulam Rasool',
-            village: 'Chak 12',
-            crop: 'Sugarcane',
-            acres: 5,
-            zamindarId: '1',
-          ),
-        ],
-      ),
-      Zamindar(
-        id: '2',
-        name: 'Abdul Rehman Buledi',
-        location: 'Dera Bugti',
-        kisaanCount: 3,
-        kisaans: [
-          Kisaan(
-            id: 'k5',
-            name: 'Ahmed Ali',
-            village: 'Dera Bugti',
-            crop: 'Wheat',
-            acres: 12,
-            zamindarId: '2',
-          ),
-        ],
-      ),
-      Zamindar(
-        id: '3',
-        name: 'Mir Miran Khosa',
-        location: 'Barkhan',
-        kisaanCount: 5,
-        kisaans: [],
-      ),
-      Zamindar(
-        id: '4',
-        name: 'Asif Ali Umrani',
-        location: 'Nasirabad',
-        kisaanCount: 2,
-        kisaans: [],
-      ),
-    ];
+  void _onDatabaseChanged() => _syncReferenceData();
 
-    _products = [
-      Product(
-        id: 'p1',
-        name: 'Urea Fertilizer',
-        type: ProductType.fertilizer,
-        basePrice: 3600,
-        unit: 'bag',
-      ),
-      Product(
-        id: 'p2',
-        name: 'DAP Fertilizer',
-        type: ProductType.fertilizer,
-        basePrice: 9200,
-        unit: 'bag',
-      ),
-      Product(
-        id: 'p3',
-        name: 'Karate Insecticide',
-        type: ProductType.pesticide,
-        basePrice: 1200,
-        unit: 'ml',
-      ),
-      Product(
-        id: 'p4',
-        name: 'Syngenta Rice Seed',
-        type: ProductType.seed,
-        basePrice: 420,
-        unit: 'kg',
-      ),
-      Product(
-        id: 'p5',
-        name: 'Topik Herbicide',
-        type: ProductType.pesticide,
-        basePrice: 850,
-        unit: 'ml',
-      ),
-      Product(
-        id: 'p6',
-        name: 'NPK Fertilizer',
-        type: ProductType.fertilizer,
-        basePrice: 5200,
-        unit: 'bag',
-      ),
-    ];
+  Future<void> _syncReferenceData() async {
+    if (!mounted || _isSaving) return;
+
+    try {
+      final dbZamindars = await db.DatabaseHelper.instance
+          .getAllZamindarsEnriched();
+      final dbProducts = await db.DatabaseHelper.instance.getAllProducts();
+
+      final zamindars = <Zamindar>[];
+      for (final dbZamindar in dbZamindars) {
+        final kisaans = <Kisaan>[];
+        if (dbZamindar.id != null) {
+          final dbKisaans = await db.DatabaseHelper.instance
+              .getKisaansForZamindar(dbZamindar.id!);
+          kisaans.addAll(dbKisaans.map(_convertKisaan));
+        }
+        zamindars.add(_convertZamindar(dbZamindar, kisaans));
+      }
+
+      final products = dbProducts.map(_convertProduct).toList();
+      final selectedZamindarId = _selectedZamindar?.id;
+      final selectedKisaanId = _selectedKisaan?.id;
+
+      Zamindar? refreshedZamindar;
+      if (selectedZamindarId != null) {
+        for (final zamindar in zamindars) {
+          if (zamindar.id == selectedZamindarId) {
+            refreshedZamindar = zamindar;
+            break;
+          }
+        }
+      }
+
+      Kisaan? refreshedKisaan;
+      if (refreshedZamindar != null && selectedKisaanId != null) {
+        for (final kisaan in refreshedZamindar.kisaans) {
+          if (kisaan.id == selectedKisaanId) {
+            refreshedKisaan = kisaan;
+            break;
+          }
+        }
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _zamindars = zamindars;
+        _products = products;
+
+        if (selectedZamindarId != null && refreshedZamindar == null) {
+          _selectedZamindar = null;
+          _selectedKisaan = null;
+          _zamindarSearchController.clear();
+        } else if (refreshedZamindar != null) {
+          _selectedZamindar = refreshedZamindar;
+          _selectedKisaan = refreshedKisaan;
+          _zamindarSearchController.text = refreshedZamindar.name;
+        }
+      });
+    } catch (e) {
+      debugPrint('Error syncing sale screen reference data: $e');
+    }
+  }
+
+  Future<void> _loadDataFromDatabase() async {
+    setState(() => _isLoading = true);
+
+    try {
+      // Fetch zamindars and products from database
+      final dbZamindars = await db.DatabaseHelper.instance
+          .getAllZamindarsEnriched();
+      final dbProducts = await db.DatabaseHelper.instance.getAllProducts();
+
+      // Convert database models to sale models
+      final zamindars = <Zamindar>[];
+      Zamindar? preSelectedZamindar;
+
+      for (final dbZamindar in dbZamindars) {
+        final kisaans = <Kisaan>[];
+        if (dbZamindar.id != null) {
+          final dbKisaans = await db.DatabaseHelper.instance
+              .getKisaansForZamindar(dbZamindar.id!);
+          kisaans.addAll(dbKisaans.map((dbKisaan) => _convertKisaan(dbKisaan)));
+        }
+        final zamindar = _convertZamindar(dbZamindar, kisaans);
+        zamindars.add(zamindar);
+
+        // Check if this is the pre-selected zamindar
+        if (widget.preSelectedZamindarId != null &&
+            dbZamindar.id == widget.preSelectedZamindarId) {
+          preSelectedZamindar = zamindar;
+        }
+      }
+
+      final products = dbProducts.map(_convertProduct).toList();
+
+      // 🔒 STRICT CONDITIONAL GATE: Invoice number assignment
+      // CRITICAL: Must check edit mode BEFORE fetching/setting invoice number
+      String invoiceNumberToDisplay;
+      if (widget.editInvoiceNumber != null) {
+        // ✏️ EDIT MODE: Use the invoice number being edited
+        invoiceNumberToDisplay = widget.editInvoiceNumber!;
+      } else {
+        // ✨ NEW SALE MODE: Fetch next available invoice number from database
+        invoiceNumberToDisplay = await db.DatabaseHelper.instance
+            .getNextInvoiceNumber();
+      }
+
+      setState(() {
+        _zamindars = zamindars;
+        _products = products;
+        _invoiceNumber = invoiceNumberToDisplay;
+        _isLoading = false;
+
+        // Pre-select zamindar if provided
+        if (preSelectedZamindar != null) {
+          _selectedZamindar = preSelectedZamindar;
+          _zamindarSearchController.text = preSelectedZamindar.name;
+
+          // Auto-select Kisaan (either pre-selected or 'Self')
+          if (preSelectedZamindar.kisaans.isNotEmpty) {
+            final kisaans = preSelectedZamindar.kisaans;
+            if (widget.preSelectedKisaanId != null) {
+              // Try to find the pre-selected Kisaan
+              final kisaan = kisaans
+                  .where((k) => k.id == widget.preSelectedKisaanId.toString())
+                  .firstOrNull;
+              _selectedKisaan =
+                  kisaan ??
+                  kisaans.firstWhere(
+                    (k) => k.name == 'Self',
+                    orElse: () => kisaans[0],
+                  );
+            } else {
+              // Default to 'Self' Kisaan
+              _selectedKisaan = kisaans.firstWhere(
+                (k) => k.name == 'Self',
+                orElse: () => kisaans[0],
+              );
+            }
+          }
+        }
+      });
+
+      // Handle edit mode vs. new sale mode state lifecycle
+      if (widget.editInvoiceNumber != null) {
+        // If we have an edit invoice, we need to load it
+        // Force reload if cart is empty (can happen after discard or navigation back)
+        // OR if this is a different invoice than what we currently have cached
+        if (_cartItems.isEmpty ||
+            _editingInvoiceNumber != widget.editInvoiceNumber) {
+          await _loadEditData(widget.editInvoiceNumber!);
+        }
+      } else {
+        // Explicitly reset edit state for a fresh new sale
+        // This prevents lingering edit state from poisoning new sales
+        setState(() {
+          _isEditMode = false;
+          _editingInvoiceNumber = null;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error loading data from database: $e');
+      setState(() => _isLoading = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to load data: $e'),
+            backgroundColor: Colors.red,
+            duration: Duration(minutes: 1),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _loadEditData(String invoiceNumber) async {
+    try {
+      final invoiceData = await db.DatabaseHelper.instance
+          .getInvoiceDataByInvoiceNumber(invoiceNumber);
+
+      if (invoiceData == null) {
+        throw Exception('Invoice not found');
+      }
+
+      setState(() {
+        _isEditMode = true;
+        _editingInvoiceNumber = invoiceNumber;
+        _invoiceNumber = invoiceNumber; // Explicitly set display invoice number
+
+        // Set zamindar by name
+        final zamindarName = invoiceData['zamindarName'] as String;
+        _selectedZamindar = _zamindars.firstWhere(
+          (z) => z.name == zamindarName,
+          orElse: () => _zamindars.first,
+        );
+        _zamindarSearchController.text = _selectedZamindar?.name ?? '';
+
+        // Set kisaan by name if exists
+        final kisaanName = invoiceData['kisaanName'] as String?;
+        if (kisaanName != null && _selectedZamindar != null) {
+          _selectedKisaan = _selectedZamindar!.kisaans.firstWhere(
+            (k) => k.name == kisaanName,
+            orElse: () => _selectedZamindar!.kisaans.firstWhere(
+              (k) => k.name == 'Self',
+              orElse: () => _selectedZamindar!.kisaans.first,
+            ),
+          );
+        }
+
+        // Set payment method
+        _paymentMethod = (invoiceData['isCredit'] as bool)
+            ? PaymentMethod.credit
+            : PaymentMethod.cash;
+
+        // Set date time
+        _selectedDateTime = DateTime.parse(invoiceData['dateTime'] as String);
+        _isDateTimeLocked = true;
+
+        // Load cart items
+        final items = invoiceData['items'] as List<Map<String, dynamic>>;
+        _cartItems.clear();
+        for (final item in items) {
+          final productName = item['productName'] as String;
+          final product = _products.firstWhere(
+            (p) => p.name == productName,
+            orElse: () => _products.first,
+          );
+
+          _cartItems.add(
+            CartItem(
+              id: DateTime.now().millisecondsSinceEpoch.toString(),
+              product: product,
+              quantity: ((item['qty'] as num).toDouble()).round(),
+              seasonalIncrement: _paymentMethod == PaymentMethod.credit
+                  ? (item['seasonalIncrement'] as num?)?.toDouble() ?? 0
+                  : 0,
+              discount: (item['discount'] as num?)?.toDouble() ?? 0,
+            ),
+          );
+        }
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Invoice loaded for editing'),
+            backgroundColor: SaleColors.darkGreen,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to load invoice: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        Navigator.pop(context);
+      }
+    }
+  }
+
+  Zamindar _convertZamindar(db.Zamindar dbZamindar, List<Kisaan> kisaans) {
+    return Zamindar(
+      id: dbZamindar.id?.toString() ?? '0',
+      name: dbZamindar.name,
+      location: dbZamindar.locationGoth ?? dbZamindar.village ?? 'Unknown',
+      kisaanCount: dbZamindar.activeKisaans,
+      isOverLimit: dbZamindar.isOverLimit,
+      kisaans: kisaans,
+    );
+  }
+
+  Kisaan _convertKisaan(db.Kisaan dbKisaan) {
+    return Kisaan(
+      id: dbKisaan.id?.toString() ?? '0',
+      name: dbKisaan.name,
+      village: dbKisaan.village,
+      crop: dbKisaan.currentCrop,
+      acres: dbKisaan.landAcres,
+      zamindarId: dbKisaan.zamindarId.toString(),
+    );
+  }
+
+  Product _convertProduct(db.ProductItem dbProduct) {
+    ProductType type;
+    final productType = dbProduct.productType.toLowerCase();
+    if (productType.contains('fertilizer')) {
+      type = ProductType.fertilizer;
+    } else if (productType.contains('pesticide') ||
+        productType.contains('herbicide')) {
+      type = ProductType.pesticide;
+    } else if (productType.contains('seed')) {
+      type = ProductType.seed;
+    } else {
+      type = ProductType.other;
+    }
+
+    return Product(
+      id: dbProduct.id?.toString() ?? '0',
+      name: dbProduct.name,
+      type: type,
+      basePrice: dbProduct.retailPrice.toDouble(),
+      unit: dbProduct.uom,
+    );
   }
 
   List<Recommendation> _getRecommendations() {
-    if (_selectedKisaan == null) return [];
+    if (_selectedKisaan == null || _products.isEmpty) return [];
+
+    final recommendations = <Recommendation>[];
+    final crop = _selectedKisaan!.crop.toLowerCase();
+
+    // Helper to find product by name pattern
+    Product? findProduct(String pattern) {
+      return _products
+          .where((p) => p.name.toLowerCase().contains(pattern.toLowerCase()))
+          .firstOrNull;
+    }
 
     // Generate recommendations based on crop type
-    switch (_selectedKisaan!.crop.toLowerCase()) {
-      case 'rice':
-        return [
+    if (crop.contains('rice')) {
+      final urea = findProduct('urea');
+      if (urea != null) {
+        recommendations.add(
           Recommendation(
-            product: _products[0], // Urea Fertilizer
+            product: urea,
             quantity: 20,
-            displayQuantity: '20 bags',
+            displayQuantity: '20 ${urea.unit}',
           ),
+        );
+      }
+      final dap = findProduct('dap');
+      if (dap != null) {
+        recommendations.add(
           Recommendation(
-            product: _products[1], // DAP Fertilizer
+            product: dap,
             quantity: 10,
-            displayQuantity: '10 bags',
+            displayQuantity: '10 ${dap.unit}',
           ),
+        );
+      }
+      final pesticide = _products
+          .where((p) => p.type == ProductType.pesticide)
+          .firstOrNull;
+      if (pesticide != null) {
+        recommendations.add(
           Recommendation(
-            product: _products[2], // Karate Insecticide
+            product: pesticide,
             quantity: 2000,
-            displayQuantity: '2,000 ml',
+            displayQuantity: '2,000 ${pesticide.unit}',
           ),
+        );
+      }
+      final seed = _products
+          .where((p) => p.type == ProductType.seed)
+          .firstOrNull;
+      if (seed != null) {
+        recommendations.add(
           Recommendation(
-            product: _products[3], // Syngenta Rice Seed
+            product: seed,
             quantity: 25,
-            displayQuantity: '25 kg',
+            displayQuantity: '25 ${seed.unit}',
           ),
-        ];
-      case 'wheat':
-        return [
+        );
+      }
+    } else if (crop.contains('wheat')) {
+      final urea = findProduct('urea');
+      if (urea != null) {
+        recommendations.add(
           Recommendation(
-            product: _products[0], // Urea Fertilizer
+            product: urea,
             quantity: 15,
-            displayQuantity: '15 bags',
+            displayQuantity: '15 ${urea.unit}',
           ),
+        );
+      }
+      final dap = findProduct('dap');
+      if (dap != null) {
+        recommendations.add(
           Recommendation(
-            product: _products[1], // DAP Fertilizer
+            product: dap,
             quantity: 8,
-            displayQuantity: '8 bags',
+            displayQuantity: '8 ${dap.unit}',
           ),
+        );
+      }
+    } else if (crop.contains('cotton')) {
+      final urea = findProduct('urea');
+      if (urea != null) {
+        recommendations.add(
           Recommendation(
-            product: _products[4], // Topik Herbicide
-            quantity: 1500,
-            displayQuantity: '1,500 ml',
-          ),
-        ];
-      case 'cotton':
-        return [
-          Recommendation(
-            product: _products[0], // Urea Fertilizer
+            product: urea,
             quantity: 18,
-            displayQuantity: '18 bags',
+            displayQuantity: '18 ${urea.unit}',
           ),
+        );
+      }
+      final npk = findProduct('npk');
+      if (npk != null) {
+        recommendations.add(
           Recommendation(
-            product: _products[5], // NPK Fertilizer
+            product: npk,
             quantity: 12,
-            displayQuantity: '12 bags',
+            displayQuantity: '12 ${npk.unit}',
           ),
+        );
+      }
+    } else if (crop.contains('sugarcane')) {
+      final dap = findProduct('dap');
+      if (dap != null) {
+        recommendations.add(
           Recommendation(
-            product: _products[2], // Karate Insecticide
-            quantity: 3000,
-            displayQuantity: '3,000 ml',
-          ),
-        ];
-      case 'sugarcane':
-        return [
-          Recommendation(
-            product: _products[1], // DAP Fertilizer
+            product: dap,
             quantity: 20,
-            displayQuantity: '20 bags',
+            displayQuantity: '20 ${dap.unit}',
           ),
-          Recommendation(
-            product: _products[5], // NPK Fertilizer
-            quantity: 15,
-            displayQuantity: '15 bags',
-          ),
-        ];
-      default:
-        return [];
+        );
+      }
     }
+
+    return recommendations.take(4).toList();
+  }
+
+  Future<void> _selectTransactionDate() async {
+    final now = DateTime.now();
+    final pickedDate = await showDatePicker(
+      context: context,
+      initialDate: _selectedDateTime,
+      firstDate: DateTime(2020),
+      lastDate: now,
+      builder: (context, child) {
+        return Theme(
+          data: Theme.of(context).copyWith(
+            colorScheme: const ColorScheme.light(
+              primary: SaleColors.darkGreen,
+              onPrimary: Colors.white,
+              onSurface: SaleColors.textDark,
+            ),
+          ),
+          child: child!,
+        );
+      },
+    );
+
+    if (pickedDate == null || !mounted) return;
+
+    final pickedTime = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(_selectedDateTime),
+      builder: (context, child) {
+        return Theme(
+          data: Theme.of(context).copyWith(
+            colorScheme: const ColorScheme.light(
+              primary: SaleColors.darkGreen,
+              onPrimary: Colors.white,
+              onSurface: SaleColors.textDark,
+            ),
+          ),
+          child: child!,
+        );
+      },
+    );
+
+    if (pickedTime == null || !mounted) return;
+
+    setState(() {
+      _selectedDateTime = DateTime(
+        pickedDate.year,
+        pickedDate.month,
+        pickedDate.day,
+        pickedTime.hour,
+        pickedTime.minute,
+      );
+    });
   }
 
   void _onProductSelected(Product? product) {
@@ -252,12 +564,126 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     });
   }
 
-  void _addProductToCart() {
+  // Helper method to get actual product stock from database
+  Future<db.ProductItem?> _getProductFromDatabase(String productId) async {
+    final id = int.tryParse(productId);
+    if (id == null) return null;
+    return await db.DatabaseHelper.instance.getProduct(id);
+  }
+
+  // Helper method to check if product has sufficient stock
+  Future<bool> _checkProductStock(Product product, int requestedQty) async {
+    final dbProduct = await _getProductFromDatabase(product.id);
+    if (dbProduct == null) return false;
+
+    final availableStock = dbProduct.availableStock;
+
+    // Check if out of stock
+    if (availableStock == 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ ${product.name} is OUT OF STOCK!'),
+          backgroundColor: Colors.red,
+          duration: Duration(minutes: 1),
+        ),
+      );
+      return false;
+    }
+
+    // Check if requested quantity exceeds available stock
+    if (requestedQty > availableStock) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '⚠️ ${product.name}: Only $availableStock ${product.unit} available! Requested: $requestedQty',
+          ),
+          backgroundColor: Colors.orange,
+          duration: Duration(minutes: 1),
+        ),
+      );
+      return false;
+    }
+
+    // Check if stock is low (below threshold)
+    if (availableStock <= dbProduct.lowStockThreshold) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '⚠️ LOW STOCK ALERT: ${product.name} has only $availableStock ${product.unit} left!',
+          ),
+          backgroundColor: Colors.orange.shade700,
+          duration: Duration(minutes: 1),
+        ),
+      );
+      // Allow adding even if low stock, just show warning
+    }
+
+    return true;
+  }
+
+  // Helper method to check zamindar credit limit
+  Future<void> _checkZamindarCreditLimit(Zamindar zamindar) async {
+    final zamindarId = int.tryParse(zamindar.id);
+    if (zamindarId == null) return;
+
+    try {
+      final balances = await db.DatabaseHelper.instance.getZamindarBalancesSafe(
+        zamindarId,
+      );
+
+      if (balances == null) return;
+
+      final outstandingBalance = balances['outstandingBalance'] as int;
+      final isOverLimit = balances['isOverLimit'] as bool;
+
+      // Show warning if there's outstanding balance or credit limit exceeded
+      if (outstandingBalance > 0 || isOverLimit) {
+        if (!mounted) return;
+
+        final formattedBalance = outstandingBalance.toStringAsFixed(0);
+
+        if (isOverLimit) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                '⚠️ CREDIT LIMIT EXCEEDED: ${zamindar.name} has Rs $formattedBalance outstanding!',
+              ),
+              backgroundColor: Colors.red.shade700,
+              duration: Duration(minutes: 1),
+            ),
+          );
+        } else if (outstandingBalance > 0) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                '⚠️ OUTSTANDING AMOUNT: ${zamindar.name} has Rs $formattedBalance pending!',
+              ),
+              backgroundColor: Colors.orange.shade700,
+              duration: Duration(minutes: 1),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('Error checking zamindar credit limit: $e');
+    }
+  }
+
+  Future<void> _addProductToCart() async {
     if (_selectedProduct == null) return;
 
     final qty = int.tryParse(_qtyController.text) ?? 1;
-    final price = double.tryParse(_priceController.text.replaceAll(',', '')) ?? 0;
-    final seasonalInc = double.tryParse(_seasonalIncrementController.text.replaceAll(',', '')) ?? 0;
+    final price =
+        double.tryParse(_priceController.text.replaceAll(',', '')) ?? 0;
+    final seasonalInc =
+        double.tryParse(
+          _seasonalIncrementController.text.replaceAll(',', ''),
+        ) ??
+        0;
+
+    // Check stock before adding to cart
+    final hasStock = await _checkProductStock(_selectedProduct!, qty);
+    if (!hasStock) return; // Don't add to cart if out of stock or insufficient
 
     setState(() {
       _cartItems.add(
@@ -285,7 +711,14 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     _selectedProduct = null;
   }
 
-  void _addRecommendation(Recommendation rec) {
+  Future<void> _addRecommendation(Recommendation rec) async {
+    // Check stock before adding to cart
+    final hasStock = await _checkProductStock(
+      rec.product,
+      rec.quantity.toInt(),
+    );
+    if (!hasStock) return; // Don't add to cart if out of stock or insufficient
+
     setState(() {
       _cartItems.add(
         CartItem(
@@ -337,28 +770,352 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     });
   }
 
-  void _saveAndPrint() {
-    setState(() {
-      _invoiceNumber++;
-      _cartItems.clear();
-      _selectedZamindar = null;
-      _selectedKisaan = null;
-      _selectedProduct = null;
-      _overallDiscount = 0;
-      _overallDiscountController.text = '0';
-      _zamindarSearchController.clear();
-      _productSearchController.clear();
-      _qtyController.text = '1';
-      _priceController.text = '0';
-      _seasonalIncrementController.text = '0';
-    });
+  /// Handles the Discard button action: clears edit state, fetches next invoice number,
+  /// and notifies parent Shell to clear its stale edit invoice variable
+  Future<void> _handleDiscard() async {
+    try {
+      // 1. Notify parent Shell to clear its stale edit invoice variable
+      widget.onCancelEdit?.call();
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Sale saved and invoice printed!'),
-        duration: Duration(seconds: 2),
-      ),
-    );
+      // 2. Fetch the true next available invoice number from the database
+      final nextInvoice = await db.DatabaseHelper.instance
+          .getNextInvoiceNumber();
+
+      debugPrint('🔄 DISCARD: Fetched next invoice = $nextInvoice');
+
+      // 3. Reset all internal state and force UI to display fresh invoice number
+      if (mounted) {
+        setState(() {
+          // Clear edit mode state
+          _isEditMode = false;
+          _editingInvoiceNumber = null;
+
+          // Update invoice number to next available
+          _invoiceNumber = nextInvoice;
+          debugPrint('🔄 DISCARD: Set _invoiceNumber = $_invoiceNumber');
+
+          // Clear cart and form fields
+          _cartItems.clear();
+          _selectedZamindar = null;
+          _selectedKisaan = null;
+          _selectedProduct = null;
+          _overallDiscount = 0;
+          _overallDiscountController.text = '0';
+          _zamindarSearchController.clear();
+          _productSearchController.clear();
+          _qtyController.text = '1';
+          _priceController.text = '0';
+          _seasonalIncrementController.text = '0';
+
+          // Reset date time lock
+          _isDateTimeLocked = false;
+          _selectedDateTime = DateTime.now();
+
+          // Reset walk-in customer state
+          _isWalkInCustomer = false;
+          _walkInCustomerNameController.clear();
+        });
+      }
+    } catch (e) {
+      debugPrint('Error handling discard: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to refresh invoice number: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _saveAndPrint() async {
+    // Validation: Check if Walk-In Customer or Zamindar is selected
+    if (!_isWalkInCustomer && _selectedZamindar == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please select a Zamindar or enable Walk-In Customer'),
+          backgroundColor: Colors.red,
+          duration: Duration(minutes: 1),
+        ),
+      );
+      return;
+    }
+
+    // Validation: Check if Walk-In Customer name is provided
+    if (_isWalkInCustomer &&
+        _walkInCustomerNameController.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter customer name for walk-in customer'),
+          backgroundColor: Colors.red,
+          duration: Duration(minutes: 1),
+        ),
+      );
+      return;
+    }
+
+    // Validation: Check if cart has items
+    if (_cartItems.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Cart is empty. Please add products to the cart.'),
+          backgroundColor: Colors.red,
+          duration: Duration(minutes: 1),
+        ),
+      );
+      return;
+    }
+
+    // Start saving
+    setState(() => _isSaving = true);
+
+    try {
+      // ========================================================
+      // STEP 1: Extract and Format Metadata Fields from UI State
+      // ========================================================
+
+      // Calculate summary for financial breakdown
+      final summary = _getSummary();
+
+      // Invoice Number - Get from database to ensure uniqueness
+      final String invoiceNumber = _isEditMode
+          ? _editingInvoiceNumber!
+          : await db.DatabaseHelper.instance.getNextInvoiceNumber();
+
+      // Zamindar Name
+      final String zamindarName = _isWalkInCustomer
+          ? _walkInCustomerNameController.text.trim()
+          : _selectedZamindar!.name;
+
+      // Kisaan Name
+      final String? kisaanName = _selectedKisaan?.name ?? 'Self';
+
+      // Financial Breakdown
+      final double subtotal = summary.subtotal;
+      final double itemDiscountsTotal = summary.itemDiscounts;
+      final double seasonalIncrementTotal =
+          _paymentMethod == PaymentMethod.credit
+          ? summary.totalSeasonalIncrements
+          : 0.0;
+      final double overallDiscount = _overallDiscount;
+      final double totalPayable = summary.totalPayable;
+      final double paidAmount = _paymentMethod == PaymentMethod.cash
+          ? totalPayable
+          : 0.0;
+      final String paymentMethod = _paymentMethod == PaymentMethod.cash
+          ? 'Cash'
+          : 'Credit';
+
+      debugPrint(
+        'SALE DEBUG: Invoice=$invoiceNumber, Zamindar=$zamindarName, Kisaan=$kisaanName',
+      );
+      debugPrint(
+        'SALE DEBUG: Subtotal=$subtotal, ItemDisc=$itemDiscountsTotal, SeasonalInc=$seasonalIncrementTotal',
+      );
+      debugPrint(
+        'SALE DEBUG: OverallDisc=$overallDiscount, TotalPayable=$totalPayable, Paid=$paidAmount',
+      );
+
+      // ========================================================
+      // STEP 2: Convert Cart Items to New Schema Format
+      // ========================================================
+
+      final saleItems = _cartItems.map((cartItem) {
+        final productId = int.tryParse(cartItem.product.id);
+
+        // Calculate effective unit price (base + seasonal increment for credit sales)
+        final double basePrice = cartItem.product.basePrice;
+        final double seasonalInc = _paymentMethod == PaymentMethod.credit
+            ? cartItem.seasonalIncrement
+            : 0.0;
+        final double effectiveUnitPrice = basePrice + seasonalInc;
+
+        return db.SaleLineItem(
+          productId: productId,
+          productName: cartItem.product.name,
+          qty: cartItem.quantity.toDouble(),
+          unitPrice: effectiveUnitPrice,
+          discount: cartItem.discount,
+        );
+      }).toList();
+
+      // Get product type from first cart item (or default to 'Fertilizer')
+      final String productType = _cartItems.isNotEmpty
+          ? _cartItems.first.product.type.toString().split('.').last
+          : 'Fertilizer';
+
+      // Get season string for the selected date
+      final String seasonString = SeasonUtils.getSeasonString(
+        _selectedDateTime,
+      );
+
+      debugPrint(
+        'SALE DEBUG: Converted ${saleItems.length} cart items to SaleLineItem format',
+      );
+      debugPrint('SALE DEBUG: Season=$seasonString');
+
+      // ========================================================
+      // STEP 3: Save to New Three-Table Schema
+      // ========================================================
+
+      if (_isEditMode && _editingInvoiceNumber != null) {
+        // UPDATE EXISTING SALE
+        debugPrint(
+          'SALE DEBUG: Updating existing sale with invoice=$invoiceNumber',
+        );
+
+        await db.DatabaseHelper.instance.updateSaleInNewSchema(
+          invoiceNumber: invoiceNumber,
+          dateTime: _selectedDateTime,
+          zamindarName: zamindarName,
+          kisaanName: kisaanName,
+          items: saleItems,
+          overallDiscount: overallDiscount,
+          paidAmount: paidAmount,
+          paymentMethod: paymentMethod,
+          productType: productType,
+          season: seasonString,
+        );
+
+        debugPrint('SALE DEBUG: Successfully updated sale in new schema');
+      } else {
+        // INSERT NEW SALE
+        debugPrint(
+          'SALE DEBUG: Inserting new sale with invoice=$invoiceNumber',
+        );
+
+        final checkoutResult = await db.DatabaseHelper.instance.insertSale(
+          invoiceNumber: invoiceNumber,
+          dateTime: _selectedDateTime,
+          zamindarName: zamindarName,
+          kisaanName: kisaanName,
+          items: saleItems,
+          overallDiscount: overallDiscount,
+          paidAmount: paidAmount,
+          paymentMethod: paymentMethod,
+          productType: productType,
+          season: seasonString,
+        );
+
+        debugPrint('SALE DEBUG: Successfully inserted sale into new schema');
+
+        if (checkoutResult['hadAdvanceDeduction'] == true) {
+          AdvanceCheckoutOverlay.instance.show(
+            zamindarName: checkoutResult['zamindarName'] as String,
+            kisaanName: checkoutResult['kisaanName'] as String?,
+            totalAdvanceBefore: (checkoutResult['totalAdvanceBefore'] as num)
+                .toDouble(),
+            deductedAmount: (checkoutResult['deductedAmount'] as num)
+                .toDouble(),
+            remainingAdvance: (checkoutResult['remainingAdvance'] as num)
+                .toDouble(),
+            remainingPhysicalCash:
+                (checkoutResult['remainingPhysicalCash'] as num).toDouble(),
+          );
+        }
+      }
+
+      // ========================================================
+      // STEP 4: Show Success & Reset UI
+      // ========================================================
+
+      if (mounted) {
+        final actionText = _isEditMode ? 'updated' : 'saved';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Sale $actionText successfully! Total: Rs ${totalPayable.toStringAsFixed(0)}',
+            ),
+            backgroundColor: SaleColors.darkGreen,
+            duration: Duration(seconds: 3),
+          ),
+        );
+
+        // If in edit mode, clear state and reload
+        if (_isEditMode) {
+          setState(() {
+            _isEditMode = false;
+            _editingInvoiceNumber = null;
+          });
+
+          // Reload data after clearing edit mode
+          try {
+            await _loadDataFromDatabase();
+          } catch (e) {
+            debugPrint('Error reloading data after edit: $e');
+          }
+
+          // Clear the form for next sale
+          setState(() {
+            _cartItems.clear();
+            _selectedZamindar = null;
+            _selectedKisaan = null;
+            _selectedProduct = null;
+            _overallDiscount = 0;
+            _overallDiscountController.text = '0';
+            _zamindarSearchController.clear();
+            _productSearchController.clear();
+            _qtyController.text = '1';
+            _priceController.text = '0';
+            _seasonalIncrementController.text = '0';
+            _isWalkInCustomer = false;
+            _walkInCustomerNameController.clear();
+            _selectedDateTime = DateTime.now();
+            _isDateTimeLocked = false;
+          });
+
+          return;
+        }
+      }
+
+      // For new sales, reload data and clear form
+      await _loadDataFromDatabase();
+
+      setState(() {
+        // Invoice number is automatically refreshed by _loadDataFromDatabase()
+        _cartItems.clear();
+        _selectedZamindar = null;
+        _selectedKisaan = null;
+        _selectedProduct = null;
+        _overallDiscount = 0;
+        _overallDiscountController.text = '0';
+        _zamindarSearchController.clear();
+        _productSearchController.clear();
+        _qtyController.text = '1';
+        _priceController.text = '0';
+        _seasonalIncrementController.text = '0';
+        _isWalkInCustomer = false;
+        _walkInCustomerNameController.clear();
+        _paymentMethod = PaymentMethod.credit;
+        if (!_isDateTimeLocked) {
+          _selectedDateTime = DateTime.now();
+        }
+      });
+
+      // TODO: Add thermal printer / receipt generation logic here
+    } catch (e, stackTrace) {
+      debugPrint('❌ CRITICAL ERROR saving sale: $e');
+      debugPrint('Stack trace: $stackTrace');
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to save sale: $e'),
+            backgroundColor: Colors.red,
+            duration: Duration(minutes: 1),
+          ),
+        );
+      }
+    } finally {
+      // CRITICAL: Always stop the loading indicator in the finally block
+      // This prevents the infinite progress indicator deadlock
+      if (mounted) {
+        setState(() {
+          _isSaving = false;
+        });
+      }
+    }
   }
 
   SaleSummary _getSummary() {
@@ -377,6 +1134,9 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     _priceController.dispose();
     _seasonalIncrementController.dispose();
     _overallDiscountController.dispose();
+    _walkInCustomerNameController.dispose();
+    // Remove database listener to prevent memory leaks
+    db.DatabaseHelper.instance.removeListener(_onDatabaseChanged);
     super.dispose();
   }
 
@@ -384,24 +1144,199 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: SaleColors.canvasBg,
-      body: Column(
-        children: [
-          _buildTopBar(),
-          Expanded(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
+      body: _isLoading
+          ? const Center(
+              child: CircularProgressIndicator(
+                valueColor: AlwaysStoppedAnimation<Color>(SaleColors.darkGreen),
+              ),
+            )
+          : Column(
               children: [
-                _buildLeftColumn(),
-                Expanded(child: _buildRightColumn()),
+                _buildTopBar(),
+                Expanded(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildLeftColumn(),
+                      Expanded(child: _buildRightColumn()),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+    );
+  }
+
+  Widget _buildTransactionDateCard() {
+    final dateFormat = DateFormat('EEE, d MMM yyyy');
+    final timeFormat = DateFormat('h:mm a');
+    final isToday =
+        DateFormat('yyyy-MM-dd').format(_selectedDateTime) ==
+        DateFormat('yyyy-MM-dd').format(DateTime.now());
+    final displayDate = isToday
+        ? 'Today · ${timeFormat.format(_selectedDateTime)}'
+        : '${dateFormat.format(_selectedDateTime)} · ${timeFormat.format(_selectedDateTime)}';
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: _selectTransactionDate,
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          decoration: BoxDecoration(
+            color: SaleColors.cardBg,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: _isDateTimeLocked
+                  ? SaleColors.darkGreen
+                  : (isToday ? SaleColors.borderLight : SaleColors.accentGreen),
+              width: _isDateTimeLocked ? 1.5 : (isToday ? 0.5 : 1),
+            ),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: _isDateTimeLocked
+                        ? SaleColors.darkGreen.withOpacity(0.15)
+                        : (isToday
+                              ? SaleColors.paleGreen
+                              : SaleColors.lightGreenBg),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Center(
+                    child: Icon(
+                      _isDateTimeLocked
+                          ? Icons.lock_clock
+                          : Icons.calendar_today,
+                      size: 18,
+                      color: _isDateTimeLocked
+                          ? SaleColors.darkGreen
+                          : (isToday
+                                ? SaleColors.midGreen
+                                : SaleColors.darkGreen),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Text(
+                            'Transaction Date',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w500,
+                              color: SaleColors.textMuted,
+                            ),
+                          ),
+                          if (_isDateTimeLocked) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 2,
+                              ),
+                              decoration: BoxDecoration(
+                                color: SaleColors.darkGreen.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: const Text(
+                                'LOCKED',
+                                style: TextStyle(
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.w600,
+                                  color: SaleColors.darkGreen,
+                                  letterSpacing: 0.5,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        displayDate,
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: _isDateTimeLocked
+                              ? SaleColors.darkGreen
+                              : (isToday
+                                    ? SaleColors.textDark
+                                    : SaleColors.darkGreen),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    onTap: () {
+                      setState(() {
+                        _isDateTimeLocked = !_isDateTimeLocked;
+                      });
+                    },
+                    borderRadius: BorderRadius.circular(8),
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: _isDateTimeLocked
+                            ? SaleColors.darkGreen
+                            : Colors.transparent,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: _isDateTimeLocked
+                              ? SaleColors.darkGreen
+                              : SaleColors.borderMid,
+                          width: 0.5,
+                        ),
+                      ),
+                      child: Icon(
+                        _isDateTimeLocked ? Icons.lock : Icons.lock_open,
+                        size: 16,
+                        color: _isDateTimeLocked
+                            ? Colors.white
+                            : SaleColors.textLight,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Icon(
+                  Icons.edit_calendar,
+                  size: 18,
+                  color: _isDateTimeLocked
+                      ? SaleColors.darkGreen
+                      : (isToday ? SaleColors.textLight : SaleColors.darkGreen),
+                ),
               ],
             ),
           ),
-        ],
+        ),
       ),
     );
   }
 
   Widget _buildTopBar() {
+    final dateFormat = DateFormat('EEEE, d MMMM yyyy');
+    final timeFormat = DateFormat('h:mm a');
+    final isToday =
+        DateFormat('yyyy-MM-dd').format(_selectedDateTime) ==
+        DateFormat('yyyy-MM-dd').format(DateTime.now());
+    final displayDate = isToday
+        ? 'Today · ${timeFormat.format(_selectedDateTime)}'
+        : dateFormat.format(_selectedDateTime);
+    final season = SeasonUtils.getSeasonString(_selectedDateTime);
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
       decoration: const BoxDecoration(
@@ -427,7 +1362,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                 ),
                 const SizedBox(height: 1),
                 Text(
-                  'Tuesday, 7 April 2026 — Rabi Season',
+                  '$displayDate — $season Season',
                   style: const TextStyle(
                     fontSize: 12,
                     color: SaleColors.textLight,
@@ -444,35 +1379,21 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
               borderRadius: BorderRadius.circular(20),
             ),
             child: Text(
-              'Sale # AK-2026-${_invoiceNumber.toString().padLeft(4, '0')}',
-              style: const TextStyle(
-                fontSize: 12,
-                color: SaleColors.textLight,
-              ),
+              _invoiceNumber,
+              style: const TextStyle(fontSize: 12, color: SaleColors.textLight),
             ),
           ),
           const SizedBox(width: 8),
           Material(
             color: Colors.transparent,
             child: InkWell(
-              onTap: () {
-                setState(() {
-                  _cartItems.clear();
-                  _selectedZamindar = null;
-                  _selectedKisaan = null;
-                  _selectedProduct = null;
-                  _overallDiscount = 0;
-                  _overallDiscountController.text = '0';
-                  _zamindarSearchController.clear();
-                  _productSearchController.clear();
-                  _qtyController.text = '1';
-                  _priceController.text = '0';
-                  _seasonalIncrementController.text = '0';
-                });
-              },
+              onTap: _handleDiscard,
               borderRadius: BorderRadius.circular(10),
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 8,
+                ),
                 decoration: BoxDecoration(
                   color: SaleColors.cardBg,
                   border: Border.all(color: SaleColors.borderMid, width: 0.5),
@@ -480,10 +1401,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                 ),
                 child: const Text(
                   'Discard',
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: SaleColors.textDark,
-                  ),
+                  style: TextStyle(fontSize: 13, color: SaleColors.textDark),
                 ),
               ),
             ),
@@ -492,22 +1410,39 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           Material(
             color: Colors.transparent,
             child: InkWell(
-              onTap: _saveAndPrint,
+              onTap: _isSaving ? null : _saveAndPrint,
               borderRadius: BorderRadius.circular(10),
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 18,
+                  vertical: 8,
+                ),
                 decoration: BoxDecoration(
-                  color: SaleColors.darkGreen,
+                  color: _isSaving
+                      ? SaleColors.darkGreen.withOpacity(0.6)
+                      : SaleColors.darkGreen,
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
-                  children: const [
-                    Icon(Icons.check, size: 13, color: Colors.white),
-                    SizedBox(width: 6),
+                  children: [
+                    if (_isSaving)
+                      const SizedBox(
+                        width: 13,
+                        height: 13,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            Colors.white,
+                          ),
+                        ),
+                      )
+                    else
+                      const Icon(Icons.check, size: 13, color: Colors.white),
+                    const SizedBox(width: 6),
                     Text(
-                      'Save & Print',
-                      style: TextStyle(
+                      _isSaving ? 'Saving...' : 'Save & Print',
+                      style: const TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w500,
                         color: Colors.white,
@@ -530,12 +1465,20 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       child: SingleChildScrollView(
         child: Column(
           children: [
-            _buildSelectZamindarCard(),
+            _buildTransactionDateCard(),
             const SizedBox(height: 14),
-            if (_selectedZamindar != null) ...[
-              _buildSelectKisaanCard(),
+            _buildWalkInToggleCard(),
+            const SizedBox(height: 14),
+            if (!_isWalkInCustomer) ...[
+              _buildSelectZamindarCard(),
               const SizedBox(height: 14),
-              _buildSmartRecommendationsCard(),
+              if (_selectedZamindar != null) ...[
+                _buildSelectKisaanCard(),
+                const SizedBox(height: 14),
+                _buildSmartRecommendationsCard(),
+              ],
+            ] else ...[
+              _buildWalkInCustomerNameCard(),
             ],
           ],
         ),
@@ -560,6 +1503,199 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     );
   }
 
+  Widget _buildWalkInToggleCard() {
+    return Container(
+      decoration: BoxDecoration(
+        color: _isWalkInCustomer ? const Color(0xFFFFF9E6) : SaleColors.cardBg,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: _isWalkInCustomer
+              ? const Color(0xFFFFD54F)
+              : SaleColors.borderLight,
+          width: _isWalkInCustomer ? 1 : 0.5,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            Icon(
+              _isWalkInCustomer ? Icons.storefront : Icons.person_outline,
+              size: 20,
+              color: _isWalkInCustomer
+                  ? const Color(0xFFF57C00)
+                  : SaleColors.darkGreen,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Walk-In / Cash Customer',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: _isWalkInCustomer
+                          ? const Color(0xFFF57C00)
+                          : SaleColors.textDark,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    _isWalkInCustomer
+                        ? 'Cash only, no credit'
+                        : 'Enable for walk-in customers',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: _isWalkInCustomer
+                          ? const Color(0xFFE65100)
+                          : SaleColors.textMuted,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Switch(
+              value: _isWalkInCustomer,
+              onChanged: (value) {
+                setState(() {
+                  _isWalkInCustomer = value;
+                  if (value) {
+                    // Force cash payment for walk-in
+                    _paymentMethod = PaymentMethod.cash;
+                    // Clear zamindar selection
+                    _selectedZamindar = null;
+                    _selectedKisaan = null;
+                    _zamindarSearchController.clear();
+                  } else {
+                    // Clear walk-in customer name
+                    _walkInCustomerNameController.clear();
+                  }
+                });
+              },
+              activeThumbColor: const Color(0xFFF57C00),
+              activeTrackColor: const Color(0xFFFFD54F),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildWalkInCustomerNameCard() {
+    return Container(
+      decoration: BoxDecoration(
+        color: SaleColors.cardBg,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: SaleColors.borderLight, width: 0.5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const StepHeader(stepNumber: 1, title: 'Customer Name'),
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Row(
+                  children: [
+                    Text(
+                      'Customer Name',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
+                        color: SaleColors.textMuted,
+                      ),
+                    ),
+                    SizedBox(width: 2),
+                    Text(
+                      '*',
+                      style: TextStyle(fontSize: 11, color: Color(0xFFE24B4A)),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 5),
+                TextFormField(
+                  controller: _walkInCustomerNameController,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: SaleColors.textDark,
+                  ),
+                  decoration: InputDecoration(
+                    hintText: 'Enter customer name (e.g., Ahmed Ali)...',
+                    hintStyle: const TextStyle(
+                      fontSize: 13,
+                      color: SaleColors.textLight,
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 11,
+                      vertical: 8,
+                    ),
+                    isDense: true,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(9),
+                      borderSide: const BorderSide(
+                        color: SaleColors.borderMid,
+                        width: 0.5,
+                      ),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(9),
+                      borderSide: const BorderSide(
+                        color: SaleColors.borderMid,
+                        width: 0.5,
+                      ),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(9),
+                      borderSide: const BorderSide(
+                        color: SaleColors.accentGreen,
+                        width: 1,
+                      ),
+                    ),
+                    filled: true,
+                    fillColor: SaleColors.cardBg,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE3F2FD),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: const [
+                      Icon(
+                        Icons.info_outline,
+                        size: 14,
+                        color: Color(0xFF1565C0),
+                      ),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Walk-in customers are cash-only. No credit option available.',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Color(0xFF1565C0),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildSelectZamindarCard() {
     return Container(
       decoration: BoxDecoration(
@@ -579,8 +1715,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 _buildZamindarAutocomplete(),
-                if (_selectedZamindar != null)
-                  _buildZamindarPillWithClear(),
+                if (_selectedZamindar != null) _buildZamindarPillWithClear(),
               ],
             ),
           ),
@@ -607,10 +1742,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
             const SizedBox(width: 2),
             const Text(
               '*',
-              style: TextStyle(
-                fontSize: 11,
-                color: Color(0xFFE24B4A),
-              ),
+              style: TextStyle(fontSize: 11, color: Color(0xFFE24B4A)),
             ),
           ],
         ),
@@ -621,9 +1753,9 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
               return const Iterable<Zamindar>.empty();
             }
             return _zamindars.where((Zamindar zamindar) {
-              return zamindar.name
-                  .toLowerCase()
-                  .contains(textEditingValue.text.toLowerCase());
+              return zamindar.name.toLowerCase().contains(
+                textEditingValue.text.toLowerCase(),
+              );
             });
           },
           displayStringForOption: (Zamindar option) => option.name,
@@ -632,29 +1764,38 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
             return TextFormField(
               controller: controller,
               focusNode: focusNode,
-              style: const TextStyle(
-                fontSize: 13,
-                color: SaleColors.textDark,
-              ),
+              style: const TextStyle(fontSize: 13, color: SaleColors.textDark),
               decoration: InputDecoration(
                 hintText: 'Type to search Zamindar (e.g. Asif, Zafar)...',
                 hintStyle: const TextStyle(
                   fontSize: 13,
                   color: SaleColors.textLight,
                 ),
-                contentPadding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 11,
+                  vertical: 8,
+                ),
                 isDense: true,
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(9),
-                  borderSide: const BorderSide(color: SaleColors.borderMid, width: 0.5),
+                  borderSide: const BorderSide(
+                    color: SaleColors.borderMid,
+                    width: 0.5,
+                  ),
                 ),
                 enabledBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(9),
-                  borderSide: const BorderSide(color: SaleColors.borderMid, width: 0.5),
+                  borderSide: const BorderSide(
+                    color: SaleColors.borderMid,
+                    width: 0.5,
+                  ),
                 ),
                 focusedBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(9),
-                  borderSide: const BorderSide(color: SaleColors.accentGreen, width: 1),
+                  borderSide: const BorderSide(
+                    color: SaleColors.accentGreen,
+                    width: 1,
+                  ),
                 ),
                 filled: true,
                 fillColor: SaleColors.cardBg,
@@ -664,8 +1805,16 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           onSelected: (Zamindar selection) {
             setState(() {
               _selectedZamindar = selection;
-              _selectedKisaan = null;
+              // Auto-select 'Self' Kisaan
+              if (selection.kisaans.isNotEmpty) {
+                _selectedKisaan = selection.kisaans.firstWhere(
+                  (k) => k.name == 'Self',
+                  orElse: () => selection.kisaans.first,
+                );
+              }
             });
+            // Check credit limit after selection
+            _checkZamindarCreditLimit(selection);
           },
           optionsViewBuilder: (context, onSelected, options) {
             return Align(
@@ -674,7 +1823,10 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                 elevation: 4,
                 borderRadius: BorderRadius.circular(9),
                 child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxHeight: 200, maxWidth: 348),
+                  constraints: const BoxConstraints(
+                    maxHeight: 200,
+                    maxWidth: 348,
+                  ),
                   child: ListView.builder(
                     padding: EdgeInsets.zero,
                     shrinkWrap: true,
@@ -684,10 +1836,16 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                       return InkWell(
                         onTap: () => onSelected(option),
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 10,
+                          ),
                           decoration: const BoxDecoration(
                             border: Border(
-                              bottom: BorderSide(color: SaleColors.borderLight, width: 0.5),
+                              bottom: BorderSide(
+                                color: SaleColors.borderLight,
+                                width: 0.5,
+                              ),
                             ),
                           ),
                           child: Text(
@@ -787,11 +1945,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
               borderRadius: BorderRadius.circular(12),
               child: const Padding(
                 padding: EdgeInsets.all(4),
-                child: Icon(
-                  Icons.clear,
-                  size: 18,
-                  color: SaleColors.textMuted,
-                ),
+                child: Icon(Icons.clear, size: 18, color: SaleColors.textMuted),
               ),
             ),
           ),
@@ -842,12 +1996,13 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                   GridView.builder(
                     shrinkWrap: true,
                     physics: const NeverScrollableScrollPhysics(),
-                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 2,
-                      crossAxisSpacing: 8,
-                      mainAxisSpacing: 8,
-                      childAspectRatio: 1.5,
-                    ),
+                    gridDelegate:
+                        const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 2,
+                          crossAxisSpacing: 8,
+                          mainAxisSpacing: 8,
+                          childAspectRatio: 1.5,
+                        ),
                     itemCount: _selectedZamindar!.kisaans.length,
                     itemBuilder: (context, index) {
                       final kisaan = _selectedZamindar!.kisaans[index];
@@ -947,24 +2102,33 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                Expanded(
-                  flex: 3,
-                  child: _buildProductAutocomplete(),
-                ),
+                Expanded(flex: 3, child: _buildProductAutocomplete()),
                 const SizedBox(width: 8),
                 SizedBox(
                   width: 80,
-                  child: _buildCompactField('Qty', _qtyController, TextInputType.number),
+                  child: _buildCompactField(
+                    'Qty',
+                    _qtyController,
+                    TextInputType.number,
+                  ),
                 ),
                 const SizedBox(width: 8),
                 SizedBox(
                   width: 100,
-                  child: _buildCompactField('Price', _priceController, TextInputType.number),
+                  child: _buildCompactField(
+                    'Price',
+                    _priceController,
+                    TextInputType.number,
+                  ),
                 ),
                 const SizedBox(width: 8),
                 SizedBox(
                   width: 100,
-                  child: _buildCompactField('Seasonal Inc', _seasonalIncrementController, TextInputType.number),
+                  child: _buildCompactField(
+                    'Seasonal Inc',
+                    _seasonalIncrementController,
+                    TextInputType.number,
+                  ),
                 ),
                 const SizedBox(width: 8),
                 Padding(
@@ -975,7 +2139,10 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                       onTap: _addProductToCart,
                       borderRadius: BorderRadius.circular(9),
                       child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 8,
+                        ),
                         decoration: BoxDecoration(
                           color: SaleColors.darkGreen,
                           borderRadius: BorderRadius.circular(9),
@@ -1020,9 +2187,9 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
               return const Iterable<Product>.empty();
             }
             return _products.where((Product product) {
-              return product.name
-                  .toLowerCase()
-                  .contains(textEditingValue.text.toLowerCase());
+              return product.name.toLowerCase().contains(
+                textEditingValue.text.toLowerCase(),
+              );
             });
           },
           displayStringForOption: (Product option) => option.name,
@@ -1031,29 +2198,38 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
             return TextFormField(
               controller: controller,
               focusNode: focusNode,
-              style: const TextStyle(
-                fontSize: 13,
-                color: SaleColors.textDark,
-              ),
+              style: const TextStyle(fontSize: 13, color: SaleColors.textDark),
               decoration: InputDecoration(
                 hintText: 'Search or select product...',
                 hintStyle: const TextStyle(
                   fontSize: 13,
                   color: SaleColors.textLight,
                 ),
-                contentPadding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 11,
+                  vertical: 8,
+                ),
                 isDense: true,
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(9),
-                  borderSide: const BorderSide(color: SaleColors.borderMid, width: 0.5),
+                  borderSide: const BorderSide(
+                    color: SaleColors.borderMid,
+                    width: 0.5,
+                  ),
                 ),
                 enabledBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(9),
-                  borderSide: const BorderSide(color: SaleColors.borderMid, width: 0.5),
+                  borderSide: const BorderSide(
+                    color: SaleColors.borderMid,
+                    width: 0.5,
+                  ),
                 ),
                 focusedBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(9),
-                  borderSide: const BorderSide(color: SaleColors.accentGreen, width: 1),
+                  borderSide: const BorderSide(
+                    color: SaleColors.accentGreen,
+                    width: 1,
+                  ),
                 ),
                 filled: true,
                 fillColor: SaleColors.cardBg,
@@ -1078,10 +2254,16 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                       return InkWell(
                         onTap: () => onSelected(option),
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 10,
+                          ),
                           decoration: const BoxDecoration(
                             border: Border(
-                              bottom: BorderSide(color: SaleColors.borderLight, width: 0.5),
+                              bottom: BorderSide(
+                                color: SaleColors.borderLight,
+                                width: 0.5,
+                              ),
                             ),
                           ),
                           child: Row(
@@ -1117,7 +2299,11 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     );
   }
 
-  Widget _buildCompactField(String label, TextEditingController controller, TextInputType keyboardType) {
+  Widget _buildCompactField(
+    String label,
+    TextEditingController controller,
+    TextInputType keyboardType,
+  ) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
@@ -1134,24 +2320,33 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         TextFormField(
           controller: controller,
           keyboardType: keyboardType,
-          style: const TextStyle(
-            fontSize: 13,
-            color: SaleColors.textDark,
-          ),
+          style: const TextStyle(fontSize: 13, color: SaleColors.textDark),
           decoration: InputDecoration(
-            contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 8,
+              vertical: 8,
+            ),
             isDense: true,
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(9),
-              borderSide: const BorderSide(color: SaleColors.borderMid, width: 0.5),
+              borderSide: const BorderSide(
+                color: SaleColors.borderMid,
+                width: 0.5,
+              ),
             ),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(9),
-              borderSide: const BorderSide(color: SaleColors.borderMid, width: 0.5),
+              borderSide: const BorderSide(
+                color: SaleColors.borderMid,
+                width: 0.5,
+              ),
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(9),
-              borderSide: const BorderSide(color: SaleColors.accentGreen, width: 1),
+              borderSide: const BorderSide(
+                color: SaleColors.accentGreen,
+                width: 1,
+              ),
             ),
             filled: true,
             fillColor: SaleColors.cardBg,
@@ -1206,10 +2401,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
               child: Center(
                 child: Text(
                   'No items in cart',
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: SaleColors.textMuted,
-                  ),
+                  style: TextStyle(fontSize: 13, color: SaleColors.textMuted),
                 ),
               ),
             )
@@ -1222,7 +2414,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
 
   Widget _buildCartTable() {
     final showSeasonalIncrement = _paymentMethod == PaymentMethod.credit;
-    
+
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: DataTable(
@@ -1230,7 +2422,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         columnSpacing: 16,
         headingRowHeight: 36,
         dataRowHeight: 48,
-        headingRowColor: MaterialStateProperty.all(SaleColors.canvasBg),
+        headingRowColor: WidgetStateProperty.all(SaleColors.canvasBg),
         dividerThickness: 0.5,
         decoration: const BoxDecoration(
           border: Border(
@@ -1309,9 +2501,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
               ),
             ),
           ),
-          const DataColumn(
-            label: SizedBox.shrink(),
-          ),
+          const DataColumn(label: SizedBox.shrink()),
         ],
         rows: _cartItems.map((item) {
           return DataRow(
@@ -1329,9 +2519,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                   ),
                 ),
               ),
-              DataCell(
-                ProductTypeBadge(type: item.product.type),
-              ),
+              DataCell(ProductTypeBadge(type: item.product.type)),
               DataCell(
                 QuantityControl(
                   quantity: item.quantity,
@@ -1352,7 +2540,8 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                 DataCell(
                   InlineEditableField(
                     value: item.seasonalIncrement,
-                    onChanged: (val) => _updateCartItemSeasonalIncrement(item.id, val),
+                    onChanged: (val) =>
+                        _updateCartItemSeasonalIncrement(item.id, val),
                     width: 80,
                   ),
                 ),
@@ -1382,7 +2571,10 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                       width: 22,
                       height: 22,
                       decoration: BoxDecoration(
-                        border: Border.all(color: SaleColors.borderLight, width: 0.5),
+                        border: Border.all(
+                          color: SaleColors.borderLight,
+                          width: 0.5,
+                        ),
                         borderRadius: BorderRadius.circular(5),
                       ),
                       child: const Center(
@@ -1420,7 +2612,10 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           _buildSummaryRow('Subtotal', summary.subtotal),
           _buildSummaryRow('Item Discounts', summary.itemDiscounts),
           if (showSeasonalIncrement)
-            _buildSummaryRow('Seasonal Increment Total', summary.totalSeasonalIncrements),
+            _buildSummaryRow(
+              'Seasonal Increment Total',
+              summary.totalSeasonalIncrements,
+            ),
           _buildOverallDiscountRow(),
           Container(
             height: 0.5,
@@ -1451,33 +2646,49 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           const SizedBox(height: 12),
           PaymentMethodToggle(
             selectedMethod: _paymentMethod,
-            onChanged: (method) {
-              setState(() {
-                _paymentMethod = method;
-              });
-            },
+            onChanged: !_isWalkInCustomer
+                ? (method) {
+                    setState(() {
+                      _paymentMethod = method;
+                    });
+                  }
+                : (method) {},
           ),
           const SizedBox(height: 10),
           Material(
             color: Colors.transparent,
             child: InkWell(
-              onTap: _saveAndPrint,
+              onTap: _isSaving ? null : _saveAndPrint,
               borderRadius: BorderRadius.circular(10),
               child: Container(
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(vertical: 11),
                 decoration: BoxDecoration(
-                  color: SaleColors.accentGreen,
+                  color: _isSaving
+                      ? SaleColors.accentGreen.withOpacity(0.6)
+                      : SaleColors.accentGreen,
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
-                  children: const [
-                    Icon(Icons.check, size: 14, color: Colors.white),
-                    SizedBox(width: 8),
+                  children: [
+                    if (_isSaving)
+                      const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            Colors.white,
+                          ),
+                        ),
+                      )
+                    else
+                      const Icon(Icons.check, size: 14, color: Colors.white),
+                    const SizedBox(width: 8),
                     Text(
-                      'Save & Print receipt',
-                      style: TextStyle(
+                      _isSaving ? 'Saving...' : 'Save & Print receipt',
+                      style: const TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.w500,
                         color: Colors.white,
@@ -1506,7 +2717,9 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Text(
-                  'WhatsApp PDF to ${_selectedZamindar?.name ?? "Zamindar"}',
+                  _isWalkInCustomer
+                      ? 'WhatsApp PDF to ${_walkInCustomerNameController.text.isNotEmpty ? _walkInCustomerNameController.text : "Customer"}'
+                      : 'WhatsApp PDF to ${_selectedZamindar?.name ?? "Zamindar"}',
                   textAlign: TextAlign.center,
                   style: const TextStyle(
                     fontSize: 12,
@@ -1529,10 +2742,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         children: [
           Text(
             label,
-            style: const TextStyle(
-              fontSize: 13,
-              color: SaleColors.textLight,
-            ),
+            style: const TextStyle(fontSize: 13, color: SaleColors.textLight),
           ),
           Text(
             CurrencyFormatter.format(value),
@@ -1555,10 +2765,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         children: [
           const Text(
             'Overall Discount',
-            style: TextStyle(
-              fontSize: 13,
-              color: SaleColors.textLight,
-            ),
+            style: TextStyle(fontSize: 13, color: SaleColors.textLight),
           ),
           SizedBox(
             width: 80,
@@ -1566,12 +2773,12 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
               controller: _overallDiscountController,
               textAlign: TextAlign.right,
               keyboardType: TextInputType.number,
-              style: const TextStyle(
-                fontSize: 12,
-                color: Colors.white,
-              ),
+              style: const TextStyle(fontSize: 12, color: Colors.white),
               decoration: InputDecoration(
-                contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 4,
+                  vertical: 2,
+                ),
                 isDense: true,
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(7),
@@ -1610,5 +2817,15 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         ],
       ),
     );
+  }
+}
+
+extension FirstOrNullExtension<E> on Iterable<E> {
+  E? get firstOrNull {
+    final iterator = this.iterator;
+    if (iterator.moveNext()) {
+      return iterator.current;
+    }
+    return null;
   }
 }

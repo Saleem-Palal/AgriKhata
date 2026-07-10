@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>AgriKhata — Main Ledger</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:13px;background:#F7F9F4;color:#1B4332}
+.app{display:flex;min-height:100vh}
+svg{display:block}
+
+/* ---------- Sidebar ---------- */
+.sidebar{width:220px;flex-shrink:0;background:#1B4332;display:flex;flex-direction:column}
+.logo{padding:18px 16px 14px;border-bottom:0.5px solid rgba(255,255,255,0.5)}
+.logo-name{font-size:20px;font-weight:700;color:#fff}
+.logo-sub{font-size:11px;color:#A7C4A0;margin-top:2px}
+.nav{padding:12px 10px;flex:1}
+.nav-section{font-size:10px;color:#6B9E7A;font-weight:700;letter-spacing:1.2px;padding:10px 8px 4px;text-transform:uppercase}
+.nav-item{display:flex;align-items:center;gap:9px;padding:10px 12px;border-radius:10px;cursor:pointer;color:#A7C4A0;font-size:12.5px;margin-bottom:2px}
+.nav-item.active{background:#2D6A4F;color:#fff;font-weight:500}
+.nav-item svg{width:16px;height:16px;flex-shrink:0}
+.sb-footer{padding:12px 14px;border-top:0.5px solid rgba(255,255,255,0.05);display:flex;align-items:center;gap:9px}
+.sb-av{width:30px;height:30px;border-radius:50%;background:#2D6A4F;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:500;color:#B7E4C7;border:1px solid #40916C;flex-shrink:0}
+.sb-name{font-size:12px;font-weight:500;color:#fff}
+.sb-role{font-size:10px;color:#6B9E7A}
+
+/* ---------- Main column ---------- */
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+
+/* ---------- Topbar ---------- */
+.topbar{background:#fff;border-bottom:0.5px solid #E2EBE0;padding:12px 24px;display:flex;align-items:center;justify-content:space-between}
+.breadcrumb{font-size:12px;color:#95B89A}
+.breadcrumb .cur{color:#1B4332;font-weight:500}
+
+/* ---------- Content ---------- */
+.content{padding:20px;flex:1}
+
+/* ---------- Tabs ---------- */
+.tabs-card{background:#fff;border:0.5px solid #E2EBE0;border-radius:10px;display:flex;margin-bottom:14px;overflow:hidden}
+.tab{padding:12px 20px;font-size:12.5px;font-weight:500;color:#95B89A;cursor:pointer;border-bottom:2px solid transparent;text-align:center}
+.tab.active{color:#1B4332;border-bottom-color:#1B4332;background:#F7F9F4}
+
+/* ---------- Filter row ---------- */
+.filter-row{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.search-wrap{display:flex;align-items:center;gap:7px;background:#fff;border:0.5px solid #C6DEC9;border-radius:8px;padding:8px 12px;flex:1}
+.search-wrap svg{width:15px;height:15px;color:#95B89A;flex-shrink:0}
+.search-wrap input{border:none;outline:none;font-size:12.5px;color:#1B4332;font-family:inherit;background:transparent;width:100%}
+.search-wrap input::placeholder{color:#95B89A}
+.f-btn{display:flex;align-items:center;gap:6px;background:#fff;border:0.5px solid #C6DEC9;border-radius:8px;padding:8px 13px;font-size:12px;font-weight:500;color:#1B4332;cursor:pointer;white-space:nowrap}
+.f-btn svg{width:14px;height:14px}
+.f-btn.export{color:#1B4332}
+
+/* ---------- KPI row ---------- */
+.kpi-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:14px}
+.kpi-card{background:#fff;border:0.5px solid #E2EBE0;border-radius:12px;padding:12px 16px}
+.kpi-lbl{font-size:10px;font-weight:500;color:#95B89A;text-transform:uppercase;letter-spacing:.3px}
+.kpi-val{font-size:19px;font-weight:600;margin-top:5px}
+.kpi-val.vol{color:#1B4332}
+.kpi-val.cash{color:#2D6A4F}
+.kpi-val.credit{color:#A32D2D}
+
+/* ---------- Ledger grid ---------- */
+.card{background:#fff;border-radius:12px;border:0.5px solid #E2EBE0;overflow:hidden}
+table{width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed}
+thead th{padding:9px 14px;text-align:left;font-size:10px;font-weight:500;color:#6B8F71;border-bottom:0.5px solid #E2EBE0;background:#F7F9F4;text-transform:uppercase;letter-spacing:.3px}
+thead th.num{text-align:right}
+tbody td{padding:11px 14px;border-bottom:0.5px solid #E2EBE0;vertical-align:top}
+tbody tr:hover td{background:#F0F7EB}
+tbody tr:last-child td{border-bottom:none}
+
+.inv-no{font-weight:500;color:#1B4332;font-size:12px}
+.inv-time{font-size:10px;color:#95B89A;margin-top:2px}
+.stk-name{font-weight:500;color:#1B4332;font-size:12px}
+.stk-sub{font-size:10px;color:#6B8F71;margin-top:2px}
+.items-preview{font-size:11px;color:#6B8F71;line-height:1.4}
+.amt{text-align:right;font-weight:500;color:#1B4332;font-size:12px}
+.amt-muted{text-align:right;color:#2D6A4F;font-size:12px}
+.badge-cell{text-align:right}
+.badge{display:inline-block;font-size:9.5px;font-weight:500;padding:3px 9px;border-radius:20px;white-space:nowrap}
+.badge.paid{background:#D8F3DC;color:#2D6A4F}
+.badge.partial{background:#FAEEDA;color:#633806}
+.badge.unpaid{background:#FCEBEB;color:#791F1F}
+.view-cell{text-align:center;width:40px}
+.view-btn{width:28px;height:28px;border-radius:7px;border:0.5px solid #C6DEC9;background:#fff;display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
+.view-btn svg{width:14px;height:14px;color:#6B8F71}
+
+.footnote{font-size:11px;color:#95B89A;padding:10px 14px}
+
+.view-btn{transition:background .12s,border-color .12s}
+.view-btn:hover{background:#F0F7EB;border-color:#97C459}
+.view-btn:hover svg{color:#2D6A4F}
+
+/* ---------- Invoice modal ---------- */
+.modal-overlay{position:fixed;inset:0;background:rgba(27,67,50,0.4);display:none;align-items:center;justify-content:center;z-index:50}
+.modal-overlay.open{display:flex}
+.modal{background:#fff;border-radius:14px;width:420px;max-width:92vw;max-height:86vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 50px rgba(27,67,50,0.25)}
+.modal-head{background:#1B4332;padding:14px 18px;display:flex;align-items:center;justify-content:space-between}
+.modal-title{font-size:14px;font-weight:500;color:#fff}
+.modal-sub{font-size:10px;color:#A7C4A0;margin-top:2px}
+.modal-close{width:26px;height:26px;border-radius:7px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#A7C4A0;background:transparent;border:none}
+.modal-close:hover{background:rgba(255,255,255,0.1);color:#fff}
+.modal-close svg{width:16px;height:16px}
+.modal-body{padding:16px 18px;overflow-y:auto}
+.modal-row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:0.5px solid #E2EBE0;font-size:12px}
+.modal-row:last-child{border-bottom:none}
+.modal-row .ml{color:#6B8F71}
+.modal-row .mv{font-weight:500;color:#1B4332;text-align:right}
+.modal-items-title{font-size:10px;font-weight:500;color:#6B8F71;text-transform:uppercase;letter-spacing:.3px;margin:14px 0 8px}
+.modal-items{background:#F7F9F4;border-radius:8px;padding:10px 12px;font-size:12px;color:#1B4332;line-height:1.6}
+.modal-total{display:flex;justify-content:space-between;align-items:center;padding:12px 0 0;margin-top:6px}
+.modal-total .tl{font-size:12px;font-weight:500;color:#1B4332}
+.modal-total .tv{font-size:17px;font-weight:600;color:#1B4332}
+.modal-footer{padding:12px 18px;border-top:0.5px solid #E2EBE0;display:flex;gap:8px;justify-content:flex-end}
+.mf-btn{border-radius:8px;padding:8px 14px;font-size:12px;font-weight:500;cursor:pointer;display:flex;align-items:center;gap:6px;font-family:inherit}
+.mf-btn svg{width:14px;height:14px}
+.mf-btn.primary{background:#1B4332;color:#fff;border:none}
+.mf-btn.ghost{background:#fff;color:#1B4332;border:0.5px solid #C6DEC9}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ================= SIDEBAR ================= -->
+  <div class="sidebar">
+    <div class="logo">
+      <div class="logo-name">AgriKhata</div>
+      <div class="logo-sub">Atta Muhammad &amp; Sons</div>
+    </div>
+    <div class="nav">
+      <div class="nav-section">Main</div>
+      <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Dashboard</div>
+      <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 20c0-3.3 2.5-5.5 5.5-5.5s5.5 2.2 5.5 5.5"/><circle cx="17.5" cy="9" r="2.6"/><path d="M15.5 14.3c2.4.3 4.5 2.2 4.5 5.2"/></svg>Zamindars</div>
+      <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 3h9l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M9 12h6M9 16h6M9 8h2"/></svg>New Sale</div>
+      <div class="nav-section">Inventory</div>
+      <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3.5 7.5 12 3l8.5 4.5-8.5 4.5-8.5-4.5z"/><path d="M3.5 7.5v9L12 21l8.5-4.5v-9"/><path d="M12 12v9"/></svg>Products</div>
+      <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2.5" y="7" width="12" height="9" rx="1"/><path d="M14.5 10h4l3 3v3h-7z"/><circle cx="7" cy="18.5" r="1.7"/><circle cx="17.5" cy="18.5" r="1.7"/></svg>Purchase</div>
+      <div class="nav-section">Finance</div>
+      <div class="nav-item active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/></svg>Ledger</div>
+      <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 20V10M11 20V4M18 20v-7"/></svg>Reports</div>
+      <div class="nav-section">System</div>
+      <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 1 1-4 0v-.2a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H3a2 2 0 1 1 0-4h.2a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.6V3a2 2 0 1 1 4 0v.2a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.6 1H21a2 2 0 1 1 0 4h-.2a1.7 1.7 0 0 0-1.6 1z"/></svg>Settings</div>
+    </div>
+    <div class="sb-footer">
+      <div class="sb-av">AM</div>
+      <div><div class="sb-name">Atta Muhammad</div><div class="sb-role">Owner</div></div>
+    </div>
+  </div>
+
+  <!-- ================= MAIN ================= -->
+  <div class="main">
+    <div class="topbar">
+      <div class="breadcrumb">Finance &nbsp;›&nbsp; <span class="cur">Ledger</span></div>
+    </div>
+
+    <div class="content">
+
+      <!-- Zone A: Tabs -->
+      <div class="tabs-card">
+        <div class="tab active" style="flex:1">Sales Ledger</div>
+        <div class="tab" style="flex:1">Purchases Ledger</div>
+      </div>
+
+      <!-- Zone A: Search + filters -->
+      <div class="filter-row">
+        <div class="search-wrap">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <input type="text" placeholder="Search Invoice #, Zamindar or Kisaan name..." />
+        </div>
+        <div class="f-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 3v3M16 3v3"/></svg>
+          1 Jul – 3 Jul 2026
+        </div>
+        <div class="f-btn export">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 19h16"/></svg>
+          Export Statement
+        </div>
+      </div>
+
+      <!-- Zone B: KPI row -->
+      <div class="kpi-row">
+        <div class="kpi-card">
+          <div class="kpi-lbl">Total Volume Sold</div>
+          <div class="kpi-val vol">₨ 1,86,000</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-lbl">Total Cash Received</div>
+          <div class="kpi-val cash">₨ 96,500</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-lbl">Outstanding Credit</div>
+          <div class="kpi-val credit">₨ 89,500</div>
+        </div>
+      </div>
+
+      <!-- Zone C: Ledger grid -->
+      <div class="card">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:13%">Invoice</th>
+              <th style="width:18%">Stakeholder</th>
+              <th style="width:24%">Items</th>
+              <th class="num" style="width:11%">Total</th>
+              <th class="num" style="width:11%">Paid</th>
+              <th class="num" style="width:17%">Status</th>
+              <th style="width:6%"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <div class="inv-no">INV-2091</div>
+                <div class="inv-time">2 Jul · 11:20 AM</div>
+              </td>
+              <td>
+                <div class="stk-name">Chaudhry Akbar</div>
+                <div class="stk-sub">Kisaan: Ramzan Ali</div>
+              </td>
+              <td><div class="items-preview">Urea x5, DAP x2, Karate 500ml x1</div></td>
+              <td class="amt">₨ 76,500</td>
+              <td class="amt-muted">₨ 76,500</td>
+              <td class="badge-cell"><span class="badge paid">Paid</span></td>
+              <td class="view-cell">
+                <div class="view-btn" onclick="openInvoice('INV-2091')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M1.5 12S5 5 12 5s10.5 7 10.5 7-3.5 7-10.5 7S1.5 12 1.5 12z"/><circle cx="12" cy="12" r="3"/></svg></div>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <div class="inv-no">INV-2090</div>
+                <div class="inv-time">1 Jul · 4:05 PM</div>
+              </td>
+              <td>
+                <div class="stk-name">Malik Rasheed</div>
+                <div class="stk-sub">Kisaan: Muhammad Saeed</div>
+              </td>
+              <td><div class="items-preview">Wheat Seed 40kg x3, DAP x4</div></td>
+              <td class="amt">₨ 48,200</td>
+              <td class="amt-muted">₨ 20,000</td>
+              <td class="badge-cell"><span class="badge partial">Partial · ₨ 28,200 due</span></td>
+              <td class="view-cell">
+                <div class="view-btn" onclick="openInvoice('INV-2090')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M1.5 12S5 5 12 5s10.5 7 10.5 7-3.5 7-10.5 7S1.5 12 1.5 12z"/><circle cx="12" cy="12" r="3"/></svg></div>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <div class="inv-no">INV-2089</div>
+                <div class="inv-time">30 Jun · 10:40 AM</div>
+              </td>
+              <td>
+                <div class="stk-name">Chaudhry Akbar</div>
+                <div class="stk-sub">Kisaan: Bashir Ahmed</div>
+              </td>
+              <td><div class="items-preview">Cotton Seed x2, Herbicide 1L x1</div></td>
+              <td class="amt">₨ 61,300</td>
+              <td class="amt-muted">₨ 0</td>
+              <td class="badge-cell"><span class="badge unpaid">Unpaid Credit</span></td>
+              <td class="view-cell">
+                <div class="view-btn" onclick="openInvoice('INV-2089')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M1.5 12S5 5 12 5s10.5 7 10.5 7-3.5 7-10.5 7S1.5 12 1.5 12z"/><circle cx="12" cy="12" r="3"/></svg></div>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <div class="inv-no">INV-2088</div>
+                <div class="inv-time">29 Jun · 9:12 AM</div>
+              </td>
+              <td>
+                <div class="stk-name">Sardar Iqbal</div>
+                <div class="stk-sub">Kisaan: Ghulam Rasool</div>
+              </td>
+              <td><div class="items-preview">Mustard Seed x1, Urea x3</div></td>
+              <td class="amt">₨ 22,400</td>
+              <td class="amt-muted">₨ 22,400</td>
+              <td class="badge-cell"><span class="badge paid">Paid</span></td>
+              <td class="view-cell">
+                <div class="view-btn" onclick="openInvoice('INV-2088')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M1.5 12S5 5 12 5s10.5 7 10.5 7-3.5 7-10.5 7S1.5 12 1.5 12z"/><circle cx="12" cy="12" r="3"/></svg></div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="footnote">Showing 4 of 47 entries · ₨ 89,500 currently outstanding</div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ================= INVOICE MODAL ================= -->
+<div class="modal-overlay" id="invoiceModal" onclick="if(event.target===this)closeInvoice()">
+  <div class="modal">
+    <div class="modal-head">
+      <div>
+        <div class="modal-title" id="mInvNo">INV-2091</div>
+        <div class="modal-sub" id="mInvTime">2 Jul · 11:20 AM</div>
+      </div>
+      <button class="modal-close" onclick="closeInvoice()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-row"><span class="ml">Zamindar</span><span class="mv" id="mZamindar">—</span></div>
+      <div class="modal-row"><span class="ml">Kisaan</span><span class="mv" id="mKisaan">—</span></div>
+      <div class="modal-row"><span class="ml">Payment status</span><span class="mv" id="mStatus">—</span></div>
+      <div class="modal-items-title">Items</div>
+      <div class="modal-items" id="mItems">—</div>
+      <div class="modal-row" style="margin-top:14px"><span class="ml">Amount paid</span><span class="mv" id="mPaid">—</span></div>
+      <div class="modal-row"><span class="ml">Amount remaining</span><span class="mv" id="mRemaining">—</span></div>
+      <div class="modal-total">
+        <span class="tl">Total invoice amount</span>
+        <span class="tv" id="mTotal">—</span>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="mf-btn ghost" onclick="closeInvoice()">Close</button>
+      <button class="mf-btn primary">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 9V3h12v6"/><rect x="6" y="13" width="12" height="8"/><path d="M6 13H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h16a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-2"/></svg>
+        Reprint Receipt
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+const INVOICES = {
+  'INV-2091': { time:'2 Jul · 11:20 AM', zamindar:'Chaudhry Akbar', kisaan:'Ramzan Ali', items:'Urea x5, DAP x2, Karate 500ml x1', total:76500, paid:76500 },
+  'INV-2090': { time:'1 Jul · 4:05 PM', zamindar:'Malik Rasheed', kisaan:'Muhammad Saeed', items:'Wheat Seed 40kg x3, DAP x4', total:48200, paid:20000 },
+  'INV-2089': { time:'30 Jun · 10:40 AM', zamindar:'Chaudhry Akbar', kisaan:'Bashir Ahmed', items:'Cotton Seed x2, Herbicide 1L x1', total:61300, paid:0 },
+  'INV-2088': { time:'29 Jun · 9:12 AM', zamindar:'Sardar Iqbal', kisaan:'Ghulam Rasool', items:'Mustard Seed x1, Urea x3', total:22400, paid:22400 }
+};
+
+function formatPKR(amount){
+  const isNeg = amount < 0;
+  let digits = Math.round(Math.abs(amount)).toString();
+  if(digits.length <= 3) return '₨ ' + (isNeg?'-':'') + digits;
+  const last3 = digits.slice(-3);
+  let rest = digits.slice(0, -3);
+  rest = rest.replace(/\B(?=(\d{2})+(?!\d))/g, ',');
+  return '₨ ' + (isNeg?'-':'') + rest + ',' + last3;
+}
+
+function openInvoice(invNo){
+  const inv = INVOICES[invNo];
+  if(!inv) return;
+  const remaining = inv.total - inv.paid;
+  let statusHtml, statusLabel;
+  if(remaining <= 0){ statusLabel = 'Paid'; }
+  else if(inv.paid <= 0){ statusLabel = 'Unpaid Credit'; }
+  else { statusLabel = 'Partial · ' + formatPKR(remaining) + ' due'; }
+
+  document.getElementById('mInvNo').textContent = invNo;
+  document.getElementById('mInvTime').textContent = inv.time;
+  document.getElementById('mZamindar').textContent = inv.zamindar;
+  document.getElementById('mKisaan').textContent = inv.kisaan;
+  document.getElementById('mStatus').textContent = statusLabel;
+  document.getElementById('mItems').textContent = inv.items;
+  document.getElementById('mPaid').textContent = formatPKR(inv.paid);
+  document.getElementById('mRemaining').textContent = formatPKR(remaining);
+  document.getElementById('mTotal').textContent = formatPKR(inv.total);
+
+  document.getElementById('invoiceModal').classList.add('open');
+}
+
+function closeInvoice(){
+  document.getElementById('invoiceModal').classList.remove('open');
+}
+
+document.addEventListener('keydown', function(e){
+  if(e.key === 'Escape') closeInvoice();
+});
+</script>
+</body>
+</html>

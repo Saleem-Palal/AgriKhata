@@ -64,14 +64,19 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
   void initState() {
     super.initState();
     _searchController.addListener(() => setState(() {}));
+    DatabaseHelper.instance.addListener(_onDatabaseChanged);
     _loadZamindars();
   }
 
-  Future<void> _loadZamindars() async {
-    setState(() {
-      _isLoading = true;
-      _loadError = null;
-    });
+  void _onDatabaseChanged() => _loadZamindars(showLoading: false);
+
+  Future<void> _loadZamindars({bool showLoading = true}) async {
+    if (showLoading) {
+      setState(() {
+        _isLoading = true;
+        _loadError = null;
+      });
+    }
 
     try {
       final rows = await DatabaseHelper.instance.getAllZamindarsEnriched();
@@ -92,6 +97,7 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
   @override
   void dispose() {
     _searchController.dispose();
+    DatabaseHelper.instance.removeListener(_onDatabaseChanged);
     super.dispose();
   }
 

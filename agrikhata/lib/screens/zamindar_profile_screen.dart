@@ -5,7 +5,10 @@ import 'package:agrikhata/Data/zamindar_ledger_tab.dart';
 import 'package:agrikhata/Data/zamindar_overview_tab.dart';
 import 'package:agrikhata/Database/database_helper.dart';
 import 'package:agrikhata/screens/add_zamindar_screen.dart';
+import 'package:agrikhata/utils/pdf_generator.dart';
+import 'package:agrikhata/utils/pdf_share.dart';
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as p;
 
 class ZamindarProfileScreen extends StatefulWidget {
   final Zamindar zamindar;
@@ -13,6 +16,8 @@ class ZamindarProfileScreen extends StatefulWidget {
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
   final int? initialTabIndex;
+  final VoidCallback? onNavigateToSaleWithZamindar;
+  final void Function(int kisaanId)? onNavigateToSaleWithKisaan;
 
   const ZamindarProfileScreen({
     super.key,
@@ -21,6 +26,8 @@ class ZamindarProfileScreen extends StatefulWidget {
     this.onEdit,
     this.onDelete,
     this.initialTabIndex,
+    this.onNavigateToSaleWithZamindar,
+    this.onNavigateToSaleWithKisaan,
   });
 
   @override
@@ -30,7 +37,7 @@ class ZamindarProfileScreen extends StatefulWidget {
 class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
   int _selectedTab = 0;
   bool _openKisaanDrawerOnLoad = false;
-  Map<String, Object>? _balanceData;
+  String _outstandingBalanceDisplay = "Rs. 0";
   int _kisaanCount = 0;
   bool _isLoadingStats = true;
 
@@ -43,25 +50,38 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
       _selectedTab = widget.initialTabIndex!;
     }
     _loadLiveStats();
+    // Listen for database changes and auto-refresh
+    DatabaseHelper.instance.addListener(_onDatabaseChanged);
   }
 
-  Future<void> _loadLiveStats() async {
+  @override
+  void dispose() {
+    // Remove database listener to prevent memory leaks
+    DatabaseHelper.instance.removeListener(_onDatabaseChanged);
+    super.dispose();
+  }
+
+  void _onDatabaseChanged() => _loadLiveStats(showLoading: false);
+
+  Future<void> _loadLiveStats({bool showLoading = true}) async {
     if (widget.zamindar.id == null) {
-      setState(() => _isLoadingStats = false);
+      if (showLoading) setState(() => _isLoadingStats = false);
       return;
     }
 
+    if (showLoading) setState(() => _isLoadingStats = true);
+
     try {
-      final balances = await DatabaseHelper.instance.getZamindarBalancesSafe(
-        widget.zamindar.id!,
-      );
+      // Use centralized method for outstanding balance
+      final outstandingBalance = await DatabaseHelper.instance
+          .getOutstandingBalanceString(widget.zamindar.id!);
       final count = await DatabaseHelper.instance.countKisaansForZamindar(
         widget.zamindar.id!,
       );
 
       if (!mounted) return;
       setState(() {
-        _balanceData = balances;
+        _outstandingBalanceDisplay = outstandingBalance;
         _kisaanCount = count;
         _isLoadingStats = false;
       });
@@ -215,8 +235,8 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
             )
           else ...[
             _bannerStat(
-              "Rs ${_formatNumber((_balanceData?['outstandingBalance'] as int? ?? 0).toDouble())}",
-              "Total outstanding",
+              _outstandingBalanceDisplay,
+              "Total outstanding balance",
             ),
             const SizedBox(width: 24),
             _bannerStat(
@@ -253,6 +273,12 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
   }
 
   Widget _buildTabBar() {
+    final tabIcons = [
+      Icons.dashboard_outlined,
+      Icons.people_outline,
+      Icons.receipt_long_outlined,
+    ];
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 24),
       decoration: const BoxDecoration(
@@ -262,25 +288,43 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
         children: List.generate(_tabs.length, (i) {
           final isActive = _selectedTab == i;
           return InkWell(
-            onTap: () => setState(() => _selectedTab = i),
+            onTap: () {
+              setState(() => _selectedTab = i);
+              // Refresh stats when switching tabs to ensure data is current
+              _loadLiveStats();
+            },
             child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              margin: const EdgeInsets.only(right: 24),
+              padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 4),
+              margin: const EdgeInsets.only(right: 32),
               decoration: BoxDecoration(
                 border: Border(
                   bottom: BorderSide(
                     color: isActive ? AppColors.darkGreen : Colors.transparent,
-                    width: 2,
+                    width: 2.5,
                   ),
                 ),
               ),
-              child: Text(
-                _tabs[i],
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                  color: isActive ? AppColors.darkGreen : AppColors.textMuted,
-                ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    tabIcons[i],
+                    size: 16,
+                    color: isActive ? AppColors.darkGreen : AppColors.textMuted,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    _tabs[i],
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
+                      color: isActive
+                          ? AppColors.darkGreen
+                          : AppColors.textMuted,
+                      letterSpacing: 0.2,
+                    ),
+                  ),
+                ],
               ),
             ),
           );
@@ -307,6 +351,7 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
           zamindarId: z.id!,
           zamindarName: z.name,
           autoOpenAdd: shouldOpen,
+          onNavigateToSale: widget.onNavigateToSaleWithKisaan,
         );
       case 2:
         return ZamindarLedgerTab(zamindarId: z.id!);
@@ -325,124 +370,210 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
             });
           },
           onRefresh: _loadLiveStats,
+          onNavigateToSaleWithZamindar: widget.onNavigateToSaleWithZamindar,
         );
     }
   }
 
-  // ---------- Export PDF dialog & action stubs ----------
+  // ---------- Export PDF dialog ----------
   void _showExportPdfDialog(Zamindar z) {
+    if (z.id == null) return;
+
     showDialog(
       context: context,
-      builder: (ctx) {
-        // temporary local selection state inside dialog
-        final Map<String, bool> seasonSelection = {
-          'Rabi': true,
-          'Kharif': true,
-        };
-        final Map<String, bool> cropSelection = {
-          'Rice': true,
-          'Wheat': true,
-          'Cotton': true,
-        };
+      barrierColor: AppColors.darkGreen.withValues(alpha: 0.35),
+      builder: (ctx) => _ZamindarExportPdfSheet(
+        zamindar: z,
+        onSave: (seasons, crops) =>
+            _runExportAction(z, seasons, crops, ExportPdfAction.save),
+        onWhatsApp: (seasons, crops) =>
+            _runExportAction(z, seasons, crops, ExportPdfAction.whatsapp),
+        onPrint: (seasons, crops) =>
+            _runExportAction(z, seasons, crops, ExportPdfAction.print),
+      ),
+    );
+  }
 
-        return StatefulBuilder(
-          builder: (c, setState) {
-            return AlertDialog(
-              title: const Text('Export PDF — Select data to include'),
-              content: SingleChildScrollView(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('Seasons'),
-                    ...seasonSelection.keys.map((s) {
-                      return CheckboxListTile(
-                        value: seasonSelection[s],
-                        title: Text(s),
-                        onChanged: (v) =>
-                            setState(() => seasonSelection[s] = v!),
-                      );
-                    }).toList(),
-                    const SizedBox(height: 8),
-                    const Text('Crops'),
-                    ...cropSelection.keys.map((cname) {
-                      return CheckboxListTile(
-                        value: cropSelection[cname],
-                        title: Text(cname),
-                        onChanged: (v) =>
-                            setState(() => cropSelection[cname] = v!),
-                      );
-                    }).toList(),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () {
-                    Navigator.of(ctx).pop();
-                  },
-                  child: const Text('Cancel'),
-                ),
-                TextButton(
-                  onPressed: () {
-                    Navigator.of(ctx).pop();
-                    _generateAndSavePdf(z, seasonSelection, cropSelection);
-                  },
-                  child: const Text('Save PDF'),
-                ),
-                TextButton(
-                  onPressed: () {
-                    Navigator.of(ctx).pop();
-                    _sharePdfViaWhatsApp(z, seasonSelection, cropSelection);
-                  },
-                  child: const Text('WhatsApp'),
-                ),
-                TextButton(
-                  onPressed: () {
-                    Navigator.of(ctx).pop();
-                    _printPdf(z, seasonSelection, cropSelection);
-                  },
-                  child: const Text('Print'),
-                ),
-              ],
-            );
-          },
+  Future<void> _runExportAction(
+    Zamindar z,
+    Set<String> selectedSeasons,
+    Set<String> selectedCrops,
+    ExportPdfAction action,
+  ) async {
+    try {
+      final allRows = await DatabaseHelper.instance.getLedgerTransactions(
+        z.id!,
+      );
+      final kisaans = await DatabaseHelper.instance.getKisaansForZamindar(
+        z.id!,
+      );
+      final kisaanCropById = <int, String>{
+        for (final k in kisaans)
+          if (k.id != null) k.id!: k.currentCrop,
+      };
+
+      const knownCrops = {
+        'wheat',
+        'mustard',
+        'potato',
+        'onion',
+        'chili',
+        'rice',
+        'cotton',
+        'sugarcane',
+        'maize',
+        'sunflower',
+        'tomato',
+        'mango',
+      };
+
+      bool matchesSeason(Map<String, dynamic> row) {
+        if (selectedSeasons.isEmpty) return true;
+        final season = (row[LedgerTransactionTable.season] as String? ?? '')
+            .trim();
+        if (season.isEmpty) return true; // unscoped rows stay included
+        if (selectedSeasons.contains(season)) return true;
+
+        // Fuzzy family match: "Kharif 2026" ↔ selected "Kharif 2026" / "Kharif"
+        final rowFamily = season.toLowerCase().contains('rabi')
+            ? 'rabi'
+            : season.toLowerCase().contains('kharif')
+            ? 'kharif'
+            : null;
+        if (rowFamily == null) return false;
+        return selectedSeasons.any((selected) {
+          final s = selected.toLowerCase();
+          return s == season.toLowerCase() || s.contains(rowFamily);
+        });
+      }
+
+      bool matchesCrops(Map<String, dynamic> row) {
+        if (selectedCrops.isEmpty) return true;
+
+        final kisaanId = row[LedgerTransactionTable.kisaanId] as int?;
+        if (kisaanId == null) return true;
+
+        final cropBlob = (kisaanCropById[kisaanId] ?? '').trim();
+        if (cropBlob.isEmpty) return true;
+
+        final kisaanCrops = cropBlob
+            .split(',')
+            .map((c) => c.trim().toLowerCase())
+            .where((c) => c.isNotEmpty)
+            .toSet();
+
+        // Non-catalog labels like "Direct Purchase" / Self are not crop filters.
+        final hasCatalogCrop = kisaanCrops.any(knownCrops.contains);
+        if (!hasCatalogCrop) return true;
+
+        final selected = selectedCrops.map((c) => c.toLowerCase()).toSet();
+        return kisaanCrops.any(selected.contains);
+      }
+
+      // Season is the primary ledger filter; crop is a soft secondary filter.
+      final seasonMatched = allRows.where(matchesSeason).toList();
+      var filtered = seasonMatched.where(matchesCrops).toList();
+
+      // If crop selection wiped everything, keep season-matched rows so the PDF
+      // never comes out empty when ledger data exists for the chosen seasons.
+      if (filtered.isEmpty && seasonMatched.isNotEmpty) {
+        filtered = seasonMatched;
+      }
+
+      // Last resort: if season labels somehow don't align, export full ledger.
+      if (filtered.isEmpty && allRows.isNotEmpty) {
+        filtered = List<Map<String, dynamic>>.from(allRows);
+      }
+
+      final totalDebit = filtered
+          .where(
+            (row) =>
+                (row[LedgerTransactionTable.type] as String?) ==
+                LedgerTransactionType.debit,
+          )
+          .fold<int>(
+            0,
+            (sum, row) =>
+                sum +
+                ((row[LedgerTransactionTable.amount] as num?)?.round() ?? 0),
+          );
+      final totalCredit = filtered
+          .where(
+            (row) =>
+                (row[LedgerTransactionTable.type] as String?) ==
+                LedgerTransactionType.credit,
+          )
+          .fold<int>(
+            0,
+            (sum, row) =>
+                sum +
+                ((row[LedgerTransactionTable.amount] as num?)?.round() ?? 0),
+          );
+
+      final seasonLabel = selectedSeasons.isEmpty
+          ? 'All seasons'
+          : selectedSeasons.join(', ');
+      final cropNote = selectedCrops.isEmpty
+          ? ''
+          : ' · Crops: ${selectedCrops.join(', ')}';
+
+      final outstanding = await DatabaseHelper.instance
+          .getOutstandingBalanceString(z.id!);
+
+      if (action == ExportPdfAction.print) {
+        final pdf = await PdfGenerator.generateZamindarLedgerPdf(
+          zamindarName: '${z.name}$cropNote',
+          seasonLabel: seasonLabel,
+          transactions: filtered,
+          outstandingBalance: outstanding,
+          totalPaymentsReceived: totalCredit,
+          totalDebit: totalDebit,
         );
-      },
-    );
-  }
+        await PdfGenerator.printDocument(pdf);
+        return;
+      }
 
-  void _generateAndSavePdf(
-    Zamindar z,
-    Map<String, bool> seasons,
-    Map<String, bool> crops,
-  ) {
-    // TODO: Implement PDF generation using selected seasons/crops.
-    // For now, show a SnackBar as a placeholder.
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Generating PDF (placeholder)')),
-    );
-  }
+      final file = await PdfGenerator.saveZamindarLedgerToDocuments(
+        zamindarName: z.name,
+        seasonLabel: seasonLabel,
+        transactions: filtered,
+        outstandingBalance: outstanding,
+        totalPaymentsReceived: totalCredit,
+        totalDebit: totalDebit,
+      );
 
-  void _sharePdfViaWhatsApp(
-    Zamindar z,
-    Map<String, bool> seasons,
-    Map<String, bool> crops,
-  ) {
-    // TODO: Implement sharing via WhatsApp intent.
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Sharing via WhatsApp (placeholder)')),
-    );
-  }
+      if (action == ExportPdfAction.whatsapp) {
+        await PdfShare.sharePdfFile(
+          file: file,
+          fileName: p.basename(file.path),
+          text: 'AgriKhata Ledger — ${z.name} ($seasonLabel$cropNote)',
+          subject: 'AgriKhata Zamindar Ledger',
+        );
+        return;
+      }
 
-  void _printPdf(
-    Zamindar z,
-    Map<String, bool> seasons,
-    Map<String, bool> crops,
-  ) {
-    // TODO: Implement printing via platform channels or printing package.
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Printing (placeholder)')));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              filtered.isEmpty
+                  ? 'PDF saved (no ledger rows found) to ${file.path}'
+                  : 'PDF saved (${filtered.length} entries) to ${file.path}',
+            ),
+            backgroundColor: AppColors.darkGreen,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Export failed: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   // ---------- Delete confirmation & stub ----------
@@ -452,7 +583,7 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
       builder: (ctx) => AlertDialog(
         title: Text('Delete ${z.name}?'),
         content: Text(
-          'Are you sure you want to permanently delete ${z.name}? This action cannot be undone.',
+          'Are you sure you want to permanently delete ${z.name}? All linked kisaans, sales, payments, and ledger records will also be removed. This action cannot be undone.',
         ),
         actions: [
           TextButton(
@@ -485,24 +616,415 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
       await DatabaseHelper.instance.deleteZamindar(id);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error deleting zamindar: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error deleting zamindar: $e')));
       }
     }
   }
+}
 
-  String _formatNumber(double value) {
-    final formatted = value.toStringAsFixed(0);
-    final chars = formatted.split('').reversed.toList();
-    final buffer = StringBuffer();
-    for (int i = 0; i < chars.length; i++) {
-      buffer.write(chars[i]);
-      final pos = i + 1;
-      if (pos == 3 || (pos > 3 && (pos - 3) % 2 == 0)) {
-        if (i != chars.length - 1) buffer.write(',');
-      }
+enum ExportPdfAction { save, whatsapp, print }
+
+class _ZamindarExportPdfSheet extends StatefulWidget {
+  final Zamindar zamindar;
+  final void Function(Set<String> seasons, Set<String> crops) onSave;
+  final void Function(Set<String> seasons, Set<String> crops) onWhatsApp;
+  final void Function(Set<String> seasons, Set<String> crops) onPrint;
+
+  const _ZamindarExportPdfSheet({
+    required this.zamindar,
+    required this.onSave,
+    required this.onWhatsApp,
+    required this.onPrint,
+  });
+
+  @override
+  State<_ZamindarExportPdfSheet> createState() =>
+      _ZamindarExportPdfSheetState();
+}
+
+class _ZamindarExportPdfSheetState extends State<_ZamindarExportPdfSheet> {
+  static const Map<String, List<String>> _seasonCropMap = {
+    'Rabi': ['Wheat', 'Mustard', 'Potato', 'Onion', 'Chili'],
+    'Kharif': [
+      'Rice',
+      'Cotton',
+      'Sugarcane',
+      'Maize',
+      'Sunflower',
+      'Tomato',
+      'Mango',
+    ],
+  };
+
+  bool _loading = true;
+  String? _error;
+  List<String> _availableSeasons = [];
+  final Set<String> _selectedSeasons = {};
+  final Set<String> _selectedCrops = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _loadFilters();
+  }
+
+  String _seasonFamily(String seasonLabel) {
+    final lower = seasonLabel.toLowerCase();
+    if (lower.contains('rabi')) return 'Rabi';
+    if (lower.contains('kharif')) return 'Kharif';
+    return seasonLabel;
+  }
+
+  List<String> get _visibleCrops {
+    if (_selectedSeasons.isEmpty) return const [];
+    final allowed = <String>{};
+    for (final season in _selectedSeasons) {
+      final family = _seasonFamily(season);
+      allowed.addAll(_seasonCropMap[family] ?? const []);
     }
-    return buffer.toString().split('').reversed.join('');
+    final profileCrops = widget.zamindar.activeCrops;
+    if (profileCrops.isEmpty) {
+      return allowed.toList()..sort();
+    }
+    return profileCrops.where(allowed.contains).toList();
+  }
+
+  Future<void> _loadFilters() async {
+    try {
+      final seasons = await DatabaseHelper.instance
+          .getDistinctSeasonsForZamindar(widget.zamindar.id!);
+      if (!mounted) return;
+      setState(() {
+        _availableSeasons = seasons;
+        _selectedSeasons
+          ..clear()
+          ..addAll(seasons);
+        _selectedCrops
+          ..clear()
+          ..addAll(_visibleCrops);
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = 'Failed to load filters: $e';
+      });
+    }
+  }
+
+  void _toggleSeason(String season) {
+    setState(() {
+      if (_selectedSeasons.contains(season)) {
+        _selectedSeasons.remove(season);
+      } else {
+        _selectedSeasons.add(season);
+      }
+      final visible = _visibleCrops.toSet();
+      _selectedCrops.removeWhere((c) => !visible.contains(c));
+      for (final crop in visible) {
+        // Newly revealed crops start selected for convenience.
+        if (!_selectedCrops.contains(crop) &&
+            widget.zamindar.activeCrops.contains(crop)) {
+          _selectedCrops.add(crop);
+        }
+      }
+      // If profile has no crops configured, auto-select newly visible ones.
+      if (widget.zamindar.activeCrops.isEmpty) {
+        _selectedCrops.addAll(visible);
+      }
+    });
+  }
+
+  void _toggleCrop(String crop) {
+    setState(() {
+      if (_selectedCrops.contains(crop)) {
+        _selectedCrops.remove(crop);
+      } else {
+        _selectedCrops.add(crop);
+      }
+    });
+  }
+
+  Widget _buildPill({
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+    required Color selectedBg,
+    required Color selectedFg,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: selected ? selectedBg : Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: selected
+                ? selectedFg.withValues(alpha: 0.45)
+                : AppColors.sidebarBg,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (selected)
+              Icon(Icons.check, size: 14, color: selectedFg),
+            if (selected) const SizedBox(width: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                color: selected ? selectedFg : AppColors.textMuted,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final visibleCrops = _visibleCrops;
+
+    return Dialog(
+      backgroundColor: AppColors.background,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 460),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(20, 18, 12, 16),
+              decoration: const BoxDecoration(
+                color: AppColors.darkGreen,
+                borderRadius: BorderRadius.only(
+                  topLeft: Radius.circular(16),
+                  topRight: Radius.circular(16),
+                ),
+              ),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Export PDF',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        SizedBox(height: 2),
+                        Text(
+                          'Select seasons & crops to include',
+                          style: TextStyle(
+                            color: Color(0xFFA7C4A0),
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close, color: Colors.white, size: 18),
+                  ),
+                ],
+              ),
+            ),
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(20, 18, 20, 8),
+                child: _loading
+                    ? const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 28),
+                        child: Center(child: CircularProgressIndicator()),
+                      )
+                    : _error != null
+                    ? Text(
+                        _error!,
+                        style: const TextStyle(color: Colors.red, fontSize: 12),
+                      )
+                    : Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Seasons',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.darkGreen.withValues(alpha: 0.9),
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          const Text(
+                            'Only seasons with ledger activity',
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: AppColors.textMuted,
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          if (_availableSeasons.isEmpty)
+                            const Text(
+                              'No season records found for this Zamindar.',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: AppColors.textMuted,
+                              ),
+                            )
+                          else
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: _availableSeasons
+                                  .map(
+                                    (season) => _buildPill(
+                                      label: season,
+                                      selected: _selectedSeasons.contains(
+                                        season,
+                                      ),
+                                      onTap: () => _toggleSeason(season),
+                                      selectedBg: const Color(0xFFFAEEDA),
+                                      selectedFg: const Color(0xFF633806),
+                                    ),
+                                  )
+                                  .toList(),
+                            ),
+                          const SizedBox(height: 20),
+                          Text(
+                            'Crops',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.darkGreen.withValues(alpha: 0.9),
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          const Text(
+                            'Filtered by selected seasons & profile crops',
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: AppColors.textMuted,
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          if (_selectedSeasons.isEmpty)
+                            const Text(
+                              'Select at least one season to see crops.',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: AppColors.textMuted,
+                              ),
+                            )
+                          else if (visibleCrops.isEmpty)
+                            const Text(
+                              'No matching crops for the selected seasons.',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: AppColors.textMuted,
+                              ),
+                            )
+                          else
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: visibleCrops
+                                  .map(
+                                    (crop) => _buildPill(
+                                      label: crop,
+                                      selected: _selectedCrops.contains(crop),
+                                      onTap: () => _toggleCrop(crop),
+                                      selectedBg: const Color(0xFFEAF3DE),
+                                      selectedFg: const Color(0xFF27500A),
+                                    ),
+                                  )
+                                  .toList(),
+                            ),
+                        ],
+                      ),
+              ),
+            ),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+              decoration: const BoxDecoration(
+                color: Color(0xFFF4F7F1),
+                border: Border(
+                  top: BorderSide(color: AppColors.border, width: 0.5),
+                ),
+                borderRadius: BorderRadius.only(
+                  bottomLeft: Radius.circular(16),
+                  bottomRight: Radius.circular(16),
+                ),
+              ),
+              child: Wrap(
+                alignment: WrapAlignment.end,
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('Cancel'),
+                  ),
+                  OutlinedButton(
+                    onPressed: _loading || _selectedSeasons.isEmpty
+                        ? null
+                        : () {
+                            Navigator.of(context).pop();
+                            widget.onSave(
+                              Set<String>.from(_selectedSeasons),
+                              Set<String>.from(_selectedCrops),
+                            );
+                          },
+                    child: const Text('Save PDF'),
+                  ),
+                  OutlinedButton(
+                    onPressed: _loading || _selectedSeasons.isEmpty
+                        ? null
+                        : () {
+                            Navigator.of(context).pop();
+                            widget.onWhatsApp(
+                              Set<String>.from(_selectedSeasons),
+                              Set<String>.from(_selectedCrops),
+                            );
+                          },
+                    child: const Text('WhatsApp'),
+                  ),
+                  ElevatedButton(
+                    onPressed: _loading || _selectedSeasons.isEmpty
+                        ? null
+                        : () {
+                            Navigator.of(context).pop();
+                            widget.onPrint(
+                              Set<String>.from(_selectedSeasons),
+                              Set<String>.from(_selectedCrops),
+                            );
+                          },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.darkGreen,
+                      foregroundColor: Colors.white,
+                    ),
+                    child: const Text('Print'),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

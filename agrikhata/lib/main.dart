@@ -1,5 +1,6 @@
 import 'package:agrikhata/Core/Themes/app_theme.dart';
 import 'package:agrikhata/shell.dart';
+import 'package:agrikhata/utils/advance_checkout_overlay.dart';
 import 'package:flutter/material.dart';
 
 void main() {
@@ -13,9 +14,9 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'AgriKdhata',
+      title: 'AgriKhata',
       theme: AppTheme.theme,
-
+      navigatorKey: rootNavigatorKey,
       home: Shell(),
     );
   }

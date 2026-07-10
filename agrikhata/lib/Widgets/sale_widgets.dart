@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import '../models/sale_models.dart';
 
 // Color constants matching the design
@@ -24,7 +23,7 @@ class SaleColors {
   static const recBadgeText = Color(0xFFB7E4C7);
   static const addRecBtn = Color(0xFFC0DD97);
   static const addRecBtnText = Color(0xFF3B6D11);
-  
+
   // Badge colors
   static const fertBg = Color(0xFFD8F3DC);
   static const fertText = Color(0xFF2D6A4F);
@@ -32,11 +31,11 @@ class SaleColors {
   static const pestText = Color(0xFF791F1F);
   static const seedBg = Color(0xFFE6F1FB);
   static const seedText = Color(0xFF0C447C);
-  
+
   // Over limit badge
   static const limitBg = Color(0xFFF7C1C1);
   static const limitText = Color(0xFF791F1F);
-  
+
   // Delete button
   static const deleteBtnColor = Color(0xFFA32D2D);
 }
@@ -46,11 +45,7 @@ class StepHeader extends StatelessWidget {
   final int stepNumber;
   final String title;
 
-  const StepHeader({
-    Key? key,
-    required this.stepNumber,
-    required this.title,
-  }) : super(key: key);
+  const StepHeader({super.key, required this.stepNumber, required this.title});
 
   @override
   Widget build(BuildContext context) {
@@ -100,10 +95,7 @@ class StepHeader extends StatelessWidget {
 class ZamindarPill extends StatelessWidget {
   final Zamindar zamindar;
 
-  const ZamindarPill({
-    Key? key,
-    required this.zamindar,
-  }) : super(key: key);
+  const ZamindarPill({super.key, required this.zamindar});
 
   @override
   Widget build(BuildContext context) {
@@ -188,11 +180,11 @@ class KisaanCard extends StatelessWidget {
   final VoidCallback onTap;
 
   const KisaanCard({
-    Key? key,
+    super.key,
     required this.kisaan,
     required this.isSelected,
     required this.onTap,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -235,7 +227,10 @@ class KisaanCard extends StatelessWidget {
               Row(
                 children: [
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 7,
+                      vertical: 2,
+                    ),
                     decoration: BoxDecoration(
                       color: SaleColors.paleGreen,
                       borderRadius: BorderRadius.circular(20),
@@ -274,11 +269,11 @@ class SmartRecommendationsBox extends StatelessWidget {
   final Function(Recommendation) onAddRecommendation;
 
   const SmartRecommendationsBox({
-    Key? key,
+    super.key,
     required this.selectedKisaan,
     required this.recommendations,
     required this.onAddRecommendation,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -287,10 +282,7 @@ class SmartRecommendationsBox extends StatelessWidget {
         padding: const EdgeInsets.all(16),
         child: const Text(
           'Select a Kisaan to see recommendations',
-          style: TextStyle(
-            fontSize: 12,
-            color: SaleColors.textMuted,
-          ),
+          style: TextStyle(fontSize: 12, color: SaleColors.textMuted),
         ),
       );
     }
@@ -308,11 +300,7 @@ class SmartRecommendationsBox extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Icon(
-                Icons.stars,
-                size: 12,
-                color: SaleColors.recText,
-              ),
+              const Icon(Icons.stars, size: 12, color: SaleColors.recText),
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
@@ -360,10 +348,7 @@ class SmartRecommendationsBox extends StatelessWidget {
           Expanded(
             child: Text(
               rec.product.name,
-              style: const TextStyle(
-                fontSize: 12,
-                color: SaleColors.textDark,
-              ),
+              style: const TextStyle(fontSize: 12, color: SaleColors.textDark),
             ),
           ),
           Text(
@@ -407,10 +392,7 @@ class SmartRecommendationsBox extends StatelessWidget {
 class ProductTypeBadge extends StatelessWidget {
   final ProductType type;
 
-  const ProductTypeBadge({
-    Key? key,
-    required this.type,
-  }) : super(key: key);
+  const ProductTypeBadge({super.key, required this.type});
 
   @override
   Widget build(BuildContext context) {
@@ -461,11 +443,11 @@ class QuantityControl extends StatelessWidget {
   final VoidCallback onDecrement;
 
   const QuantityControl({
-    Key? key,
+    super.key,
     required this.quantity,
     required this.onIncrement,
     required this.onDecrement,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -529,11 +511,11 @@ class InlineEditableField extends StatelessWidget {
   final double width;
 
   const InlineEditableField({
-    Key? key,
+    super.key,
     required this.value,
     required this.onChanged,
     this.width = 70,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -548,24 +530,33 @@ class InlineEditableField extends StatelessWidget {
         controller: controller,
         textAlign: TextAlign.right,
         keyboardType: TextInputType.number,
-        style: const TextStyle(
-          fontSize: 11,
-          color: SaleColors.textDark,
-        ),
+        style: const TextStyle(fontSize: 11, color: SaleColors.textDark),
         decoration: InputDecoration(
-          contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 4,
+            vertical: 2,
+          ),
           isDense: true,
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(6),
-            borderSide: const BorderSide(color: SaleColors.borderMid, width: 0.5),
+            borderSide: const BorderSide(
+              color: SaleColors.borderMid,
+              width: 0.5,
+            ),
           ),
           enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(6),
-            borderSide: const BorderSide(color: SaleColors.borderMid, width: 0.5),
+            borderSide: const BorderSide(
+              color: SaleColors.borderMid,
+              width: 0.5,
+            ),
           ),
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(6),
-            borderSide: const BorderSide(color: SaleColors.accentGreen, width: 1),
+            borderSide: const BorderSide(
+              color: SaleColors.accentGreen,
+              width: 1,
+            ),
           ),
           filled: true,
           fillColor: SaleColors.cardBg,
@@ -584,10 +575,7 @@ class InlineEditableField extends StatelessWidget {
 // Currency formatter helper
 class CurrencyFormatter {
   static String format(double amount) {
-    return '₨ ${amount.toStringAsFixed(0).replaceAllMapped(
-          RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
-          (Match m) => '${m[1]},',
-        )}';
+    return '₨ ${amount.toStringAsFixed(0).replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]},')}';
   }
 }
 
@@ -597,22 +585,18 @@ class PaymentMethodToggle extends StatelessWidget {
   final Function(PaymentMethod) onChanged;
 
   const PaymentMethodToggle({
-    Key? key,
+    super.key,
     required this.selectedMethod,
     required this.onChanged,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Expanded(
-          child: _buildButton(PaymentMethod.credit),
-        ),
+        Expanded(child: _buildButton(PaymentMethod.credit)),
         const SizedBox(width: 8),
-        Expanded(
-          child: _buildButton(PaymentMethod.cash),
-        ),
+        Expanded(child: _buildButton(PaymentMethod.cash)),
       ],
     );
   }
@@ -627,13 +611,9 @@ class PaymentMethodToggle extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 8),
           decoration: BoxDecoration(
-            color: isActive
-                ? Colors.white
-                : Colors.white.withOpacity(0.1),
+            color: isActive ? Colors.white : Colors.white.withOpacity(0.1),
             border: Border.all(
-              color: isActive
-                  ? Colors.white
-                  : Colors.white.withOpacity(0.15),
+              color: isActive ? Colors.white : Colors.white.withOpacity(0.15),
               width: 1.5,
             ),
             borderRadius: BorderRadius.circular(10),
@@ -663,14 +643,14 @@ class SaleInputField extends StatelessWidget {
   final Function(String)? onChanged;
 
   const SaleInputField({
-    Key? key,
+    super.key,
     required this.label,
     this.placeholder,
     this.controller,
     this.isRequired = false,
     this.keyboardType = TextInputType.text,
     this.onChanged,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -692,10 +672,7 @@ class SaleInputField extends StatelessWidget {
               const SizedBox(width: 2),
               const Text(
                 '*',
-                style: TextStyle(
-                  fontSize: 11,
-                  color: Color(0xFFE24B4A),
-                ),
+                style: TextStyle(fontSize: 11, color: Color(0xFFE24B4A)),
               ),
             ],
           ],
@@ -704,28 +681,37 @@ class SaleInputField extends StatelessWidget {
         TextFormField(
           controller: controller,
           keyboardType: keyboardType,
-          style: const TextStyle(
-            fontSize: 13,
-            color: SaleColors.textDark,
-          ),
+          style: const TextStyle(fontSize: 13, color: SaleColors.textDark),
           decoration: InputDecoration(
             hintText: placeholder,
             hintStyle: const TextStyle(
               fontSize: 13,
               color: SaleColors.textLight,
             ),
-            contentPadding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 11,
+              vertical: 8,
+            ),
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(9),
-              borderSide: const BorderSide(color: SaleColors.borderMid, width: 0.5),
+              borderSide: const BorderSide(
+                color: SaleColors.borderMid,
+                width: 0.5,
+              ),
             ),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(9),
-              borderSide: const BorderSide(color: SaleColors.borderMid, width: 0.5),
+              borderSide: const BorderSide(
+                color: SaleColors.borderMid,
+                width: 0.5,
+              ),
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(9),
-              borderSide: const BorderSide(color: SaleColors.accentGreen, width: 1),
+              borderSide: const BorderSide(
+                color: SaleColors.accentGreen,
+                width: 1,
+              ),
             ),
             filled: true,
             fillColor: SaleColors.cardBg,

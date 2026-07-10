@@ -1,17 +1,21 @@
 import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Database/database_helper.dart';
+import 'package:agrikhata/utils/pdf_generator.dart';
+import 'package:agrikhata/utils/pdf_share.dart';
 import 'package:flutter/material.dart';
 
 class ZamindarKisaansTab extends StatefulWidget {
   final int zamindarId;
   final String zamindarName;
   final bool autoOpenAdd;
+  final void Function(int kisaanId)? onNavigateToSale;
 
   const ZamindarKisaansTab({
     super.key,
     required this.zamindarId,
     required this.zamindarName,
     this.autoOpenAdd = false,
+    this.onNavigateToSale,
   });
 
   @override
@@ -27,6 +31,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
   @override
   void initState() {
     super.initState();
+    DatabaseHelper.instance.addListener(_onDatabaseChanged);
     _loadKisaans();
     if (widget.autoOpenAdd) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -35,11 +40,21 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
     }
   }
 
-  Future<void> _loadKisaans() async {
-    setState(() {
-      _isLoading = true;
-      _loadError = null;
-    });
+  @override
+  void dispose() {
+    DatabaseHelper.instance.removeListener(_onDatabaseChanged);
+    super.dispose();
+  }
+
+  void _onDatabaseChanged() => _loadKisaans(showLoading: false);
+
+  Future<void> _loadKisaans({bool showLoading = true}) async {
+    if (showLoading) {
+      setState(() {
+        _isLoading = true;
+        _loadError = null;
+      });
+    }
 
     try {
       final kisaans = await DatabaseHelper.instance.getKisaansForZamindar(
@@ -72,6 +87,11 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
   }
 
   void _openKisaanPanel({Kisaan? editTarget}) async {
+    if (editTarget != null && _isSelfKisaan(editTarget)) {
+      _showSelfEditBlockedDialog();
+      return;
+    }
+
     await showGeneralDialog(
       context: context,
       barrierDismissible: true,
@@ -90,28 +110,42 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
               editTarget: editTarget,
               onSaved: (kisaan) async {
                 try {
-                  final zamindar = await DatabaseHelper.instance.getZamindar(widget.zamindarId);
+                  final zamindar = await DatabaseHelper.instance.getZamindar(
+                    widget.zamindarId,
+                  );
                   if (zamindar == null) {
                     throw Exception('Zamindar not found');
                   }
 
-                  final totalAllocated = await DatabaseHelper.instance.getTotalAllocatedLandForZamindar(
-                    widget.zamindarId,
-                    excludeKisaanId: editTarget?.id,
-                  );
+                  final totalAllocated = await DatabaseHelper.instance
+                      .getTotalAllocatedLandForZamindar(
+                        widget.zamindarId,
+                        excludeKisaanId: editTarget?.id,
+                      );
 
+                  // Kisaan land is stored in Acre-equivalent (Athaas × 4).
+                  // Zamindar.landArea stays in zamindar.landUnit — compare in
+                  // that same unit so Athaas limits are not falsely inflated.
+                  final landUnit = zamindar.landUnit;
+                  double toZamindarUnit(double acreEquivalent) {
+                    if (landUnit == 'Athaas') return acreEquivalent / 4.0;
+                    return acreEquivalent;
+                  }
+
+                  final newTotalInZamindarUnit =
+                      toZamindarUnit(totalAllocated) +
+                      toZamindarUnit(kisaan.landAcres);
                   final zamindarTotalLand = zamindar.landArea;
-                  final newTotal = totalAllocated + kisaan.landAcres;
 
-                  if (newTotal > zamindarTotalLand) {
+                  if (newTotalInZamindarUnit > zamindarTotalLand + 1e-9) {
                     if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
                           content: Text(
-                            'Cannot allocate land. Total assigned (${newTotal.toStringAsFixed(2)} Acres) exceeds Zamindar\'s limit (${zamindarTotalLand.toStringAsFixed(2)} Acres).',
+                            'Cannot allocate land. Total assigned (${newTotalInZamindarUnit.toStringAsFixed(2)} $landUnit) exceeds Zamindar\'s limit (${zamindarTotalLand.toStringAsFixed(2)} $landUnit).',
                           ),
                           backgroundColor: Colors.red,
-                          duration: const Duration(seconds: 4),
+                          duration: Duration(minutes: 1),
                         ),
                       );
                     }
@@ -136,7 +170,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
                               : '✓ Kisaan "${kisaan.name}" updated successfully!',
                         ),
                         backgroundColor: AppColors.darkGreen,
-                        duration: const Duration(seconds: 2),
+                        duration: Duration(minutes: 1),
                       ),
                     );
                   }
@@ -146,6 +180,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
                       SnackBar(
                         content: Text('Error saving kisaan: $e'),
                         backgroundColor: Colors.red,
+                        duration: Duration(minutes: 1),
                       ),
                     );
                   }
@@ -166,6 +201,156 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
     );
   }
 
+  bool _isSelfKisaan(Kisaan kisaan) => kisaan.name == 'Self';
+
+  void _showSelfEditBlockedDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Cannot Edit 'Self'"),
+        content: const Text(
+          "You can't edit information about 'Self'.",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _handleDeleteKisaan(Kisaan kisaan) async {
+    if (kisaan.id == null) return;
+
+    if (_isSelfKisaan(kisaan)) {
+      final action = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text("Cannot Delete 'Self'"),
+          content: const Text(
+            "You can't delete 'Self'. You can clear all the data associated with it instead.",
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop('clear'),
+              style: TextButton.styleFrom(
+                foregroundColor: const Color(0xFF791F1F),
+              ),
+              child: const Text('Clear Data'),
+            ),
+          ],
+        ),
+      );
+
+      if (action == 'clear') {
+        await _confirmClearSelfData(kisaan);
+      }
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Delete ${kisaan.name}?'),
+        content: Text(
+          'This will permanently delete ${kisaan.name} and all associated sales, payments, and ledger records. This action cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFFDC3545),
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      await DatabaseHelper.instance.deleteKisaan(kisaan.id!);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Kisaan "${kisaan.name}" deleted'),
+            backgroundColor: AppColors.darkGreen,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to delete kisaan: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _confirmClearSelfData(Kisaan kisaan) async {
+    if (kisaan.id == null) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Clear 'Self' Data?"),
+        content: const Text(
+          'This will remove all sales, payments, and ledger records linked to Self. The Self kisaan record will be kept.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFF791F1F),
+            ),
+            child: const Text('Clear Data'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      await DatabaseHelper.instance.clearKisaanTransactionData(kisaan.id!);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Cleared all data associated with 'Self'"),
+            backgroundColor: AppColors.darkGreen,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to clear data: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
   void _viewKisaanLedger(Kisaan kisaan) async {
     if (kisaan.id == null) return;
 
@@ -178,14 +363,104 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
           .toList();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error loading ledger: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error loading ledger: $e')));
       }
       return;
     }
 
     if (!mounted) return;
+
+    final outstanding = _kisaanBalances[kisaan.id] ?? 0;
+    final totalDebit = transactions
+        .where((t) => t.type == LedgerTransactionType.debit)
+        .fold<int>(0, (sum, t) => sum + t.amount);
+    final totalCredit = transactions
+        .where((t) => t.type == LedgerTransactionType.credit)
+        .fold<int>(0, (sum, t) => sum + t.amount);
+
+    Future<void> exportOrShare({required bool share}) async {
+      try {
+        final rows = transactions
+            .map(
+              (t) => <String, dynamic>{
+                ...t.toMap(),
+                'kisaan_name': kisaan.name,
+                if (t.id != null) LedgerTransactionTable.id: t.id,
+              },
+            )
+            .toList();
+        final file = await PdfGenerator.saveZamindarLedgerToDocuments(
+          zamindarName: '${kisaan.name} · ${widget.zamindarName}',
+          seasonLabel: 'All seasons',
+          transactions: rows,
+          outstandingBalance: 'Rs ${_fmt(outstanding)}',
+          totalPaymentsReceived: totalCredit,
+          totalDebit: totalDebit,
+        );
+        if (share) {
+          await PdfShare.sharePdfFile(
+            file: file,
+            fileName: 'kisaan_${kisaan.name.replaceAll(' ', '_')}_statement.pdf',
+            text:
+                'AgriKhata Kisaan Statement — ${kisaan.name} (under ${widget.zamindarName})',
+            subject: 'Kisaan Account Statement',
+          );
+        } else if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('PDF saved to ${file.path}'),
+              backgroundColor: AppColors.darkGreen,
+            ),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed: $e'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+    }
+
+    Future<void> printStatement() async {
+      try {
+        final rows = transactions
+            .map(
+              (t) => <String, dynamic>{
+                ...t.toMap(),
+                'kisaan_name': kisaan.name,
+                if (t.id != null) LedgerTransactionTable.id: t.id,
+              },
+            )
+            .toList();
+        final pdf = await PdfGenerator.generateZamindarLedgerPdf(
+          zamindarName: '${kisaan.name} · ${widget.zamindarName}',
+          seasonLabel: 'All seasons',
+          transactions: rows,
+          outstandingBalance: 'Rs ${_fmt(outstanding)}',
+          totalPaymentsReceived: totalCredit,
+          totalDebit: totalDebit,
+        );
+        await PdfGenerator.printDocument(pdf);
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to print: $e'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+    }
+
+    final maxDialogHeight = MediaQuery.of(context).size.height * 0.82;
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -193,10 +468,9 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         content: SizedBox(
           width: 650,
+          height: maxDialogHeight.clamp(420.0, 720.0),
           child: Column(
-            mainAxisSize: MainAxisSize.min,
             children: [
-              // Header Block
               Container(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 20,
@@ -212,27 +486,29 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          kisaan.name.toUpperCase(),
-                          style: const TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                            letterSpacing: 0.5,
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            kisaan.name.toUpperCase(),
+                            style: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                              letterSpacing: 0.5,
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          "Kisaan Account Statement · Under ${widget.zamindarName}",
-                          style: const TextStyle(
-                            fontSize: 10,
-                            color: Color(0xFFA7C4A0),
+                          const SizedBox(height: 2),
+                          Text(
+                            "Kisaan Account Statement · Under ${widget.zamindarName}",
+                            style: const TextStyle(
+                              fontSize: 10,
+                              color: Color(0xFFA7C4A0),
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                     Row(
                       children: [
@@ -243,7 +519,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
                             color: Colors.white,
                             size: 20,
                           ),
-                          onPressed: () {},
+                          onPressed: printStatement,
                         ),
                         IconButton(
                           tooltip: "Share via WhatsApp",
@@ -252,7 +528,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
                             color: Colors.white,
                             size: 20,
                           ),
-                          onPressed: () {},
+                          onPressed: () => exportOrShare(share: true),
                         ),
                         IconButton(
                           icon: const Icon(
@@ -267,8 +543,6 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
                   ],
                 ),
               ),
-
-              // Prominent KPI Cards Row
               Padding(
                 padding: const EdgeInsets.all(20),
                 child: Row(
@@ -297,7 +571,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
                             ),
                             const SizedBox(height: 4),
                             Text(
-                              "Rs ${_fmt(_kisaanBalances[kisaan.id] ?? 0)}",
+                              "Rs ${_fmt(outstanding)}",
                               style: const TextStyle(
                                 fontSize: 18,
                                 fontWeight: FontWeight.bold,
@@ -347,21 +621,19 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
                   ],
                 ),
               ),
-
-              // Itemized Transactions Data Table
-              Padding(
-                padding: const EdgeInsets.only(left: 20, right: 20, bottom: 20),
-                child: Container(
-                  decoration: BoxDecoration(
-                    border: Border.all(color: AppColors.border, width: 0.5),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: transactions.isEmpty
-                        ? const Padding(
-                            padding: EdgeInsets.all(24),
-                            child: Center(
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 20, right: 20),
+                  child: Container(
+                    width: double.infinity,
+                    decoration: BoxDecoration(
+                      border: Border.all(color: AppColors.border, width: 0.5),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: transactions.isEmpty
+                          ? const Center(
                               child: Text(
                                 'No transactions yet',
                                 style: TextStyle(
@@ -369,129 +641,157 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
                                   color: AppColors.textMuted,
                                 ),
                               ),
-                            ),
-                          )
-                        : DataTable(
-                            headingRowHeight: 34,
-                            dataRowMinHeight: 36,
-                            dataRowMaxHeight: 38,
-                            headingRowColor: WidgetStateProperty.all(
-                              const Color(0xFFEAF3DE),
-                            ),
-                            horizontalMargin: 12,
-                            columns: const [
-                              DataColumn(
-                                label: Text(
-                                  'Date',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.bold,
-                                    color: AppColors.darkGreen,
+                            )
+                          : SingleChildScrollView(
+                              child: SingleChildScrollView(
+                                scrollDirection: Axis.horizontal,
+                                child: ConstrainedBox(
+                                  constraints: const BoxConstraints(
+                                    minWidth: 610,
                                   ),
-                                ),
-                              ),
-                              DataColumn(
-                                label: Text(
-                                  'Description',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.bold,
-                                    color: AppColors.darkGreen,
-                                  ),
-                                ),
-                              ),
-                              DataColumn(
-                                label: Text(
-                                  'Type',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.bold,
-                                    color: AppColors.darkGreen,
-                                  ),
-                                ),
-                              ),
-                              DataColumn(
-                                label: Text(
-                                  'Amount',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.bold,
-                                    color: AppColors.darkGreen,
-                                  ),
-                                ),
-                              ),
-                            ],
-                            rows: transactions
-                                .map(
-                                  (t) => DataRow(
-                                    cells: [
-                                      DataCell(
-                                        Text(
-                                          "${t.dateTime.day}/${t.dateTime.month}/${t.dateTime.year}",
-                                          style: const TextStyle(fontSize: 11),
-                                        ),
-                                      ),
-                                      DataCell(
-                                        Text(
-                                          t.description,
-                                          style: const TextStyle(
+                                  child: DataTable(
+                                    headingRowHeight: 34,
+                                    dataRowMinHeight: 36,
+                                    dataRowMaxHeight: 38,
+                                    headingRowColor: WidgetStateProperty.all(
+                                      const Color(0xFFEAF3DE),
+                                    ),
+                                    horizontalMargin: 12,
+                                    columns: const [
+                                      DataColumn(
+                                        label: Text(
+                                          'Date',
+                                          style: TextStyle(
                                             fontSize: 11,
-                                            fontWeight: FontWeight.w500,
-                                          ),
-                                          maxLines: 2,
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
-                                      ),
-                                      DataCell(
-                                        Container(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 6,
-                                            vertical: 2,
-                                          ),
-                                          decoration: BoxDecoration(
-                                            color: t.type ==
-                                                    LedgerTransactionType.debit
-                                                ? const Color(0xFFFCEBEB)
-                                                : const Color(0xFFE6F1FB),
-                                            borderRadius:
-                                                BorderRadius.circular(10),
-                                          ),
-                                          child: Text(
-                                            t.type ==
-                                                    LedgerTransactionType.debit
-                                                ? 'Debit'
-                                                : 'Credit',
-                                            style: TextStyle(
-                                              fontSize: 9,
-                                              fontWeight: FontWeight.w500,
-                                              color: t.type ==
-                                                      LedgerTransactionType
-                                                          .debit
-                                                  ? const Color(0xFF791F1F)
-                                                  : const Color(0xFF0C447C),
-                                            ),
+                                            fontWeight: FontWeight.bold,
+                                            color: AppColors.darkGreen,
                                           ),
                                         ),
                                       ),
-                                      DataCell(
-                                        Text(
-                                          "Rs ${_fmt(t.amount.toDouble())}",
-                                          style: const TextStyle(
+                                      DataColumn(
+                                        label: Text(
+                                          'Description',
+                                          style: TextStyle(
                                             fontSize: 11,
-                                            fontWeight: FontWeight.w600,
+                                            fontWeight: FontWeight.bold,
+                                            color: AppColors.darkGreen,
+                                          ),
+                                        ),
+                                      ),
+                                      DataColumn(
+                                        label: Text(
+                                          'Type',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.bold,
+                                            color: AppColors.darkGreen,
+                                          ),
+                                        ),
+                                      ),
+                                      DataColumn(
+                                        label: Text(
+                                          'Amount',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.bold,
+                                            color: AppColors.darkGreen,
                                           ),
                                         ),
                                       ),
                                     ],
+                                    rows: transactions
+                                        .map(
+                                          (t) => DataRow(
+                                            cells: [
+                                              DataCell(
+                                                Text(
+                                                  "${t.dateTime.day}/${t.dateTime.month}/${t.dateTime.year}",
+                                                  style: const TextStyle(
+                                                    fontSize: 11,
+                                                  ),
+                                                ),
+                                              ),
+                                              DataCell(
+                                                Text(
+                                                  t.description,
+                                                  style: const TextStyle(
+                                                    fontSize: 11,
+                                                    fontWeight: FontWeight.w500,
+                                                  ),
+                                                  maxLines: 2,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                ),
+                                              ),
+                                              DataCell(
+                                                Container(
+                                                  padding:
+                                                      const EdgeInsets.symmetric(
+                                                    horizontal: 6,
+                                                    vertical: 2,
+                                                  ),
+                                                  decoration: BoxDecoration(
+                                                    color:
+                                                        t.type ==
+                                                            LedgerTransactionType
+                                                                .debit
+                                                        ? const Color(
+                                                            0xFFFCEBEB,
+                                                          )
+                                                        : const Color(
+                                                            0xFFE6F1FB,
+                                                          ),
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                      10,
+                                                    ),
+                                                  ),
+                                                  child: Text(
+                                                    t.type ==
+                                                            LedgerTransactionType
+                                                                .debit
+                                                        ? 'Debit'
+                                                        : 'Credit',
+                                                    style: TextStyle(
+                                                      fontSize: 9,
+                                                      fontWeight:
+                                                          FontWeight.w500,
+                                                      color:
+                                                          t.type ==
+                                                              LedgerTransactionType
+                                                                  .debit
+                                                          ? const Color(
+                                                              0xFF791F1F,
+                                                            )
+                                                          : const Color(
+                                                              0xFF0C447C,
+                                                            ),
+                                                    ),
+                                                  ),
+                                                ),
+                                              ),
+                                              DataCell(
+                                                Text(
+                                                  "Rs ${_fmt(t.amount.toDouble())}",
+                                                  style: const TextStyle(
+                                                    fontSize: 11,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        )
+                                        .toList(),
                                   ),
-                                )
-                                .toList(),
-                          ),
+                                ),
+                              ),
+                            ),
+                    ),
                   ),
                 ),
               ),
-
-              // Action Bar
+              const SizedBox(height: 12),
               Container(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 20,
@@ -511,7 +811,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
                     OutlinedButton.icon(
-                      onPressed: () {},
+                      onPressed: () => exportOrShare(share: false),
                       icon: const Icon(Icons.picture_as_pdf_outlined, size: 14),
                       label: const Text(
                         "Export PDF Receipt",
@@ -520,7 +820,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
                     ),
                     const SizedBox(width: 8),
                     ElevatedButton.icon(
-                      onPressed: () {},
+                      onPressed: () => exportOrShare(share: true),
                       icon: const Icon(Icons.send, size: 14),
                       label: const Text(
                         "WhatsApp Statement",
@@ -548,24 +848,34 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
         zamindarId: widget.zamindarId,
         zamindarName: widget.zamindarName,
         kisaans: _kisaans,
-        onSettlementApplied: (selectedKisaanId, amount) async {
+        onSettlementApplied: (selectedKisaanId, kisaanName, amount) async {
           try {
-            final transaction = LedgerTransaction(
+            await DatabaseHelper.instance.settleKisaanBulkPayment(
               zamindarId: widget.zamindarId,
-              kisaanId: selectedKisaanId,
-              type: LedgerTransactionType.credit,
-              category: 'PAYMENT',
-              description: 'Payment received',
-              amount: amount.round(),
-              dateTime: DateTime.now(),
+              kisaanName: kisaanName,
+              amountPaid: amount,
+              paymentMethod: 'Cash',
               season: '',
             );
-            await DatabaseHelper.instance.insertLedgerTransaction(transaction);
             await _loadKisaans();
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    'Payment of Rs ${amount.toStringAsFixed(0)} recorded successfully',
+                  ),
+                  backgroundColor: const Color(0xFF2D6A4F),
+                ),
+              );
+            }
           } catch (e) {
             if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Error recording payment: $e')),
+                SnackBar(
+                  content: Text('Error recording payment: $e'),
+                  backgroundColor: Colors.red,
+                  duration: const Duration(minutes: 1),
+                ),
               );
             }
           }
@@ -591,10 +901,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 12),
-            OutlinedButton(
-              onPressed: _loadKisaans,
-              child: const Text('Retry'),
-            ),
+            OutlinedButton(onPressed: _loadKisaans, child: const Text('Retry')),
           ],
         ),
       );
@@ -613,7 +920,10 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
           child: Column(
             children: [
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 10,
+                ),
                 decoration: const BoxDecoration(
                   border: Border(
                     bottom: BorderSide(color: AppColors.border, width: 0.5),
@@ -622,8 +932,8 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
                 child: Row(
                   children: [
                     Expanded(
-                  child: Text(
-                    "${_kisaans.length} Kisaans under ${widget.zamindarName}",
+                      child: Text(
+                        "${_kisaans.length} Kisaans under ${widget.zamindarName}",
                         style: const TextStyle(
                           fontSize: 13,
                           fontWeight: FontWeight.w500,
@@ -640,7 +950,10 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
                       ),
                       label: const Text(
                         "Bill Settlement",
-                        style: TextStyle(fontSize: 12, color: Color(0xFF27500A)),
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFF27500A),
+                        ),
                       ),
                       style: OutlinedButton.styleFrom(
                         side: const BorderSide(color: Color(0xFF27500A)),
@@ -657,7 +970,8 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
               ),
               ...List.generate(
                 _kisaans.length,
-                (i) => _kisaanRow(_kisaans[i], isLast: i == _kisaans.length - 1),
+                (i) =>
+                    _kisaanRow(_kisaans[i], isLast: i == _kisaans.length - 1),
               ),
             ],
           ),
@@ -743,7 +1057,11 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
             ],
           ),
           const SizedBox(width: 14),
-          _smallBtn(Icons.receipt_long_outlined, "Sale", () {}),
+          _smallBtn(Icons.receipt_long_outlined, "Sale", () {
+            if (k.id != null && widget.onNavigateToSale != null) {
+              widget.onNavigateToSale!(k.id!);
+            }
+          }),
           const SizedBox(width: 5),
           _smallBtn(
             Icons.menu_book_outlined,
@@ -756,12 +1074,24 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
             "Edit",
             () => _openKisaanPanel(editTarget: k),
           ),
+          const SizedBox(width: 5),
+          _smallBtn(
+            Icons.delete_outline,
+            "Delete",
+            () => _handleDeleteKisaan(k),
+            destructive: true,
+          ),
         ],
       ),
     );
   }
 
-  Widget _smallBtn(IconData icon, String label, VoidCallback onTap) {
+  Widget _smallBtn(
+    IconData icon,
+    String label,
+    VoidCallback onTap, {
+    bool destructive = false,
+  }) {
     return OutlinedButton.icon(
       onPressed: onTap,
       icon: Icon(icon, size: 12),
@@ -769,7 +1099,11 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
       style: OutlinedButton.styleFrom(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         minimumSize: Size.zero,
-        side: const BorderSide(color: AppColors.sidebarBg, width: 0.5),
+        foregroundColor: destructive ? const Color(0xFFDC3545) : null,
+        side: BorderSide(
+          color: destructive ? const Color(0xFFF5C6C6) : AppColors.sidebarBg,
+          width: 0.5,
+        ),
       ),
     );
   }
@@ -814,19 +1148,10 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
   final _villageController = TextEditingController();
   final _phoneController = TextEditingController();
   final _landController = TextEditingController();
-  String _selectedCrop = "Rice";
   String _landUnit = "Acre";
-
-  final List<String> _crops = [
-    "Rice",
-    "Wheat",
-    "Cotton",
-    "Sugarcane",
-    "Maize",
-    "Mustard",
-    "Potato",
-    "Onion",
-  ];
+  List<String> _availableCrops = [];
+  final Set<String> _selectedCrops = {};
+  bool _loadingCrops = true;
 
   @override
   void initState() {
@@ -836,7 +1161,36 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
       _villageController.text = widget.editTarget!.village;
       _phoneController.text = widget.editTarget!.phone ?? '';
       _landController.text = widget.editTarget!.landAcres.toStringAsFixed(2);
-      _selectedCrop = widget.editTarget!.currentCrop;
+      final existing = widget.editTarget!.currentCrop
+          .split(',')
+          .map((c) => c.trim())
+          .where((c) => c.isNotEmpty);
+      _selectedCrops.addAll(existing);
+    }
+    _loadZamindarCrops();
+  }
+
+  Future<void> _loadZamindarCrops() async {
+    try {
+      final zamindar = await DatabaseHelper.instance.getZamindar(
+        widget.zamindarId,
+      );
+      final crops = zamindar?.activeCrops ?? const <String>[];
+      if (!mounted) return;
+      setState(() {
+        _availableCrops = List<String>.from(crops);
+        // Keep any previously selected crops that are still valid; if editing
+        // with crops outside the current list, still show them as options.
+        for (final crop in _selectedCrops) {
+          if (!_availableCrops.contains(crop)) {
+            _availableCrops.add(crop);
+          }
+        }
+        _loadingCrops = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loadingCrops = false);
     }
   }
 
@@ -867,8 +1221,63 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
     }
   }
 
+  void _toggleCrop(String crop) {
+    setState(() {
+      if (_selectedCrops.contains(crop)) {
+        _selectedCrops.remove(crop);
+      } else {
+        _selectedCrops.add(crop);
+      }
+    });
+  }
+
+  Widget _buildCropPill(String crop) {
+    final isSelected = _selectedCrops.contains(crop);
+    return GestureDetector(
+      onTap: () => _toggleCrop(crop),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFFF1F8E9) : Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: isSelected
+                ? AppColors.darkGreen.withValues(alpha: 0.5)
+                : AppColors.sidebarBg,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (isSelected)
+              const Icon(Icons.check, size: 14, color: AppColors.darkGreen),
+            if (isSelected) const SizedBox(width: 4),
+            Text(
+              crop,
+              style: TextStyle(
+                fontSize: 12,
+                color: isSelected ? AppColors.darkGreen : AppColors.textMuted,
+                fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _save() {
     if (!_formKey.currentState!.validate()) return;
+
+    if (_selectedCrops.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Select at least one crop'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
 
     final landValue = double.tryParse(_landController.text) ?? 0.0;
     final landInAcres = _convertToAcres(landValue, _landUnit);
@@ -882,7 +1291,7 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
           ? null
           : _phoneController.text.trim(),
       landAcres: landInAcres,
-      currentCrop: _selectedCrop,
+      currentCrop: _selectedCrops.join(', '),
     );
     widget.onSaved(kisaan);
   }
@@ -961,13 +1370,7 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
                           child: _buildFormField(
                             label: "Phone",
                             controller: _phoneController,
-                            required: true,
-                            validator: (val) {
-                              if (val == null || val.trim().isEmpty) {
-                                return 'Phone is required';
-                              }
-                              return null;
-                            },
+                            required: false,
                           ),
                         ),
                       ],
@@ -976,7 +1379,10 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
                     Row(
                       children: [
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 2,
+                          ),
                           decoration: BoxDecoration(
                             color: AppColors.darkGreen,
                             borderRadius: BorderRadius.circular(4),
@@ -987,9 +1393,14 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
                               InkWell(
                                 onTap: () => setState(() => _landUnit = "Acre"),
                                 child: Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 4,
+                                  ),
                                   decoration: BoxDecoration(
-                                    color: _landUnit == "Acre" ? Colors.white : Colors.transparent,
+                                    color: _landUnit == "Acre"
+                                        ? Colors.white
+                                        : Colors.transparent,
                                     borderRadius: BorderRadius.circular(3),
                                   ),
                                   child: Text(
@@ -997,18 +1408,26 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
                                     style: TextStyle(
                                       fontSize: 10,
                                       fontWeight: FontWeight.w600,
-                                      color: _landUnit == "Acre" ? AppColors.darkGreen : Colors.white,
+                                      color: _landUnit == "Acre"
+                                          ? AppColors.darkGreen
+                                          : Colors.white,
                                     ),
                                   ),
                                 ),
                               ),
                               const SizedBox(width: 4),
                               InkWell(
-                                onTap: () => setState(() => _landUnit = "Athaas"),
+                                onTap: () =>
+                                    setState(() => _landUnit = "Athaas"),
                                 child: Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 4,
+                                  ),
                                   decoration: BoxDecoration(
-                                    color: _landUnit == "Athaas" ? Colors.white : Colors.transparent,
+                                    color: _landUnit == "Athaas"
+                                        ? Colors.white
+                                        : Colors.transparent,
                                     borderRadius: BorderRadius.circular(3),
                                   ),
                                   child: Text(
@@ -1016,7 +1435,9 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
                                     style: TextStyle(
                                       fontSize: 10,
                                       fontWeight: FontWeight.w600,
-                                      color: _landUnit == "Athaas" ? AppColors.darkGreen : Colors.white,
+                                      color: _landUnit == "Athaas"
+                                          ? AppColors.darkGreen
+                                          : Colors.white,
                                     ),
                                   ),
                                 ),
@@ -1027,92 +1448,21 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
                       ],
                     ),
                     const SizedBox(height: 6),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _buildFormField(
-                            label: "Land ($_landUnit)",
-                            controller: _landController,
-                            required: true,
-                            isNumber: true,
-                            validator: (val) {
-                              if (val == null || val.trim().isEmpty) {
-                                return 'Land area is required';
-                              }
-                              final number = double.tryParse(val.trim());
-                              if (number == null || number <= 0) {
-                                return 'Enter valid land area';
-                              }
-                              return null;
-                            },
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  const Text(
-                                    "Current crop",
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      color: AppColors.textMuted,
-                                      fontWeight: FontWeight.w500,
-                                    ),
-                                  ),
-                                  const Text(
-                                    " *",
-                                    style: TextStyle(color: Colors.red, fontSize: 10),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 4),
-                              DropdownButtonFormField<String>(
-                                value: _selectedCrop,
-                                isExpanded: true,
-                                decoration: InputDecoration(
-                                  isDense: true,
-                                  contentPadding: const EdgeInsets.symmetric(
-                                    horizontal: 10,
-                                    vertical: 8,
-                                  ),
-                                  enabledBorder: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(7),
-                                    borderSide: const BorderSide(
-                                      color: AppColors.sidebarBg,
-                                      width: 0.5,
-                                    ),
-                                  ),
-                                  border: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(7),
-                                  ),
-                                ),
-                                items: _crops
-                                    .map(
-                                      (c) => DropdownMenuItem(
-                                        value: c,
-                                        child: Text(
-                                          c,
-                                          style: const TextStyle(fontSize: 12),
-                                        ),
-                                      ),
-                                    )
-                                    .toList(),
-                                onChanged: (val) =>
-                                    setState(() => _selectedCrop = val!),
-                                validator: (val) {
-                                  if (val == null || val.isEmpty) {
-                                    return 'Crop is required';
-                                  }
-                                  return null;
-                                },
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
+                    _buildFormField(
+                      label: "Land ($_landUnit)",
+                      controller: _landController,
+                      required: true,
+                      isNumber: true,
+                      validator: (val) {
+                        if (val == null || val.trim().isEmpty) {
+                          return 'Land area is required';
+                        }
+                        final number = double.tryParse(val.trim());
+                        if (number == null || number <= 0) {
+                          return 'Enter valid land area';
+                        }
+                        return null;
+                      },
                     ),
                     if (_getConversionText().isNotEmpty) ...[
                       const SizedBox(height: 6),
@@ -1125,6 +1475,61 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
                         ),
                       ),
                     ],
+                    const SizedBox(height: 14),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Row(
+                          children: [
+                            Text(
+                              "Crops",
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: AppColors.textMuted,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                            Text(
+                              " *",
+                              style: TextStyle(color: Colors.red, fontSize: 10),
+                            ),
+                          ],
+                        ),
+                        Text(
+                          "tap to select",
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: AppColors.textMuted.withValues(alpha: 0.5),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    if (_loadingCrops)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 8),
+                        child: SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      )
+                    else if (_availableCrops.isEmpty)
+                      const Text(
+                        "No crops on this Zamindar's profile. Add crops when editing the Zamindar.",
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: AppColors.textMuted,
+                        ),
+                      )
+                    else
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: _availableCrops
+                            .map((crop) => _buildCropPill(crop))
+                            .toList(),
+                      ),
                   ],
                 ),
               ),
@@ -1147,7 +1552,9 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
                   ElevatedButton(
                     onPressed: _save,
                     child: Text(
-                      widget.editTarget == null ? "Save Kisaan" : "Update Kisaan",
+                      widget.editTarget == null
+                          ? "Save Kisaan"
+                          : "Update Kisaan",
                     ),
                   ),
                 ],
@@ -1214,17 +1621,11 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
             ),
             errorBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(7),
-              borderSide: const BorderSide(
-                color: Colors.red,
-                width: 1,
-              ),
+              borderSide: const BorderSide(color: Colors.red, width: 1),
             ),
             focusedErrorBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(7),
-              borderSide: const BorderSide(
-                color: Colors.red,
-                width: 1,
-              ),
+              borderSide: const BorderSide(color: Colors.red, width: 1),
             ),
             errorStyle: const TextStyle(fontSize: 9),
           ),
@@ -1240,7 +1641,8 @@ class _BillSettlementDialog extends StatefulWidget {
   final int zamindarId;
   final String zamindarName;
   final List<Kisaan> kisaans;
-  final void Function(int selectedKisaanId, double amount) onSettlementApplied;
+  final void Function(int selectedKisaanId, String kisaanName, double amount)
+  onSettlementApplied;
 
   const _BillSettlementDialog({
     required this.zamindarId,
@@ -1254,23 +1656,85 @@ class _BillSettlementDialog extends StatefulWidget {
 }
 
 class _BillSettlementDialogState extends State<_BillSettlementDialog> {
+  final _formKey = GlobalKey<FormState>();
   int? _selectedKisaanId;
   final _amountController = TextEditingController();
   bool _showReceiptActions = false;
   String _lastSettledKisaanName = "";
+  double _kisaanDebt = 0;
+  bool _isLoadingDebt = false;
 
   @override
   void initState() {
     super.initState();
     if (widget.kisaans.isNotEmpty && widget.kisaans.first.id != null) {
       _selectedKisaanId = widget.kisaans.first.id;
+      _loadKisaanDebt(_selectedKisaanId!);
     }
+    _amountController.addListener(() => setState(() {}));
   }
 
   @override
   void dispose() {
     _amountController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadKisaanDebt(int kisaanId) async {
+    setState(() => _isLoadingDebt = true);
+    try {
+      final debt = await DatabaseHelper.instance.getKisaanSalesOutstandingDebtById(
+        zamindarId: widget.zamindarId,
+        kisaanId: kisaanId,
+      );
+      if (!mounted) return;
+      setState(() {
+        _kisaanDebt = debt;
+        _isLoadingDebt = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _kisaanDebt = 0;
+        _isLoadingDebt = false;
+      });
+    }
+  }
+
+  void _onKisaanChanged(int? kisaanId) {
+    setState(() {
+      _selectedKisaanId = kisaanId;
+      _amountController.clear();
+    });
+    if (kisaanId != null) {
+      _loadKisaanDebt(kisaanId);
+    } else {
+      setState(() => _kisaanDebt = 0);
+    }
+  }
+
+  double? get _enteredAmount => double.tryParse(_amountController.text.trim());
+
+  bool get _canSubmit {
+    if (_selectedKisaanId == null || _isLoadingDebt) return false;
+    final amt = _enteredAmount;
+    if (amt == null || amt <= 0) return false;
+    if (amt > _kisaanDebt) return false;
+    return true;
+  }
+
+  String _fmt(double value) {
+    final formatted = value.toStringAsFixed(0);
+    final chars = formatted.split('').reversed.toList();
+    final buffer = StringBuffer();
+    for (int i = 0; i < chars.length; i++) {
+      buffer.write(chars[i]);
+      final pos = i + 1;
+      if (pos == 3 || (pos > 3 && (pos - 3) % 2 == 0)) {
+        if (i != chars.length - 1) buffer.write(',');
+      }
+    }
+    return buffer.toString().split('').reversed.join('');
   }
 
   @override
@@ -1334,130 +1798,204 @@ class _BillSettlementDialogState extends State<_BillSettlementDialog> {
                 // Input Workflow View
                 Padding(
                   padding: const EdgeInsets.all(20),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFF4F7F1),
-                          borderRadius: BorderRadius.circular(6),
-                          border: Border.all(
-                            color: AppColors.border,
-                            width: 0.5,
-                          ),
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(
-                              Icons.business_outlined,
-                              size: 16,
-                              color: AppColors.darkGreen,
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              "Payer Zamindar: ${widget.zamindarName}",
-                              style: const TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                                color: AppColors.darkGreen,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      const Text(
-                        "Select Kisaan Account Account",
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold,
-                          color: AppColors.textMuted,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      DropdownButtonFormField<int>(
-                        value: _selectedKisaanId,
-                        isExpanded: true,
-                        decoration: InputDecoration(
-                          isDense: true,
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 10,
-                          ),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(7),
-                            borderSide: const BorderSide(
-                              color: AppColors.sidebarBg,
+                  child: Form(
+                    key: _formKey,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF4F7F1),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                              color: AppColors.border,
                               width: 0.5,
                             ),
                           ),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(7),
-                          ),
-                        ),
-                        items: widget.kisaans
-                            .where((k) => k.id != null)
-                            .map(
-                              (k) => DropdownMenuItem(
-                                value: k.id,
-                                child: Text(
-                                  "${k.name} (Balance: Rs ${k.landAcres.toStringAsFixed(0)} acres)",
-                                  style: const TextStyle(fontSize: 12),
+                          child: Row(
+                            children: [
+                              const Icon(
+                                Icons.business_outlined,
+                                size: 16,
+                                color: AppColors.darkGreen,
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                "Payer Zamindar: ${widget.zamindarName}",
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: AppColors.darkGreen,
                                 ),
                               ),
-                            )
-                            .toList(),
-                        onChanged: (val) =>
-                            setState(() => _selectedKisaanId = val),
-                      ),
-                      const SizedBox(height: 16),
-                      const Text(
-                        "Collected Amount Payment (Rs)",
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold,
-                          color: AppColors.textMuted,
+                            ],
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 6),
-                      TextField(
-                        controller: _amountController,
-                        keyboardType: TextInputType.number,
-                        style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: AppColors.darkGreen,
+                        const SizedBox(height: 16),
+                        const Text(
+                          "Select Kisaan Account",
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: AppColors.textMuted,
+                          ),
                         ),
-                        decoration: InputDecoration(
-                          isDense: true,
-                          prefixText: "Rs ",
-                          prefixStyle: const TextStyle(
+                        const SizedBox(height: 6),
+                        DropdownButtonFormField<int>(
+                          value: _selectedKisaanId,
+                          isExpanded: true,
+                          decoration: InputDecoration(
+                            isDense: true,
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 10,
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(7),
+                              borderSide: const BorderSide(
+                                color: AppColors.sidebarBg,
+                                width: 0.5,
+                              ),
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(7),
+                            ),
+                          ),
+                          items: widget.kisaans
+                              .where((k) => k.id != null)
+                              .map(
+                                (k) => DropdownMenuItem(
+                                  value: k.id,
+                                  child: Text(
+                                    k.name,
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                ),
+                              )
+                              .toList(),
+                          onChanged: _onKisaanChanged,
+                        ),
+                        const SizedBox(height: 12),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 10,
+                          ),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFCEBEB),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                              color: const Color(0xFFE8B4B4),
+                              width: 0.5,
+                            ),
+                          ),
+                          child: _isLoadingDebt
+                              ? const Row(
+                                  children: [
+                                    SizedBox(
+                                      width: 14,
+                                      height: 14,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    ),
+                                    SizedBox(width: 8),
+                                    Text(
+                                      'Calculating outstanding debt...',
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        color: AppColors.textMuted,
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              : Text(
+                                  'Kisaan Remaining Debt: Rs. ${_fmt(_kisaanDebt)}',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    color: Color(0xFFA32D2D),
+                                  ),
+                                ),
+                        ),
+                        const SizedBox(height: 16),
+                        const Text(
+                          "Collected Amount Payment (Rs)",
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: AppColors.textMuted,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        TextFormField(
+                          controller: _amountController,
+                          keyboardType: TextInputType.number,
+                          style: const TextStyle(
+                            fontSize: 16,
                             fontWeight: FontWeight.bold,
                             color: AppColors.darkGreen,
                           ),
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 12,
-                          ),
-                          hintText: "0",
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(7),
-                            borderSide: const BorderSide(
-                              color: AppColors.sidebarBg,
-                              width: 0.5,
-                            ),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(7),
-                            borderSide: const BorderSide(
+                          decoration: InputDecoration(
+                            isDense: true,
+                            prefixText: "Rs ",
+                            prefixStyle: const TextStyle(
+                              fontWeight: FontWeight.bold,
                               color: AppColors.darkGreen,
-                              width: 1,
                             ),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 12,
+                            ),
+                            hintText: "0",
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(7),
+                              borderSide: const BorderSide(
+                                color: AppColors.sidebarBg,
+                                width: 0.5,
+                              ),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(7),
+                              borderSide: const BorderSide(
+                                color: AppColors.darkGreen,
+                                width: 1,
+                              ),
+                            ),
+                            errorBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(7),
+                              borderSide: const BorderSide(
+                                color: Colors.red,
+                                width: 1,
+                              ),
+                            ),
+                            focusedErrorBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(7),
+                              borderSide: const BorderSide(
+                                color: Colors.red,
+                                width: 1,
+                              ),
+                            ),
+                            errorStyle: const TextStyle(fontSize: 9),
                           ),
+                          validator: (value) {
+                            if (value == null || value.trim().isEmpty) {
+                              return 'Enter payment amount';
+                            }
+                            final amt = double.tryParse(value.trim());
+                            if (amt == null || amt <= 0) {
+                              return 'Enter a valid amount';
+                            }
+                            if (amt > _kisaanDebt) {
+                              return 'Cannot exceed Kisaan debt (Rs ${_fmt(_kisaanDebt)})';
+                            }
+                            return null;
+                          },
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
                 // Regular Footer Panel Action
@@ -1488,20 +2026,24 @@ class _BillSettlementDialogState extends State<_BillSettlementDialog> {
                       ),
                       const SizedBox(width: 8),
                       ElevatedButton(
-                        onPressed: () {
-                          final amt =
-                              double.tryParse(_amountController.text) ?? 0;
-                          if (_selectedKisaanId != null && amt > 0) {
-                            final targetKisaan = widget.kisaans.firstWhere(
-                              (k) => k.id == _selectedKisaanId,
-                            );
-                            widget.onSettlementApplied(_selectedKisaanId!, amt);
-                            setState(() {
-                              _lastSettledKisaanName = targetKisaan.name;
-                              _showReceiptActions = true;
-                            });
-                          }
-                        },
+                        onPressed: _canSubmit
+                            ? () {
+                                if (!_formKey.currentState!.validate()) return;
+                                final amt = _enteredAmount!;
+                                final targetKisaan = widget.kisaans.firstWhere(
+                                  (k) => k.id == _selectedKisaanId,
+                                );
+                                widget.onSettlementApplied(
+                                  _selectedKisaanId!,
+                                  targetKisaan.name,
+                                  amt,
+                                );
+                                setState(() {
+                                  _lastSettledKisaanName = targetKisaan.name;
+                                  _showReceiptActions = true;
+                                });
+                              }
+                            : null,
                         child: const Text(
                           "Post Voucher Entry",
                           style: TextStyle(fontSize: 12),
