@@ -616,19 +616,47 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            widget.zamindar.paymentTerms,
-            style: const TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w500,
-              color: AppColors.darkGreen,
+          if (widget.zamindar.paymentTerms.isEmpty)
+            const Text(
+              '—',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+                color: AppColors.darkGreen,
+              ),
+            )
+          else
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: widget.zamindar.paymentTerms
+                  .map(
+                    (term) => Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppColors.tagGreenBg,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        term,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500,
+                          color: AppColors.tagGreenText,
+                        ),
+                      ),
+                    ),
+                  )
+                  .toList(),
             ),
-          ),
           const SizedBox(height: 4),
           Text(
-            widget.zamindar.paymentTerms == 'Seasonal'
+            widget.zamindar.paymentTerms.contains('After Harvest')
                 ? "Payment expected after harvest — ${widget.zamindar.activeSeasons.join(' / ')}"
-                : "Custom payment arrangement",
+                : "Agreed payment schedule for credit sales",
             style: const TextStyle(fontSize: 10, color: AppColors.textMuted),
           ),
         ],

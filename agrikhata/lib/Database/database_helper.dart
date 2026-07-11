@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../utils/season_utils.dart';
@@ -51,13 +52,16 @@ class DatabaseHelper with ChangeNotifier {
   }
 
   Future<Database> _initDatabase() async {
-    final dbPath = await getDatabasesPath();
-    final path = p.join(dbPath, 'agrikhata.db');
+    // Use Application Support (writable under MSIX); getDatabasesPath() can
+    // resolve inside the read-only package and cause SQLITE_CANTOPEN (14).
+    final supportDir = await getApplicationSupportDirectory();
+    await supportDir.create(recursive: true);
+    final path = p.join(supportDir.path, 'agrikhata.db');
 
     return databaseFactory.openDatabase(
       path,
       options: OpenDatabaseOptions(
-        version: 15,
+        version: 16,
         onConfigure: (db) async {
           await db.execute('PRAGMA foreign_keys = ON');
         },
@@ -294,6 +298,22 @@ class DatabaseHelper with ChangeNotifier {
               debugPrint('Version 15 migration completed');
             } catch (e) {
               debugPrint('Error migrating to version 15: $e');
+            }
+          }
+          if (oldVersion < 16) {
+            debugPrint(
+              'Migrating to version 16: Sales payment_term + multi payment terms',
+            );
+            try {
+              await db.execute(
+                'ALTER TABLE ${SalesTable.name} ADD COLUMN ${SalesTable.paymentTerm} TEXT',
+              );
+              debugPrint('Added payment_term column to sales');
+              debugPrint('Version 16 migration completed');
+            } catch (e) {
+              debugPrint(
+                'Column ${SalesTable.paymentTerm} might already exist: $e',
+              );
             }
           }
         },
@@ -721,7 +741,8 @@ class DatabaseHelper with ChangeNotifier {
       ${SalesTable.totalPayable} REAL NOT NULL,
       ${SalesTable.paidAmount} REAL NOT NULL DEFAULT 0,
       ${SalesTable.paymentMethod} TEXT NOT NULL,
-      ${SalesTable.season} TEXT NOT NULL
+      ${SalesTable.season} TEXT NOT NULL,
+      ${SalesTable.paymentTerm} TEXT
     )
   ''';
 
@@ -1842,6 +1863,8 @@ class DatabaseHelper with ChangeNotifier {
       'items': items,
       'totalPayable': totalPayable,
       'totalCollected': totalCollected,
+      'paidAmount': initialPaid,
+      'paymentTerm': sale[SalesTable.paymentTerm] as String?,
       'isCredit': paymentMethod.toLowerCase() == 'credit',
       'season': season,
       'dateTime': dateTimeStr,
@@ -1998,8 +2021,10 @@ class DatabaseHelper with ChangeNotifier {
     required String paymentMethod,
     required String productType,
     required String season,
+    String? paymentTerm,
   }) async {
     final isCashSale = paymentMethod == 'Cash';
+    final isCreditSale = paymentMethod == 'Credit';
     double totalAdvanceBefore = 0;
     double drawdown = 0;
     double remainingAdvance = 0;
@@ -2059,9 +2084,23 @@ class DatabaseHelper with ChangeNotifier {
         }
       }
 
+      // Credit sales: cash received reduces udhaar; remainder stays outstanding.
+      if (isCreditSale) {
+        if (effectivePaidAmount < 0) effectivePaidAmount = 0;
+        if (effectivePaidAmount > totalPayable) {
+          effectivePaidAmount = totalPayable;
+        }
+        remainingPhysicalCash = effectivePaidAmount;
+      }
+
       final usesAdvanceWallet =
           isCashSale && drawdown > 0 && advanceZamindarId != null;
-      final salePaidAmount = usesAdvanceWallet ? 0.0 : effectivePaidAmount;
+      // When credit has an upfront cash payment row, keep sales.paid_amount at 0
+      // so _sumPaymentsCollected does not double-count.
+      final hasCreditCashPayment = isCreditSale && effectivePaidAmount > 0;
+      final salePaidAmount = (usesAdvanceWallet || hasCreditCashPayment)
+          ? 0.0
+          : effectivePaidAmount;
 
       // Step 1: Insert the sale parent record first (FK target for payments).
       await txn.insert(SalesTable.name, {
@@ -2077,6 +2116,7 @@ class DatabaseHelper with ChangeNotifier {
         SalesTable.paidAmount: salePaidAmount,
         SalesTable.paymentMethod: paymentMethod,
         SalesTable.season: season,
+        SalesTable.paymentTerm: isCreditSale ? paymentTerm : null,
       });
 
       // Insert line items into sale_items table
@@ -2117,36 +2157,10 @@ class DatabaseHelper with ChangeNotifier {
         );
       }
 
-      // Step 2: Insert ledger transaction log bound to this invoice.
+      // Step 2: Advance wallet + payment rows (must exist before ledger FKs).
       String? walletPaymentId;
       String? cashPaymentId;
 
-      if (usesAdvanceWallet) {
-        walletPaymentId = await generateNextPaymentId(txn, isAdvance: false);
-        if (remainingPhysicalCash > 0) {
-          cashPaymentId = await generateNextPaymentId(txn, isAdvance: false);
-        }
-      }
-
-      await _insertLedgerEntriesForSale(
-        txn,
-        invoiceNumber: invoiceNumber,
-        zamindarName: zamindarName,
-        kisaanName: kisaanName,
-        description: items
-            .map((item) => '${item.productName} x${item.qty.round()}')
-            .join(' · '),
-        totalPayable: totalPayable,
-        paidAmount: usesAdvanceWallet ? remainingPhysicalCash : effectivePaidAmount,
-        paymentMethod: paymentMethod,
-        season: season,
-        dateTime: dateTime,
-        advanceDrawdown: drawdown,
-        walletPaymentId: walletPaymentId,
-        cashPaymentId: cashPaymentId,
-      );
-
-      // Step 3: Advance wallet + physical cash payment rows.
       if (usesAdvanceWallet) {
         await txn.update(
           ZamindarTable.name,
@@ -2155,6 +2169,7 @@ class DatabaseHelper with ChangeNotifier {
           whereArgs: [advanceZamindarId],
         );
 
+        walletPaymentId = await generateNextPaymentId(txn, isAdvance: false);
         await txn.insert(PaymentsTable.name, {
           PaymentsTable.paymentId: walletPaymentId,
           PaymentsTable.invoiceNumber: invoiceNumber,
@@ -2166,7 +2181,8 @@ class DatabaseHelper with ChangeNotifier {
           PaymentsTable.season: season,
         });
 
-        if (cashPaymentId != null && remainingPhysicalCash > 0) {
+        if (remainingPhysicalCash > 0) {
+          cashPaymentId = await generateNextPaymentId(txn, isAdvance: false);
           await txn.insert(PaymentsTable.name, {
             PaymentsTable.paymentId: cashPaymentId,
             PaymentsTable.invoiceNumber: invoiceNumber,
@@ -2178,7 +2194,40 @@ class DatabaseHelper with ChangeNotifier {
             PaymentsTable.season: season,
           });
         }
+      } else if (hasCreditCashPayment) {
+        cashPaymentId = await generateNextPaymentId(txn, isAdvance: false);
+        await txn.insert(PaymentsTable.name, {
+          PaymentsTable.paymentId: cashPaymentId,
+          PaymentsTable.invoiceNumber: invoiceNumber,
+          PaymentsTable.dateTime: _formatDateTime(dateTime),
+          PaymentsTable.zamindarName: zamindarName,
+          PaymentsTable.kisaanName: kisaanName,
+          PaymentsTable.amountPaid: effectivePaidAmount,
+          PaymentsTable.paymentMethod: 'Cash',
+          PaymentsTable.season: season,
+        });
       }
+
+      // Step 3: Ledger entries — payment_id FKs require payments to exist first.
+      await _insertLedgerEntriesForSale(
+        txn,
+        invoiceNumber: invoiceNumber,
+        zamindarName: zamindarName,
+        kisaanName: kisaanName,
+        description: items
+            .map((item) => '${item.productName} x${item.qty.round()}')
+            .join(' · '),
+        totalPayable: totalPayable,
+        paidAmount: usesAdvanceWallet
+            ? remainingPhysicalCash
+            : effectivePaidAmount,
+        paymentMethod: paymentMethod,
+        season: season,
+        dateTime: dateTime,
+        advanceDrawdown: drawdown,
+        walletPaymentId: walletPaymentId,
+        cashPaymentId: cashPaymentId,
+      );
     });
 
     notifyListeners();
@@ -2616,6 +2665,7 @@ class DatabaseHelper with ChangeNotifier {
     required String paymentMethod,
     required String productType,
     required String season,
+    String? paymentTerm,
   }) async {
     final db = await database;
     await db.transaction((txn) async {
@@ -2694,6 +2744,8 @@ class DatabaseHelper with ChangeNotifier {
           SalesTable.paidAmount: paidAmount,
           SalesTable.paymentMethod: paymentMethod,
           SalesTable.season: season,
+          SalesTable.paymentTerm:
+              paymentMethod == 'Credit' ? paymentTerm : null,
         },
         where: '${SalesTable.invoiceNumber} = ?',
         whereArgs: [invoiceNumber],
@@ -2945,6 +2997,7 @@ class SalesTable {
   static const String paidAmount = 'paid_amount';
   static const String paymentMethod = 'payment_method';
   static const String season = 'season';
+  static const String paymentTerm = 'payment_term';
 }
 
 class SaleItemsTable {
@@ -2987,7 +3040,7 @@ class Zamindar {
   final int creditLimit;
   final double landArea;
   final String landUnit;
-  final String paymentTerms;
+  final List<String> paymentTerms;
   final List<String> activeSeasons;
   final List<String> activeCrops;
   final double udhaarBalance;
@@ -3019,6 +3072,8 @@ class Zamindar {
 
   double get totalLandAcres => landArea;
   String get villageDisplay => village ?? locationGoth ?? 'Unknown location';
+  String get paymentTermsDisplay =>
+      paymentTerms.isEmpty ? '—' : paymentTerms.join(' · ');
 
   Zamindar copyWith({
     int? id,
@@ -3031,7 +3086,7 @@ class Zamindar {
     int? creditLimit,
     double? landArea,
     String? landUnit,
-    String? paymentTerms,
+    List<String>? paymentTerms,
     List<String>? activeSeasons,
     List<String>? activeCrops,
     double? udhaarBalance,
@@ -3069,6 +3124,19 @@ class Zamindar {
     return 0;
   }
 
+  static List<String> _parseCsvList(Object? value) {
+    if (value is List) {
+      return value.map((e) => e.toString().trim()).where((e) => e.isNotEmpty).toList();
+    }
+    final raw = value as String? ?? '';
+    if (raw.isEmpty) return [];
+    return raw
+        .split(',')
+        .map((item) => item.trim())
+        .where((item) => item.isNotEmpty)
+        .toList();
+  }
+
   Map<String, Object?> toMap() => {
     if (id != null) ZamindarTable.id: id,
     ZamindarTable.nameColumn: name,
@@ -3080,7 +3148,7 @@ class Zamindar {
     ZamindarTable.creditLimit: creditLimit,
     ZamindarTable.landArea: landArea,
     ZamindarTable.landUnit: landUnit,
-    ZamindarTable.paymentTerms: paymentTerms,
+    ZamindarTable.paymentTerms: paymentTerms.join(','),
     ZamindarTable.activeSeasons: activeSeasons.join(','),
     ZamindarTable.activeCrops: activeCrops.join(','),
     ZamindarTable.isDraft: isDraft ? 1 : 0,
@@ -3099,15 +3167,9 @@ class Zamindar {
       creditLimit: _parseIntValue(map[ZamindarTable.creditLimit]),
       landArea: (map[ZamindarTable.landArea] as num?)?.toDouble() ?? 0,
       landUnit: map[ZamindarTable.landUnit] as String? ?? 'Acre',
-      paymentTerms: map[ZamindarTable.paymentTerms] as String? ?? 'Seasonal',
-      activeSeasons: (map[ZamindarTable.activeSeasons] as String? ?? '')
-          .split(',')
-          .where((item) => item.isNotEmpty)
-          .toList(),
-      activeCrops: (map[ZamindarTable.activeCrops] as String? ?? '')
-          .split(',')
-          .where((item) => item.isNotEmpty)
-          .toList(),
+      paymentTerms: _parseCsvList(map[ZamindarTable.paymentTerms]),
+      activeSeasons: _parseCsvList(map[ZamindarTable.activeSeasons]),
+      activeCrops: _parseCsvList(map[ZamindarTable.activeCrops]),
       isDraft: _parseIntValue(map[ZamindarTable.isDraft]) == 1,
       advanceBalance: _parseIntValue(map[ZamindarTable.advanceBalance]),
     );

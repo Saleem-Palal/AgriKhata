@@ -24,7 +24,11 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
   String _selectedVillage = "All villages";
   String _selectedBalanceFilter = "All balances";
 
-  final List<String> _balanceFilters = ["All balances", "Over limit", "Clear"];
+  final List<String> _balanceFilters = [
+    "All balances",
+    "Outstanding",
+    "Clear",
+  ];
 
   List<Zamindar> _zamindars = [];
   bool _isLoading = true;
@@ -49,12 +53,13 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
           (z.village?.toLowerCase().contains(query) ?? false);
 
       final matchesVillage =
-          _selectedVillage == "All villages" || z.villageDisplay == _selectedVillage;
+          _selectedVillage == "All villages" ||
+          z.villageDisplay == _selectedVillage;
 
       final matchesBalance =
           _selectedBalanceFilter == "All balances" ||
-          (_selectedBalanceFilter == "Over limit" && z.isOverLimit) ||
-          (_selectedBalanceFilter == "Clear" && !z.isOverLimit);
+          (_selectedBalanceFilter == "Outstanding" && z.udhaarBalance > 0) ||
+          (_selectedBalanceFilter == "Clear" && z.udhaarBalance == 0);
 
       return matchesSearch && matchesVillage && matchesBalance;
     }).toList();
@@ -128,7 +133,8 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
   @override
   Widget build(BuildContext context) {
     final filtered = _filteredZamindars;
-    final overLimitCount = _zamindars.where((z) => z.isOverLimit).length;
+    final outstandingCount =
+        _zamindars.where((z) => z.udhaarBalance > 0).length;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -176,7 +182,7 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 2),
                         child: Text(
-                          "Showing ${filtered.length} of ${_zamindars.length} zamindars  ·  $overLimitCount over credit limit",
+                          "Showing ${filtered.length} of ${_zamindars.length} zamindars  ·  $outstandingCount with outstanding udhaar",
                           style: const TextStyle(
                             fontSize: 11,
                             color: AppColors.textMuted,
@@ -311,11 +317,12 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
       ),
       child: Row(
         children: [
-          Expanded(flex: 24, child: Text("NAME", style: style)),
-          Expanded(flex: 18, child: Text("VILLAGE", style: style)),
-          Expanded(flex: 12, child: Text("TOTAL LAND", style: style)),
-          Expanded(flex: 18, child: Text("UDHAAR BALANCE", style: style)),
-          Expanded(flex: 14, child: Text("ACTIVE KISAANS", style: style)),
+          Expanded(flex: 20, child: Text("NAME", style: style)),
+          Expanded(flex: 14, child: Text("VILLAGE", style: style)),
+          Expanded(flex: 10, child: Text("TOTAL LAND", style: style)),
+          Expanded(flex: 14, child: Text("UDHAAR BALANCE", style: style)),
+          Expanded(flex: 12, child: Text("WALLET", style: style)),
+          Expanded(flex: 12, child: Text("ACTIVE KISAANS", style: style)),
           Expanded(flex: 10, child: Text("STATUS", style: style)),
           const SizedBox(width: 24),
         ],
@@ -339,7 +346,7 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
         child: Row(
           children: [
             Expanded(
-              flex: 24,
+              flex: 20,
               child: Text(
                 z.name,
                 style: const TextStyle(
@@ -350,7 +357,7 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
               ),
             ),
             Expanded(
-              flex: 18,
+              flex: 14,
               child: Text(
                 z.villageDisplay,
                 style: const TextStyle(
@@ -360,14 +367,14 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
               ),
             ),
             Expanded(
-              flex: 12,
+              flex: 10,
               child: Text(
                 "${z.totalLandAcres.toStringAsFixed(0)} ${z.landUnit}",
                 style: const TextStyle(fontSize: 12),
               ),
             ),
             Expanded(
-              flex: 18,
+              flex: 14,
               child: Text(
                 "Rs ${_formatNumber(z.udhaarBalance)}",
                 style: TextStyle(
@@ -379,8 +386,22 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
                 ),
               ),
             ),
-            Expanded(flex: 14, child: _buildKisaanBadge(z.activeKisaans)),
-            Expanded(flex: 10, child: _buildStatusBadge(z.isOverLimit)),
+            Expanded(
+              flex: 12,
+              child: Text(
+                "Rs ${_formatNumber(z.advanceBalance.toDouble())}",
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: Color(0xFF0C447C),
+                ),
+              ),
+            ),
+            Expanded(flex: 12, child: _buildKisaanBadge(z.activeKisaans)),
+            Expanded(
+              flex: 10,
+              child: _buildStatusBadge(z.udhaarBalance),
+            ),
             const SizedBox(
               width: 24,
               child: Icon(
@@ -423,25 +444,26 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
     );
   }
 
-  Widget _buildStatusBadge(bool isOverLimit) {
+  Widget _buildStatusBadge(double outstandingBalance) {
+    final isClear = outstandingBalance <= 0;
     return Align(
       alignment: Alignment.centerLeft,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
         decoration: BoxDecoration(
-          color: isOverLimit
-              ? const Color(0xFFFCEBEB)
-              : const Color(0xFFEAF3DE),
+          color: isClear
+              ? const Color(0xFFEAF3DE)
+              : const Color(0xFFFAEEDA),
           borderRadius: BorderRadius.circular(20),
         ),
         child: Text(
-          isOverLimit ? "Over limit" : "Clear",
+          isClear ? "Clear" : "Outstanding",
           style: TextStyle(
             fontSize: 10,
             fontWeight: FontWeight.w500,
-            color: isOverLimit
-                ? const Color(0xFF791F1F)
-                : const Color(0xFF27500A),
+            color: isClear
+                ? const Color(0xFF27500A)
+                : const Color(0xFF633806),
           ),
         ),
       ),

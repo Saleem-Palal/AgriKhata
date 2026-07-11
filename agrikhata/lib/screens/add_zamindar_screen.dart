@@ -1,4 +1,5 @@
 import 'package:agrikhata/Core/Themes/app_colors.dart';
+import 'package:agrikhata/Core/constants/payment_terms.dart';
 import 'package:agrikhata/Database/database_helper.dart';
 import 'package:agrikhata/Widgets/season_selector.dart';
 import 'package:agrikhata/screens/zamindar_profile_screen.dart';
@@ -28,14 +29,7 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
   final TextEditingController _landController = TextEditingController();
   String _selectedLandUnit = 'Acre';
 
-  final List<String> _paymentTerms = [
-    "Seasonal",
-    "Monthly",
-    "Advance Payment",
-    "Custom",
-  ];
-
-  String _selectedTerm = "Seasonal";
+  final List<String> _selectedTerms = [];
 
   final TextEditingController _udhaarController = TextEditingController();
   final TextEditingController _nameController = TextEditingController();
@@ -45,7 +39,6 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
   final TextEditingController _fatherNameController = TextEditingController();
   final TextEditingController _descriptionController = TextEditingController();
 
-  final TextEditingController _paymentTermsController = TextEditingController();
   final TextEditingController _seasonController = TextEditingController();
   final TextEditingController _cropSelectionController =
       TextEditingController();
@@ -73,9 +66,9 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
   bool get _allFieldsFilled =>
       _nameController.text.isNotEmpty &&
       _phoneController.text.length >= 10 &&
-      (_selectedTerm == 'Advance Payment' ||
-          _udhaarController.text.isNotEmpty) &&
+      _udhaarController.text.isNotEmpty &&
       _landController.text.isNotEmpty &&
+      _selectedTerms.isNotEmpty &&
       selectedSeasons.isNotEmpty &&
       selectedCrops.isNotEmpty;
 
@@ -94,8 +87,11 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
       _udhaarController.text = z.creditLimit.toString();
       _landController.text = z.landArea.toString();
       _selectedLandUnit = z.landUnit;
-      _selectedTerm = z.paymentTerms;
+      _selectedTerms
+        ..clear()
+        ..addAll(_mapLegacyPaymentTerms(z.paymentTerms));
       selectedSeasons = z.activeSeasons;
+      selectedCrops = z.activeCrops;
     }
 
     _nameController.addListener(updateUI);
@@ -105,9 +101,20 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
     _descriptionController.addListener(updateUI);
     _udhaarController.addListener(updateUI);
     _landController.addListener(updateUI);
-    _paymentTermsController.addListener(updateUI);
     _seasonController.addListener(updateUI);
     _cropSelectionController.addListener(updateUI);
+  }
+
+  List<String> _mapLegacyPaymentTerms(List<String> stored) {
+    const legacyMap = {'Seasonal': 'After Harvest', 'Monthly': 'After a Month'};
+    final mapped = <String>[];
+    for (final term in stored) {
+      final normalized = legacyMap[term] ?? term;
+      if (kPaymentTerms.contains(normalized) && !mapped.contains(normalized)) {
+        mapped.add(normalized);
+      }
+    }
+    return mapped;
   }
 
   void updateUI() {
@@ -125,7 +132,6 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
     _villageController.dispose();
     _descriptionController.dispose();
     _udhaarController.dispose();
-    _paymentTermsController.dispose();
     _seasonController.dispose();
     _cropSelectionController.dispose();
     super.dispose();
@@ -226,7 +232,7 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
       creditLimit: creditLimitInt,
       landArea: landAreaDouble,
       landUnit: _selectedLandUnit,
-      paymentTerms: _selectedTerm,
+      paymentTerms: List<String>.from(_selectedTerms),
       activeSeasons: selectedSeasons,
       activeCrops: selectedCrops,
       isDraft: isDraft,
@@ -328,57 +334,46 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
                                 ),
                                 child: Column(
                                   children: [
-                                    _buildDropdownField(
-                                      "Payment terms",
-                                      _selectedTerm,
-                                      _paymentTerms,
-                                      (newValue) {
-                                        setState(() {
-                                          _selectedTerm = newValue!;
-                                        });
-                                      },
+                                    _buildPaymentTermsPills(),
+                                    const SizedBox(height: 10),
+                                    _buildTextField(
+                                      controller: _udhaarController,
+                                      "Udhaar Limit (Rs)",
+                                      "e.g. 10000",
+                                      isRequired: true,
+                                      prefixText: "Rs",
                                     ),
-                                    if (_selectedTerm != 'Advance Payment') ...[
-                                      const SizedBox(height: 10),
-                                      _buildTextField(
-                                        controller: _udhaarController,
-                                        "Udhaar Limit (Rs)",
-                                        "e.g. 10000",
-                                        isRequired: true,
-                                        prefixText: "Rs",
-                                      ),
-                                      const SizedBox(height: 10),
-                                      Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.start,
-                                        children: [
-                                          _buildAmountPill(
-                                            "Rs 50,000",
-                                            _udhaarController,
-                                          ),
-                                          _buildAmountPill(
-                                            "Rs 1,00,000",
-                                            _udhaarController,
-                                          ),
-                                          _buildAmountPill(
-                                            "Rs 1,50,000",
-                                            _udhaarController,
-                                          ),
-                                          _buildAmountPill(
-                                            "Rs 2,00,000",
-                                            _udhaarController,
-                                          ),
-                                          _buildAmountPill(
-                                            "Rs 2,50,000",
-                                            _udhaarController,
-                                          ),
-                                          _buildAmountPill(
-                                            "Rs 3,00,000",
-                                            _udhaarController,
-                                          ),
-                                        ],
-                                      ),
-                                    ],
+                                    const SizedBox(height: 10),
+                                    Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.start,
+                                      children: [
+                                        _buildAmountPill(
+                                          "Rs 50,000",
+                                          _udhaarController,
+                                        ),
+                                        _buildAmountPill(
+                                          "Rs 1,00,000",
+                                          _udhaarController,
+                                        ),
+                                        _buildAmountPill(
+                                          "Rs 1,50,000",
+                                          _udhaarController,
+                                        ),
+                                        _buildAmountPill(
+                                          "Rs 2,00,000",
+                                          _udhaarController,
+                                        ),
+                                        _buildAmountPill(
+                                          "Rs 2,50,000",
+                                          _udhaarController,
+                                        ),
+                                        _buildAmountPill(
+                                          "Rs 3,00,000",
+                                          _udhaarController,
+                                        ),
+                                      ],
+                                    ),
                                     const SizedBox(height: 10),
                                     Column(
                                       crossAxisAlignment:
@@ -691,10 +686,9 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
   Widget _buildChecklistCard() {
     bool nameFilled = _nameController.text.isNotEmpty;
     bool phoneFilled = _phoneController.text.length >= 10;
-    bool udhaarFilled =
-        _selectedTerm == 'Advance Payment' || _udhaarController.text.isNotEmpty;
+    bool udhaarFilled = _udhaarController.text.isNotEmpty;
     bool landFilled = _landController.text.isNotEmpty;
-    bool paymentTermsFilled = _selectedTerm.isNotEmpty;
+    bool paymentTermsFilled = _selectedTerms.isNotEmpty;
     bool seasonFilled = selectedSeasons.isNotEmpty;
     bool cropsFilled = selectedCrops.isNotEmpty;
 
@@ -1047,7 +1041,10 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
           ),
           _previewRow("Land Area", landDisplay),
           _previewRow("Credit limit", "Rs $udharText"),
-          _previewRow("Payment Terms", _selectedTerm),
+          _buildPreviewPillRow(
+            "Payment Terms",
+            _selectedTerms.isEmpty ? const ['—'] : _selectedTerms,
+          ),
           _previewRow("Seasons", selectedSeasons.join(" · ")),
           _buildPreviewPillRow("Crops", selectedCrops),
           const SizedBox(height: 10),
@@ -1059,11 +1056,11 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
 
   Widget _previewRow(String label, String value) {
     return SizedBox(
-      width: 180,
+      width: 210,
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 2),
         child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
               "$label:",
@@ -1072,12 +1069,17 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
                 fontSize: 12,
               ),
             ),
-            Text(
-              value,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                value,
+                textAlign: TextAlign.right,
+                softWrap: true,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
             ),
           ],
@@ -1088,12 +1090,11 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
 
   Widget _buildPreviewPillRow(String label, List<String> items) {
     return SizedBox(
-      width: 180,
+      width: 210,
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 4.0),
         child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
               label,
@@ -1102,20 +1103,15 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
                 color: AppColors.sidebarText,
               ),
             ),
-            const SizedBox(height: 6),
-            SizedBox(
-              width: 120,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Wrap(
-                    spacing: 4.0,
-                    runSpacing: 2.0,
-                    children: items
-                        .map((item) => _buildSmallPreviewPill(item))
-                        .toList(),
-                  ),
-                ],
+            const SizedBox(width: 8),
+            Expanded(
+              child: Wrap(
+                alignment: WrapAlignment.end,
+                spacing: 4.0,
+                runSpacing: 4.0,
+                children: items
+                    .map((item) => _buildSmallPreviewPill(item))
+                    .toList(),
               ),
             ),
           ],
@@ -1165,58 +1161,57 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
     );
   }
 
-  Widget _buildDropdownField(
-    String label,
-    String value,
-    List<String> options,
-    ValueChanged<String?> onChanged,
-  ) {
-    double customHeight = 45;
+  Widget _buildPaymentTermsPills() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          label,
-          style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
+        const Row(
+          children: [
+            Text(
+              'Payment terms',
+              style: TextStyle(fontSize: 12, color: AppColors.textMuted),
+            ),
+            Text(' *', style: TextStyle(color: Colors.red, fontSize: 12)),
+          ],
         ),
-        const SizedBox(height: 2),
-        SizedBox(
-          height: customHeight,
-          child: DropdownButtonFormField<String>(
-            initialValue: value,
-            isExpanded: true,
-            icon: const Icon(
-              Icons.keyboard_arrow_down,
-              size: 20,
-              color: AppColors.textMuted,
-            ),
-            style: const TextStyle(fontSize: 13, color: Colors.black),
-            decoration: InputDecoration(
-              isDense: true,
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 12,
-                vertical: 10,
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: kPaymentTerms.map((term) {
+            final selected = _selectedTerms.contains(term);
+            return FilterChip(
+              label: Text(term),
+              selected: selected,
+              showCheckmark: false,
+              onSelected: (isSelected) {
+                setState(() {
+                  if (isSelected) {
+                    _selectedTerms.add(term);
+                  } else {
+                    _selectedTerms.remove(term);
+                  }
+                });
+              },
+              labelStyle: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: selected ? AppColors.tagGreenText : AppColors.textMuted,
               ),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(9),
-                borderSide: const BorderSide(
-                  color: AppColors.sidebarBg,
-                  width: 0.5,
-                ),
+              selectedColor: AppColors.tagGreenBg,
+              backgroundColor: Colors.white,
+              side: BorderSide(
+                color: selected ? AppColors.accentGreen : AppColors.sidebarBg,
+                width: 0.5,
               ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(9),
-                borderSide: const BorderSide(
-                  color: AppColors.darkGreen,
-                  width: 1,
-                ),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(20),
               ),
-            ),
-            items: options.map((String val) {
-              return DropdownMenuItem<String>(value: val, child: Text(val));
-            }).toList(),
-            onChanged: onChanged,
-          ),
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              visualDensity: VisualDensity.compact,
+            );
+          }).toList(),
         ),
       ],
     );

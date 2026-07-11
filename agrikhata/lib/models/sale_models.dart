@@ -6,6 +6,7 @@ class Zamindar {
   final String location;
   final int kisaanCount;
   final bool isOverLimit;
+  final List<String> paymentTerms;
   final List<Kisaan> kisaans;
 
   Zamindar({
@@ -14,6 +15,7 @@ class Zamindar {
     required this.location,
     required this.kisaanCount,
     this.isOverLimit = false,
+    this.paymentTerms = const [],
     required this.kisaans,
   });
 

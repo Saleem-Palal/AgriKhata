@@ -41,6 +41,8 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       TextEditingController(text: '0');
   final TextEditingController _walkInCustomerNameController =
       TextEditingController();
+  final TextEditingController _cashReceivedController =
+      TextEditingController(text: '0');
 
   // State
   Zamindar? _selectedZamindar;
@@ -48,6 +50,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
   Product? _selectedProduct;
   final List<CartItem> _cartItems = [];
   PaymentMethod _paymentMethod = PaymentMethod.credit;
+  String? _selectedSalePaymentTerm;
   double _overallDiscount = 0;
   String _invoiceNumber =
       'INV-1000'; // Display only - actual number generated at save time
@@ -288,6 +291,13 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
             ? PaymentMethod.credit
             : PaymentMethod.cash;
 
+        _selectedSalePaymentTerm = invoiceData['paymentTerm'] as String?;
+        final collected =
+            (invoiceData['totalCollected'] as num?)?.toDouble() ?? 0.0;
+        _cashReceivedController.text = collected > 0
+            ? collected.toStringAsFixed(0)
+            : '0';
+
         // Set date time
         _selectedDateTime = DateTime.parse(invoiceData['dateTime'] as String);
         _isDateTimeLocked = true;
@@ -344,6 +354,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       location: dbZamindar.locationGoth ?? dbZamindar.village ?? 'Unknown',
       kisaanCount: dbZamindar.activeKisaans,
       isOverLimit: dbZamindar.isOverLimit,
+      paymentTerms: List<String>.from(dbZamindar.paymentTerms),
       kisaans: kisaans,
     );
   }
@@ -766,6 +777,8 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     setState(() {
       _selectedZamindar = null;
       _selectedKisaan = null;
+      _selectedSalePaymentTerm = null;
+      _cashReceivedController.text = '0';
       _zamindarSearchController.clear();
     });
   }
@@ -867,6 +880,41 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       return;
     }
 
+    final summary = _getSummary();
+    final double totalPayable = summary.totalPayable;
+    double cashReceived = 0;
+    if (_paymentMethod == PaymentMethod.credit) {
+      cashReceived =
+          double.tryParse(
+            _cashReceivedController.text.replaceAll(RegExp(r'[^0-9.]'), ''),
+          ) ??
+          0;
+      if (cashReceived < 0) cashReceived = 0;
+      if (cashReceived > totalPayable) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Cash received cannot exceed total payable'),
+            backgroundColor: Colors.red,
+            duration: Duration(minutes: 1),
+          ),
+        );
+        return;
+      }
+      if (!_isWalkInCustomer &&
+          (_selectedZamindar?.paymentTerms.isNotEmpty ?? false) &&
+          (_selectedSalePaymentTerm == null ||
+              _selectedSalePaymentTerm!.isEmpty)) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Please select a payment term for this credit sale'),
+            backgroundColor: Colors.red,
+            duration: Duration(minutes: 1),
+          ),
+        );
+        return;
+      }
+    }
+
     // Start saving
     setState(() => _isSaving = true);
 
@@ -874,9 +922,6 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       // ========================================================
       // STEP 1: Extract and Format Metadata Fields from UI State
       // ========================================================
-
-      // Calculate summary for financial breakdown
-      final summary = _getSummary();
 
       // Invoice Number - Get from database to ensure uniqueness
       final String invoiceNumber = _isEditMode
@@ -899,13 +944,17 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           ? summary.totalSeasonalIncrements
           : 0.0;
       final double overallDiscount = _overallDiscount;
-      final double totalPayable = summary.totalPayable;
+      // Credit: cash received is immediate payment; remainder is udhaar.
+      // Cash: full amount is paid (advance wallet may draw down inside insertSale).
       final double paidAmount = _paymentMethod == PaymentMethod.cash
           ? totalPayable
-          : 0.0;
+          : cashReceived;
       final String paymentMethod = _paymentMethod == PaymentMethod.cash
           ? 'Cash'
           : 'Credit';
+      final String? paymentTerm = _paymentMethod == PaymentMethod.credit
+          ? _selectedSalePaymentTerm
+          : null;
 
       debugPrint(
         'SALE DEBUG: Invoice=$invoiceNumber, Zamindar=$zamindarName, Kisaan=$kisaanName',
@@ -914,7 +963,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         'SALE DEBUG: Subtotal=$subtotal, ItemDisc=$itemDiscountsTotal, SeasonalInc=$seasonalIncrementTotal',
       );
       debugPrint(
-        'SALE DEBUG: OverallDisc=$overallDiscount, TotalPayable=$totalPayable, Paid=$paidAmount',
+        'SALE DEBUG: OverallDisc=$overallDiscount, TotalPayable=$totalPayable, Paid=$paidAmount, Term=$paymentTerm',
       );
 
       // ========================================================
@@ -976,6 +1025,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           paymentMethod: paymentMethod,
           productType: productType,
           season: seasonString,
+          paymentTerm: paymentTerm,
         );
 
         debugPrint('SALE DEBUG: Successfully updated sale in new schema');
@@ -996,6 +1046,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           paymentMethod: paymentMethod,
           productType: productType,
           season: seasonString,
+          paymentTerm: paymentTerm,
         );
 
         debugPrint('SALE DEBUG: Successfully inserted sale into new schema');
@@ -1135,6 +1186,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     _seasonalIncrementController.dispose();
     _overallDiscountController.dispose();
     _walkInCustomerNameController.dispose();
+    _cashReceivedController.dispose();
     // Remove database listener to prevent memory leaks
     db.DatabaseHelper.instance.removeListener(_onDatabaseChanged);
     super.dispose();
@@ -1805,6 +1857,9 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           onSelected: (Zamindar selection) {
             setState(() {
               _selectedZamindar = selection;
+              _selectedSalePaymentTerm = selection.paymentTerms.length == 1
+                  ? selection.paymentTerms.first
+                  : null;
               // Auto-select 'Self' Kisaan
               if (selection.kisaans.isNotEmpty) {
                 _selectedKisaan = selection.kisaans.firstWhere(
@@ -2650,10 +2705,23 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                 ? (method) {
                     setState(() {
                       _paymentMethod = method;
+                      if (method == PaymentMethod.cash) {
+                        _selectedSalePaymentTerm = null;
+                        _cashReceivedController.text = '0';
+                      } else if (_selectedZamindar != null &&
+                          _selectedZamindar!.paymentTerms.length == 1) {
+                        _selectedSalePaymentTerm =
+                            _selectedZamindar!.paymentTerms.first;
+                      }
                     });
                   }
                 : (method) {},
           ),
+          if (_paymentMethod == PaymentMethod.credit &&
+              !_isWalkInCustomer) ...[
+            const SizedBox(height: 12),
+            _buildCreditSplitSection(summary.totalPayable),
+          ],
           const SizedBox(height: 10),
           Material(
             color: Colors.transparent,
@@ -2754,6 +2822,127 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildCreditSplitSection(double totalPayable) {
+    final cashReceived =
+        double.tryParse(
+          _cashReceivedController.text.replaceAll(RegExp(r'[^0-9.]'), ''),
+        ) ??
+        0;
+    final creditAmount = (totalPayable - cashReceived).clamp(0.0, totalPayable);
+    final terms = _selectedZamindar?.paymentTerms ?? const <String>[];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Cash received',
+          style: TextStyle(fontSize: 12, color: SaleColors.textLight),
+        ),
+        const SizedBox(height: 6),
+        TextFormField(
+          controller: _cashReceivedController,
+          keyboardType: TextInputType.number,
+          style: const TextStyle(fontSize: 13, color: Colors.white),
+          onChanged: (_) => setState(() {}),
+          decoration: InputDecoration(
+            isDense: true,
+            prefixText: 'Rs ',
+            prefixStyle: const TextStyle(fontSize: 13, color: SaleColors.textLight),
+            hintText: '0',
+            hintStyle: TextStyle(
+              fontSize: 13,
+              color: Colors.white.withOpacity(0.35),
+            ),
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 10,
+              vertical: 10,
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: BorderSide(
+                color: Colors.white.withOpacity(0.25),
+                width: 0.5,
+              ),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: const BorderSide(
+                color: SaleColors.lightGreen,
+                width: 1,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text(
+              'Credit (Udhaar)',
+              style: TextStyle(fontSize: 12, color: SaleColors.textLight),
+            ),
+            Text(
+              CurrencyFormatter.format(creditAmount),
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: SaleColors.lightGreen,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        const Text(
+          'Payment term',
+          style: TextStyle(fontSize: 12, color: SaleColors.textLight),
+        ),
+        const SizedBox(height: 6),
+        if (terms.isEmpty)
+          Text(
+            'No payment terms on this Zamindar profile',
+            style: TextStyle(
+              fontSize: 11,
+              color: Colors.white.withOpacity(0.55),
+            ),
+          )
+        else
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: terms.map((term) {
+              final selected = _selectedSalePaymentTerm == term;
+              return ChoiceChip(
+                label: Text(term),
+                selected: selected,
+                onSelected: (_) {
+                  setState(() => _selectedSalePaymentTerm = term);
+                },
+                labelStyle: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                  color: selected ? SaleColors.darkGreen : SaleColors.textLight,
+                ),
+                selectedColor: SaleColors.lightGreen,
+                backgroundColor: Colors.white.withOpacity(0.08),
+                side: BorderSide(
+                  color: selected
+                      ? SaleColors.lightGreen
+                      : Colors.white.withOpacity(0.25),
+                  width: 0.5,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 2),
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+              );
+            }).toList(),
+          ),
+      ],
     );
   }
 

@@ -7,6 +7,7 @@ import 'package:agrikhata/screens/products_screen.dart';
 import 'package:agrikhata/screens/settings_screen.dart';
 import 'package:agrikhata/screens/zamindar_directory.dart';
 import 'package:agrikhata/screens/zamindar_profile_screen.dart';
+import 'package:agrikhata/services/update_service.dart';
 import 'package:flutter/material.dart';
 
 enum ZamindarView { directory, add, profile }
@@ -27,6 +28,15 @@ class _ShellState extends State<Shell> {
   int? _preSelectedKisaanIdForSale;
   String? _editInvoiceNumber; // For edit mode
   int _ledgerRefreshToken = 0; // For forcing ledger refresh
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      UpdateService().checkForUpdates(context);
+    });
+  }
 
   void _refreshDirectory() {
     setState(() => _directoryRefreshToken++);

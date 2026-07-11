@@ -45,6 +45,8 @@ dependencies:
   share_plus: ^10.1.4
   path_provider: ^2.1.5
   url_launcher: ^6.3.1
+  http: ^1.2.2
+  package_info_plus: ^8.1.2
 
 dev_dependencies:
   flutter_test:
@@ -56,6 +58,7 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  msix: ^3.16.8
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -98,3 +101,15 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+
+msix_config:
+  display_name: AgriKhata
+  publisher_display_name: "Saleem Palal"
+  identity_name: "com.saleempalal.agrikhata"
+  publisher: "CN=SaleemPalal, O=AgriKhata, C=PK"
+  msix_version: 1.0.0.0
+  languages: en-us
+  capabilities: internetClient
+  certificate_path: windows/signing/certificate.pfx
+  certificate_password: AgriKhataSign1
+  install_certificate: false
