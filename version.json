@@ -1,4 +1,5 @@
 {
-  "latest_version": "1.0.1",
-  "download_url": "https://github.com/Saleem-Palal/AgriKhata/releases/latest"
+  "latest_version": "1.0.2",
+  "download_url": "https://github.com/Saleem-Palal/AgriKhata/releases/latest",
+  "release_notes": "• Auto-update test release\n• Bug fixes and stability improvements"
 }
