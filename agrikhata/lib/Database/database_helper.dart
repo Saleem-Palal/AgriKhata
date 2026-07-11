@@ -61,7 +61,7 @@ class DatabaseHelper with ChangeNotifier {
     return databaseFactory.openDatabase(
       path,
       options: OpenDatabaseOptions(
-        version: 16,
+        version: 17,
         onConfigure: (db) async {
           await db.execute('PRAGMA foreign_keys = ON');
         },
@@ -74,6 +74,7 @@ class DatabaseHelper with ChangeNotifier {
           await db.execute(_createSaleItemsTable());
           await db.execute(_createPaymentsTable());
           await db.execute(_createPaymentSequencesTable());
+          await db.execute(_createStockMovementsTable());
           await _createIndexes(db);
         },
         onUpgrade: (db, oldVersion, newVersion) async {
@@ -314,6 +315,22 @@ class DatabaseHelper with ChangeNotifier {
               debugPrint(
                 'Column ${SalesTable.paymentTerm} might already exist: $e',
               );
+            }
+          }
+          if (oldVersion < 17) {
+            debugPrint(
+              'Migrating to version 17: Creating stock_movements ledger',
+            );
+            try {
+              await db.execute(_createStockMovementsTable());
+              await db.execute('''
+                CREATE INDEX IF NOT EXISTS idx_stock_movements_product
+                ON ${StockMovementTable.name}(${StockMovementTable.productId})
+              ''');
+              await _backfillStockMovementsFromSales(db);
+              debugPrint('Version 17 migration completed');
+            } catch (e) {
+              debugPrint('Error migrating to version 17: $e');
             }
           }
         },
@@ -778,6 +795,67 @@ class DatabaseHelper with ChangeNotifier {
         ON DELETE CASCADE
     )
   ''';
+
+  String _createStockMovementsTable() =>
+      '''
+    CREATE TABLE IF NOT EXISTS ${StockMovementTable.name} (
+      ${StockMovementTable.id} INTEGER PRIMARY KEY AUTOINCREMENT,
+      ${StockMovementTable.productId} INTEGER NOT NULL,
+      ${StockMovementTable.movementType} TEXT NOT NULL,
+      ${StockMovementTable.quantity} INTEGER NOT NULL,
+      ${StockMovementTable.partyLabel} TEXT NOT NULL,
+      ${StockMovementTable.referenceType} TEXT NOT NULL,
+      ${StockMovementTable.referenceId} TEXT,
+      ${StockMovementTable.dateTime} TEXT NOT NULL,
+      ${StockMovementTable.notes} TEXT,
+      FOREIGN KEY (${StockMovementTable.productId}) REFERENCES ${ProductTable.name}(${ProductTable.id})
+        ON DELETE CASCADE
+    )
+  ''';
+
+  Future<void> _backfillStockMovementsFromSales(Database db) async {
+    final existing = await db.rawQuery(
+      'SELECT COUNT(*) AS c FROM ${StockMovementTable.name}',
+    );
+    final count = (existing.first['c'] as num?)?.toInt() ?? 0;
+    if (count > 0) return;
+
+    final rows = await db.rawQuery('''
+      SELECT
+        p.${ProductTable.id} AS product_id,
+        si.${SaleItemsTable.quantity} AS qty,
+        s.${SalesTable.zamindarName} AS zamindar_name,
+        s.${SalesTable.invoiceNumber} AS invoice_number,
+        s.${SalesTable.dateTime} AS date_time,
+        CASE
+          WHEN z.${ZamindarTable.id} IS NULL THEN 'Walk-in Customer'
+          ELSE s.${SalesTable.zamindarName}
+        END AS party_label
+      FROM ${SaleItemsTable.name} si
+      INNER JOIN ${SalesTable.name} s
+        ON s.${SalesTable.invoiceNumber} = si.${SaleItemsTable.invoiceNumber}
+      INNER JOIN ${ProductTable.name} p
+        ON p.${ProductTable.nameColumn} = si.${SaleItemsTable.productName}
+      LEFT JOIN ${ZamindarTable.name} z
+        ON z.${ZamindarTable.nameColumn} = s.${SalesTable.zamindarName}
+      ORDER BY s.${SalesTable.dateTime} ASC
+    ''');
+
+    final batch = db.batch();
+    for (final row in rows) {
+      batch.insert(StockMovementTable.name, {
+        StockMovementTable.productId: row['product_id'],
+        StockMovementTable.movementType: StockMovementType.stockOut,
+        StockMovementTable.quantity: (row['qty'] as num).toInt(),
+        StockMovementTable.partyLabel: row['party_label'] as String,
+        StockMovementTable.referenceType: StockMovementRef.sale,
+        StockMovementTable.referenceId: row['invoice_number'] as String,
+        StockMovementTable.dateTime: row['date_time'] as String,
+        StockMovementTable.notes: null,
+      });
+    }
+    await batch.commit(noResult: true);
+  }
 
   Future<void> _migratePaymentsTableNullableInvoice(Database db) async {
     final tableInfo = await db.rawQuery(
@@ -1293,6 +1371,17 @@ class DatabaseHelper with ChangeNotifier {
   Future<int> insertProduct(ProductItem product) async {
     final db = await database;
     final result = await db.insert(ProductTable.name, product.toMap());
+    if (product.availableStock > 0) {
+      await _insertStockMovement(
+        db,
+        productId: result,
+        movementType: StockMovementType.stockIn,
+        quantity: product.availableStock,
+        partyLabel: 'Stock Initialized',
+        referenceType: StockMovementRef.create,
+        dateTime: DateTime.now(),
+      );
+    }
     notifyListeners();
     return result;
   }
@@ -1331,6 +1420,78 @@ class DatabaseHelper with ChangeNotifier {
     return result;
   }
 
+  /// Restocks a product and records a STOCK IN ledger entry.
+  Future<void> restockProduct({
+    required ProductItem product,
+    required int addQuantity,
+    required int newCostPrice,
+  }) async {
+    if (product.id == null) {
+      throw ArgumentError('product.id is required to restock');
+    }
+    if (addQuantity <= 0) {
+      throw ArgumentError('addQuantity must be positive');
+    }
+
+    final db = await database;
+    await db.transaction((txn) async {
+      final updated = ProductItem(
+        id: product.id,
+        name: product.name,
+        brand: product.brand,
+        productType: product.productType,
+        packagingSize: product.packagingSize,
+        costPrice: newCostPrice,
+        retailPrice: product.retailPrice,
+        seasonalIncrement: product.seasonalIncrement,
+        availableStock: product.availableStock + addQuantity,
+        uom: product.uom,
+        expiryDate: product.expiryDate,
+        lowStockThreshold: product.lowStockThreshold,
+        description: product.description,
+      );
+      await txn.update(
+        ProductTable.name,
+        updated.toMap(),
+        where: '${ProductTable.id} = ?',
+        whereArgs: [product.id],
+      );
+      await _insertStockMovement(
+        txn,
+        productId: product.id!,
+        movementType: StockMovementType.stockIn,
+        quantity: addQuantity,
+        partyLabel: 'Stock Added',
+        referenceType: StockMovementRef.restock,
+        dateTime: DateTime.now(),
+        notes: 'Cost price set to Rs $newCostPrice',
+      );
+    });
+    notifyListeners();
+  }
+
+  /// Records a manual stock adjustment when available qty is edited.
+  Future<void> recordStockAdjustment({
+    required int productId,
+    required int previousStock,
+    required int newStock,
+  }) async {
+    final delta = newStock - previousStock;
+    if (delta == 0) return;
+
+    final db = await database;
+    await _insertStockMovement(
+      db,
+      productId: productId,
+      movementType: delta > 0 ? StockMovementType.stockIn : StockMovementType.stockOut,
+      quantity: delta.abs(),
+      partyLabel: 'Stock Adjusted',
+      referenceType: StockMovementRef.adjust,
+      dateTime: DateTime.now(),
+    );
+    notifyListeners();
+  }
+
   Future<int> deleteProduct(int id) async {
     final db = await database;
     final result = await db.delete(
@@ -1340,6 +1501,79 @@ class DatabaseHelper with ChangeNotifier {
     );
     notifyListeners();
     return result;
+  }
+
+  /// Aggregated stock inflows + outflows for a product, newest first.
+  Future<List<ProductHistoryEntry>> getProductHistory(int productId) async {
+    final db = await database;
+    final product = await getProduct(productId);
+    final uom = product?.uom ?? 'units';
+
+    final rows = await db.query(
+      StockMovementTable.name,
+      where: '${StockMovementTable.productId} = ?',
+      whereArgs: [productId],
+      orderBy: '${StockMovementTable.dateTime} DESC, ${StockMovementTable.id} DESC',
+    );
+
+    return rows.map((row) {
+      final type = row[StockMovementTable.movementType] as String;
+      final qty = (row[StockMovementTable.quantity] as num).toInt();
+      return ProductHistoryEntry(
+        id: row[StockMovementTable.id] as int?,
+        productId: productId,
+        dateTime: DateTime.tryParse(
+              row[StockMovementTable.dateTime] as String? ?? '',
+            ) ??
+            DateTime.now(),
+        movementType: type,
+        quantity: qty,
+        uom: uom,
+        partyLabel: row[StockMovementTable.partyLabel] as String? ?? '—',
+        referenceType: row[StockMovementTable.referenceType] as String? ?? '',
+        referenceId: row[StockMovementTable.referenceId] as String?,
+        notes: row[StockMovementTable.notes] as String?,
+      );
+    }).toList();
+  }
+
+  Future<void> _insertStockMovement(
+    DatabaseExecutor txn, {
+    required int productId,
+    required String movementType,
+    required int quantity,
+    required String partyLabel,
+    required String referenceType,
+    required DateTime dateTime,
+    String? referenceId,
+    String? notes,
+  }) async {
+    if (quantity <= 0) return;
+    await txn.insert(StockMovementTable.name, {
+      StockMovementTable.productId: productId,
+      StockMovementTable.movementType: movementType,
+      StockMovementTable.quantity: quantity,
+      StockMovementTable.partyLabel: partyLabel,
+      StockMovementTable.referenceType: referenceType,
+      StockMovementTable.referenceId: referenceId,
+      StockMovementTable.dateTime: _formatDateTime(dateTime),
+      StockMovementTable.notes: notes,
+    });
+  }
+
+  Future<String> _resolveSalePartyLabel(
+    DatabaseExecutor txn,
+    String zamindarName,
+  ) async {
+    final rows = await txn.query(
+      ZamindarTable.name,
+      columns: [ZamindarTable.id],
+      where: '${ZamindarTable.nameColumn} = ?',
+      whereArgs: [zamindarName],
+      limit: 1,
+    );
+    if (rows.isEmpty) return 'Walk-in Customer';
+    return zamindarName;
   }
 
   // -----------------------------
@@ -2134,7 +2368,8 @@ class DatabaseHelper with ChangeNotifier {
         });
       }
 
-      // Decrement product stock
+      // Decrement product stock + record STOCK OUT movements
+      final partyLabel = await _resolveSalePartyLabel(txn, zamindarName);
       for (final item in items) {
         if (item.productId == null) continue;
         final rows = await txn.query(
@@ -2148,12 +2383,24 @@ class DatabaseHelper with ChangeNotifier {
         final currentStock = _readIntValue(
           rows.first[ProductTable.availableStock],
         );
-        final nextStock = (currentStock - item.qty.ceil()).clamp(0, 1 << 31);
+        final qtyOut = item.qty.ceil();
+        final nextStock = (currentStock - qtyOut).clamp(0, 1 << 31);
         await txn.update(
           ProductTable.name,
           {ProductTable.availableStock: nextStock},
           where: '${ProductTable.id} = ?',
           whereArgs: [item.productId],
+        );
+        await _insertStockMovement(
+          txn,
+          productId: item.productId!,
+          movementType: StockMovementType.stockOut,
+          quantity: qtyOut,
+          partyLabel: partyLabel,
+          referenceType: StockMovementRef.sale,
+          referenceId: invoiceNumber,
+          dateTime: dateTime,
+          notes: 'Invoice $invoiceNumber',
         );
       }
 
@@ -2706,6 +2953,14 @@ class DatabaseHelper with ChangeNotifier {
         }
       }
 
+      // Remove prior SALE stock movements for this invoice (rewritten below).
+      await txn.delete(
+        StockMovementTable.name,
+        where:
+            '${StockMovementTable.referenceType} = ? AND ${StockMovementTable.referenceId} = ?',
+        whereArgs: [StockMovementRef.sale, invoiceNumber],
+      );
+
       // Delete old items
       await txn.delete(
         SaleItemsTable.name,
@@ -2766,7 +3021,8 @@ class DatabaseHelper with ChangeNotifier {
         });
       }
 
-      // Decrement stock for new items
+      // Decrement stock for new items + rewrite STOCK OUT ledger
+      final partyLabel = await _resolveSalePartyLabel(txn, zamindarName);
       for (final item in items) {
         if (item.productId == null) continue;
         final rows = await txn.query(
@@ -2780,12 +3036,24 @@ class DatabaseHelper with ChangeNotifier {
         final currentStock = _readIntValue(
           rows.first[ProductTable.availableStock],
         );
-        final nextStock = (currentStock - item.qty.ceil()).clamp(0, 1 << 31);
+        final qtyOut = item.qty.ceil();
+        final nextStock = (currentStock - qtyOut).clamp(0, 1 << 31);
         await txn.update(
           ProductTable.name,
           {ProductTable.availableStock: nextStock},
           where: '${ProductTable.id} = ?',
           whereArgs: [item.productId],
+        );
+        await _insertStockMovement(
+          txn,
+          productId: item.productId!,
+          movementType: StockMovementType.stockOut,
+          quantity: qtyOut,
+          partyLabel: partyLabel,
+          referenceType: StockMovementRef.sale,
+          referenceId: invoiceNumber,
+          dateTime: dateTime,
+          notes: 'Invoice $invoiceNumber',
         );
       }
     });
@@ -3023,6 +3291,31 @@ class PaymentsTable {
   static const String amountPaid = 'amount_paid';
   static const String paymentMethod = 'payment_method';
   static const String season = 'season';
+}
+
+class StockMovementTable {
+  static const String name = 'stock_movements';
+  static const String id = 'id';
+  static const String productId = 'product_id';
+  static const String movementType = 'movement_type';
+  static const String quantity = 'quantity';
+  static const String partyLabel = 'party_label';
+  static const String referenceType = 'reference_type';
+  static const String referenceId = 'reference_id';
+  static const String dateTime = 'date_time';
+  static const String notes = 'notes';
+}
+
+class StockMovementType {
+  static const String stockIn = 'STOCK_IN';
+  static const String stockOut = 'STOCK_OUT';
+}
+
+class StockMovementRef {
+  static const String sale = 'SALE';
+  static const String restock = 'RESTOCK';
+  static const String create = 'CREATE';
+  static const String adjust = 'ADJUST';
 }
 
 /// =========================
@@ -3401,4 +3694,39 @@ class SaleLineItem {
     required this.unitPrice,
     this.discount = 0,
   });
+}
+
+class ProductHistoryEntry {
+  final int? id;
+  final int productId;
+  final DateTime dateTime;
+  final String movementType;
+  final int quantity;
+  final String uom;
+  final String partyLabel;
+  final String referenceType;
+  final String? referenceId;
+  final String? notes;
+
+  const ProductHistoryEntry({
+    this.id,
+    required this.productId,
+    required this.dateTime,
+    required this.movementType,
+    required this.quantity,
+    required this.uom,
+    required this.partyLabel,
+    required this.referenceType,
+    this.referenceId,
+    this.notes,
+  });
+
+  bool get isStockIn => movementType == StockMovementType.stockIn;
+
+  String get quantityLabel {
+    final sign = isStockIn ? '+' : '-';
+    return '$sign$quantity $uom';
+  }
+
+  String get typeLabel => isStockIn ? 'STOCK IN' : 'STOCK OUT';
 }

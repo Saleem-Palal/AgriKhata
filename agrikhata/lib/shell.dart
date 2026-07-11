@@ -8,6 +8,7 @@ import 'package:agrikhata/screens/settings_screen.dart';
 import 'package:agrikhata/screens/zamindar_directory.dart';
 import 'package:agrikhata/screens/zamindar_profile_screen.dart';
 import 'package:agrikhata/services/update_service.dart';
+import 'package:agrikhata/utils/app_version.dart';
 import 'package:flutter/material.dart';
 
 enum ZamindarView { directory, add, profile }
@@ -28,14 +29,22 @@ class _ShellState extends State<Shell> {
   int? _preSelectedKisaanIdForSale;
   String? _editInvoiceNumber; // For edit mode
   int _ledgerRefreshToken = 0; // For forcing ledger refresh
+  String _appVersion = '';
 
   @override
   void initState() {
     super.initState();
+    _loadAppVersion();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       UpdateService().checkForUpdates(context);
     });
+  }
+
+  Future<void> _loadAppVersion() async {
+    final label = await AppVersion.displayLabel();
+    if (!mounted) return;
+    setState(() => _appVersion = label);
   }
 
   void _refreshDirectory() {
@@ -327,35 +336,56 @@ class _ShellState extends State<Shell> {
           top: BorderSide(color: Colors.white.withValues(alpha: 0.05)),
         ),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          CircleAvatar(
-            backgroundColor: AppColors.sidebarActive,
-            radius: 16,
-            child: const Text(
-              "AM",
-              style: TextStyle(color: Colors.white, fontSize: 12),
-            ),
-          ),
-          const SizedBox(width: 12),
-          const Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
+          Row(
             children: [
-              Text(
-                "Atta Muhammad",
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
+              CircleAvatar(
+                backgroundColor: AppColors.sidebarActive,
+                radius: 16,
+                child: const Text(
+                  "AM",
+                  style: TextStyle(color: Colors.white, fontSize: 12),
                 ),
               ),
-              Text(
-                "Owner",
-                style: TextStyle(color: AppColors.sidebarText, fontSize: 11),
+              const SizedBox(width: 12),
+              const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    "Atta Muhammad",
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  Text(
+                    "Owner",
+                    style: TextStyle(
+                      color: AppColors.sidebarText,
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
+          if (_appVersion.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Text(
+              _appVersion,
+              style: TextStyle(
+                color: AppColors.sidebarText.withValues(alpha: 0.75),
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
+                letterSpacing: 0.2,
+              ),
+            ),
+          ],
         ],
       ),
     );

@@ -7,11 +7,21 @@ cd /d "%~dp0"
 set "RELEASE_DIR=%~dp0build\windows\x64\runner\Release"
 set "INSTALL_SCRIPT=%~dp0install.bat"
 set "CERT_CER=%~dp0windows\signing\certificate.cer"
+set "ROOT_VERSION_JSON=%~dp0..\version.json"
+set "ASSET_VERSION_JSON=%~dp0assets\version.json"
 
 echo.
 echo  ========================================
 echo   AgriKhata Demo Release Builder
 echo  ========================================
+echo.
+
+:: Keep bundled asset in sync with repo-root version.json (GitHub source).
+if exist "%ROOT_VERSION_JSON%" (
+    echo  Syncing assets\version.json from repo root...
+    if not exist "%~dp0assets" mkdir "%~dp0assets"
+    copy /Y "%ROOT_VERSION_JSON%" "%ASSET_VERSION_JSON%" >nul
+)
 echo.
 
 :: ---------------------------------------------------------------

@@ -1,9 +1,9 @@
 import 'dart:convert';
 
 import 'package:agrikhata/Widgets/update_dialog.dart';
+import 'package:agrikhata/utils/app_version.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 /// Checks GitHub-hosted [version.json] and prompts when a newer build exists.
@@ -29,8 +29,9 @@ class UpdateService {
       if (latestVersion == null || latestVersion.isEmpty) return;
       if (downloadUrl == null || downloadUrl.isEmpty) return;
 
-      final packageInfo = await PackageInfo.fromPlatform();
-      final currentVersion = packageInfo.version;
+      // Local version comes from the same version.json the UI displays.
+      final currentVersion = await AppVersion.current();
+      if (currentVersion.isEmpty) return;
 
       if (!_isNewerVersion(latestVersion, currentVersion)) return;
       if (!context.mounted) return;

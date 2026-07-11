@@ -1,6 +1,7 @@
 import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Data/agri_header.dart';
 import 'package:agrikhata/Database/database_helper.dart';
+import 'package:agrikhata/Widgets/product_history_dialog.dart';
 import 'package:flutter/material.dart';
 
 class ProductsScreen extends StatefulWidget {
@@ -29,7 +30,7 @@ class _ProductsScreenState extends State<ProductsScreen> {
     80, // UOM
     110, // Expiry Date
     100, // Status
-    180, // Actions (Edit, Delete, Restock)
+    220, // Actions (Edit, Restock, History, Delete)
   ];
 
   final List<String> _categories = [
@@ -123,7 +124,17 @@ class _ProductsScreenState extends State<ProductsScreen> {
       if (product.id == null) {
         await DatabaseHelper.instance.insertProduct(product);
       } else {
+        final previous = _selectedProduct;
         await DatabaseHelper.instance.updateProduct(product);
+        if (previous != null &&
+            previous.id != null &&
+            previous.availableStock != product.availableStock) {
+          await DatabaseHelper.instance.recordStockAdjustment(
+            productId: previous.id!,
+            previousStock: previous.availableStock,
+            newStock: product.availableStock,
+          );
+        }
       }
       await _loadProducts();
       setState(() {
@@ -317,22 +328,11 @@ class _ProductsScreenState extends State<ProductsScreen> {
       
       if (addQty > 0 && newCostPrice > 0) {
         try {
-          final updatedProduct = ProductItem(
-            id: product.id,
-            name: product.name,
-            brand: product.brand,
-            productType: product.productType,
-            packagingSize: product.packagingSize,
-            costPrice: newCostPrice,
-            retailPrice: product.retailPrice,
-            seasonalIncrement: product.seasonalIncrement,
-            availableStock: product.availableStock + addQty,
-            uom: product.uom,
-            expiryDate: product.expiryDate,
-            lowStockThreshold: product.lowStockThreshold,
-            description: product.description,
+          await DatabaseHelper.instance.restockProduct(
+            product: product,
+            addQuantity: addQty,
+            newCostPrice: newCostPrice,
           );
-          await DatabaseHelper.instance.updateProduct(updatedProduct);
           await _loadProducts();
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
@@ -368,6 +368,14 @@ class _ProductsScreenState extends State<ProductsScreen> {
     }
     qtyController.dispose();
     costController.dispose();
+  }
+
+  void _openProductHistory(ProductItem product) {
+    if (product.id == null) return;
+    showDialog(
+      context: context,
+      builder: (_) => ProductHistoryDialog(productId: product.id!),
+    );
   }
 
   @override
@@ -731,6 +739,13 @@ class _ProductsScreenState extends State<ProductsScreen> {
                     label: 'Restock',
                     color: const Color(0xFF2D6A4F),
                     onTap: () => _restockProduct(p),
+                  ),
+                  const SizedBox(width: 4),
+                  _actionButton(
+                    icon: Icons.history_rounded,
+                    label: 'History',
+                    color: AppColors.tagBlueText,
+                    onTap: () => _openProductHistory(p),
                   ),
                   const SizedBox(width: 4),
                   _actionButton(
