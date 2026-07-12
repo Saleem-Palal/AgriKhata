@@ -2540,6 +2540,553 @@ class DatabaseHelper with ChangeNotifier {
     return salesWithDetails;
   }
 
+  /// Season performance KPIs for the Reports screen.
+  ///
+  /// Returns:
+  /// - `totalPurchases` — hardcoded `0` until the Purchase module exists
+  /// - `totalRevenue`, `cashSales`, `creditSales`
+  /// - `netProfit` — Σ quantity × (retail_price − cost_price) on sold items
+  /// - `totalMarketDebt`, `highRiskDues`, `todaysRecovery`, `dailyTarget`
+  /// - `collectionEfficiency` — recovered credit / credit sales × 100
+  /// - `season` — season display name used for the aggregation
+  Future<Map<String, dynamic>> getSeasonalMetrics({String? season}) async {
+    final db = await database;
+    final seasonName =
+        season ?? SeasonUtils.getCurrentSeason().displayName;
+
+    final revenueRows = await db.rawQuery(
+      '''
+      SELECT
+        COALESCE(SUM(${SalesTable.totalPayable}), 0) AS total_revenue,
+        COALESCE(SUM(CASE
+          WHEN ${SalesTable.paymentMethod} = 'Cash'
+          THEN ${SalesTable.totalPayable} ELSE 0 END), 0) AS cash_sales,
+        COALESCE(SUM(CASE
+          WHEN ${SalesTable.paymentMethod} = 'Credit'
+          THEN ${SalesTable.totalPayable} ELSE 0 END), 0) AS credit_sales
+      FROM ${SalesTable.name}
+      WHERE ${SalesTable.season} = ?
+      ''',
+      [seasonName],
+    );
+
+    final totalRevenue =
+        (revenueRows.first['total_revenue'] as num?)?.toDouble() ?? 0.0;
+    final cashSales =
+        (revenueRows.first['cash_sales'] as num?)?.toDouble() ?? 0.0;
+    final creditSales =
+        (revenueRows.first['credit_sales'] as num?)?.toDouble() ?? 0.0;
+
+    // Net profit from sold inventory: qty × (retail − cost).
+    final profitRows = await db.rawQuery(
+      '''
+      SELECT COALESCE(SUM(
+        si.${SaleItemsTable.quantity} * (
+          COALESCE(p.${ProductTable.retailPrice}, si.${SaleItemsTable.unitPrice})
+          - COALESCE(p.${ProductTable.costPrice}, 0)
+        )
+      ), 0) AS net_profit
+      FROM ${SaleItemsTable.name} si
+      INNER JOIN ${SalesTable.name} s
+        ON s.${SalesTable.invoiceNumber} = si.${SaleItemsTable.invoiceNumber}
+      LEFT JOIN ${ProductTable.name} p
+        ON p.${ProductTable.nameColumn} = si.${SaleItemsTable.productName}
+      WHERE s.${SalesTable.season} = ?
+      ''',
+      [seasonName],
+    );
+    final netProfit =
+        (profitRows.first['net_profit'] as num?)?.toDouble() ?? 0.0;
+
+    // Outstanding + aging + today's recovery from live invoice/payment rows.
+    final salesWithDetails = await getAllSalesWithDetails();
+    var totalMarketDebt = 0.0;
+    var highRiskDues = 0.0;
+    var creditOutstandingSeason = 0.0;
+    final now = DateTime.now();
+    final todayStart = DateTime(now.year, now.month, now.day);
+
+    for (final saleData in salesWithDetails) {
+      final sale = saleData['sale'] as Map<String, dynamic>;
+      final totalPayable =
+          (sale[SalesTable.totalPayable] as num?)?.toDouble() ?? 0.0;
+      final totalCollected =
+          (saleData['totalCollected'] as num?)?.toDouble() ?? 0.0;
+      final remaining = totalPayable - totalCollected;
+      if (remaining <= 0.005) continue;
+
+      totalMarketDebt += remaining;
+
+      final saleSeason = sale[SalesTable.season] as String? ?? '';
+      final paymentMethod = sale[SalesTable.paymentMethod] as String? ?? '';
+      if (saleSeason == seasonName && paymentMethod == 'Credit') {
+        creditOutstandingSeason += remaining;
+      }
+
+      final saleDate = _parseDateTime(
+        sale[SalesTable.dateTime] as String? ?? '',
+      );
+      final ageDays = now.difference(saleDate).inDays;
+      if (ageDays > 180) {
+        highRiskDues += remaining;
+      }
+    }
+
+    // Today's recovery: cash-like collections dated today.
+    final paymentRows = await db.query(PaymentsTable.name);
+    var todaysRecovery = 0.0;
+    for (final payment in paymentRows) {
+      final amount =
+          (payment[PaymentsTable.amountPaid] as num?)?.toDouble() ?? 0.0;
+      if (amount <= 0) continue;
+      final paidAt = _parseDateTime(
+        payment[PaymentsTable.dateTime] as String? ?? '',
+      );
+      if (!paidAt.isBefore(todayStart) &&
+          paidAt.isBefore(todayStart.add(const Duration(days: 1)))) {
+        todaysRecovery += amount;
+      }
+    }
+
+    const dailyTarget = 100000.0;
+    final recoveredCredit = (creditSales - creditOutstandingSeason)
+        .clamp(0.0, double.infinity);
+    final collectionEfficiency = creditSales > 0
+        ? (recoveredCredit / creditSales) * 100.0
+        : 0.0;
+
+    return {
+      'season': seasonName,
+      'totalPurchases': 0.0,
+      'totalRevenue': totalRevenue,
+      'cashSales': cashSales,
+      'creditSales': creditSales,
+      'netProfit': netProfit,
+      'totalMarketDebt': totalMarketDebt,
+      'highRiskDues': highRiskDues,
+      'todaysRecovery': todaysRecovery,
+      'dailyTarget': dailyTarget,
+      'collectionEfficiency': collectionEfficiency,
+    };
+  }
+
+  /// Credit aging buckets and capital trapped by product category.
+  Future<Map<String, dynamic>> getAnalyticalInsights() async {
+    final salesWithDetails = await getAllSalesWithDetails();
+    final now = DateTime.now();
+
+    var currentAmt = 0.0;
+    var overdueAmt = 0.0;
+    var criticalAmt = 0.0;
+    final capitalByCategory = <String, double>{
+      'Fertilizers': 0.0,
+      'Seeds': 0.0,
+      'Pesticides': 0.0,
+    };
+
+    for (final saleData in salesWithDetails) {
+      final sale = saleData['sale'] as Map<String, dynamic>;
+      final items =
+          (saleData['items'] as List).cast<Map<String, dynamic>>();
+      final totalPayable =
+          (sale[SalesTable.totalPayable] as num?)?.toDouble() ?? 0.0;
+      final totalCollected =
+          (saleData['totalCollected'] as num?)?.toDouble() ?? 0.0;
+      final remaining = totalPayable - totalCollected;
+      if (remaining <= 0.005) continue;
+
+      final saleDate = _parseDateTime(
+        sale[SalesTable.dateTime] as String? ?? '',
+      );
+      final ageDays = now.difference(saleDate).inDays;
+      if (ageDays < 90) {
+        currentAmt += remaining;
+      } else if (ageDays <= 180) {
+        overdueAmt += remaining;
+      } else {
+        criticalAmt += remaining;
+      }
+
+      // Allocate outstanding proportionally across line items by subtotal.
+      final invoiceSubtotal = items.fold<double>(
+        0.0,
+        (sum, item) =>
+            sum + ((item[SaleItemsTable.subtotal] as num?)?.toDouble() ?? 0.0),
+      );
+
+      if (invoiceSubtotal <= 0 || items.isEmpty) {
+        capitalByCategory['Fertilizers'] =
+            (capitalByCategory['Fertilizers'] ?? 0) + remaining;
+        continue;
+      }
+
+      for (final item in items) {
+        final lineSubtotal =
+            (item[SaleItemsTable.subtotal] as num?)?.toDouble() ?? 0.0;
+        final share = remaining * (lineSubtotal / invoiceSubtotal);
+        final category = _normalizeProductCategory(
+          item[SaleItemsTable.productType] as String? ?? 'Fertilizer',
+        );
+        capitalByCategory[category] =
+            (capitalByCategory[category] ?? 0.0) + share;
+      }
+    }
+
+    final totalAging = currentAmt + overdueAmt + criticalAmt;
+    double pct(double amount) =>
+        totalAging > 0 ? (amount / totalAging) * 100.0 : 0.0;
+
+    final maxCapital = capitalByCategory.values.fold<double>(
+      0.0,
+      (m, v) => v > m ? v : m,
+    );
+
+    final capitalTrapped = capitalByCategory.entries.map((e) {
+      return {
+        'category': e.key,
+        'amount': e.value,
+        'ratio': maxCapital > 0 ? e.value / maxCapital : 0.0,
+      };
+    }).toList()
+      ..sort(
+        (a, b) =>
+            ((b['amount'] as num).toDouble())
+                .compareTo((a['amount'] as num).toDouble()),
+      );
+
+    return {
+      'creditAging': {
+        'currentAmount': currentAmt,
+        'overdueAmount': overdueAmt,
+        'criticalAmount': criticalAmt,
+        'currentPercent': pct(currentAmt),
+        'overduePercent': pct(overdueAmt),
+        'criticalPercent': pct(criticalAmt),
+        'total': totalAging,
+      },
+      'capitalTrapped': capitalTrapped,
+    };
+  }
+
+  /// Zamindars with outstanding credit, optionally filtered by search,
+  /// village, and payment agreement.
+  Future<List<Map<String, dynamic>>> getOutstandingCreditDirectory({
+    String? search,
+    String? village,
+    String? paymentTerm,
+  }) async {
+    final db = await database;
+
+    final whereParts = <String>[];
+    final whereArgs = <Object?>[];
+
+    // Soft-exclude drafts when the column is present.
+    whereParts.add(
+      '(${ZamindarTable.isDraft} IS NULL OR ${ZamindarTable.isDraft} = 0)',
+    );
+
+    final searchQuery = search?.trim() ?? '';
+    if (searchQuery.isNotEmpty) {
+      whereParts.add(
+        '(LOWER(${ZamindarTable.nameColumn}) LIKE ? OR '
+        'LOWER(COALESCE(${ZamindarTable.village}, \'\')) LIKE ?)',
+      );
+      final like = '%${searchQuery.toLowerCase()}%';
+      whereArgs.addAll([like, like]);
+    }
+
+    final villageFilter = village?.trim() ?? '';
+    if (villageFilter.isNotEmpty &&
+        villageFilter.toLowerCase() != 'all villages') {
+      whereParts.add('LOWER(COALESCE(${ZamindarTable.village}, \'\')) = ?');
+      whereArgs.add(villageFilter.toLowerCase());
+    }
+
+    final zamindarRows = await db.query(
+      ZamindarTable.name,
+      where: whereParts.isEmpty ? null : whereParts.join(' AND '),
+      whereArgs: whereArgs.isEmpty ? null : whereArgs,
+      orderBy: '${ZamindarTable.nameColumn} ASC',
+    );
+
+    final salesWithDetails = await getAllSalesWithDetails();
+    final now = DateTime.now();
+
+    // Aggregate outstanding + last activity per zamindar name.
+    final outstandingByName = <String, double>{};
+    final lastActiveByName = <String, DateTime>{};
+    final dominantTermByName = <String, String?>{};
+    final dominantTermWeight = <String, double>{};
+    final oldestUnpaidAgeByName = <String, int>{};
+
+    for (final saleData in salesWithDetails) {
+      final sale = saleData['sale'] as Map<String, dynamic>;
+      final name = (sale[SalesTable.zamindarName] as String? ?? '').trim();
+      if (name.isEmpty) continue;
+
+      final totalPayable =
+          (sale[SalesTable.totalPayable] as num?)?.toDouble() ?? 0.0;
+      final totalCollected =
+          (saleData['totalCollected'] as num?)?.toDouble() ?? 0.0;
+      final remaining = totalPayable - totalCollected;
+
+      final saleDate = _parseDateTime(
+        sale[SalesTable.dateTime] as String? ?? '',
+      );
+      final prevActive = lastActiveByName[name];
+      if (prevActive == null || saleDate.isAfter(prevActive)) {
+        lastActiveByName[name] = saleDate;
+      }
+
+      // Also consider payment timestamps for "last active".
+      final payments =
+          (saleData['payments'] as List).cast<Map<String, dynamic>>();
+      for (final payment in payments) {
+        final paidAt = _parseDateTime(
+          payment[PaymentsTable.dateTime] as String? ?? '',
+        );
+        final prev = lastActiveByName[name];
+        if (prev == null || paidAt.isAfter(prev)) {
+          lastActiveByName[name] = paidAt;
+        }
+      }
+
+      if (remaining <= 0.005) continue;
+
+      outstandingByName[name] = (outstandingByName[name] ?? 0.0) + remaining;
+
+      final ageDays = now.difference(saleDate).inDays;
+      final prevAge = oldestUnpaidAgeByName[name] ?? 0;
+      if (ageDays > prevAge) {
+        oldestUnpaidAgeByName[name] = ageDays;
+      }
+
+      final term = sale[SalesTable.paymentTerm] as String?;
+      if (term != null && term.trim().isNotEmpty) {
+        final weight = dominantTermWeight[name] ?? 0.0;
+        if (remaining >= weight) {
+          dominantTermWeight[name] = remaining;
+          dominantTermByName[name] = term.trim();
+        }
+      }
+    }
+
+    final termFilter = paymentTerm?.trim() ?? '';
+    final ignoreTermFilter = termFilter.isEmpty ||
+        termFilter.toLowerCase() == 'all terms';
+
+    final results = <Map<String, dynamic>>[];
+
+    for (final row in zamindarRows) {
+      final zamindar = Zamindar.fromMap(row);
+      final name = zamindar.name.trim();
+      final balance = outstandingByName[name] ?? 0.0;
+      if (balance <= 0.005) continue;
+
+      final oldestAge = oldestUnpaidAgeByName[name] ?? 0;
+      final isOverduePastSeason = oldestAge > 180;
+
+      var rawTerm = dominantTermByName[name];
+      if (rawTerm == null || rawTerm.isEmpty) {
+        rawTerm = zamindar.paymentTerms.isNotEmpty
+            ? zamindar.paymentTerms.first
+            : null;
+      }
+
+      final displayTerm = _toDisplayPaymentTerm(
+        rawTerm,
+        isOverduePastSeason: isOverduePastSeason,
+      );
+
+      if (!ignoreTermFilter) {
+        final matches = _paymentTermMatchesFilter(
+          filter: termFilter,
+          rawTerm: rawTerm,
+          displayTerm: displayTerm,
+          isOverduePastSeason: isOverduePastSeason,
+        );
+        if (!matches) continue;
+      }
+
+      // Village search also covers walk-in names when SQL missed them —
+      // already SQL-filtered for registered zamindars.
+      results.add({
+        'zamindarId': zamindar.id,
+        'name': name,
+        'village': zamindar.village?.trim().isNotEmpty == true
+            ? zamindar.village!.trim()
+            : (zamindar.locationGoth?.trim().isNotEmpty == true
+                ? zamindar.locationGoth!.trim()
+                : '—'),
+        'outstandingBalance': balance,
+        'paymentTerm': displayTerm,
+        'paymentTermRaw': rawTerm,
+        'lastActiveAt': lastActiveByName[name],
+        'lastActiveLabel': _formatRelativeActivity(lastActiveByName[name]),
+        'whatsappNumber': zamindar.whatsappNumber,
+        'isCritical': isOverduePastSeason || balance >= 400000,
+        'oldestUnpaidDays': oldestAge,
+      });
+    }
+
+    // Include outstanding sales for names not in the zamindar table
+    // (walk-in / deleted), still respecting search/village/term filters.
+    for (final entry in outstandingByName.entries) {
+      final name = entry.key;
+      if (results.any((r) => r['name'] == name)) continue;
+
+      final searchLower = searchQuery.toLowerCase();
+      if (searchLower.isNotEmpty &&
+          !name.toLowerCase().contains(searchLower)) {
+        continue;
+      }
+      if (villageFilter.isNotEmpty &&
+          villageFilter.toLowerCase() != 'all villages') {
+        continue;
+      }
+
+      final oldestAge = oldestUnpaidAgeByName[name] ?? 0;
+      final isOverduePastSeason = oldestAge > 180;
+      final rawTerm = dominantTermByName[name];
+      final displayTerm = _toDisplayPaymentTerm(
+        rawTerm,
+        isOverduePastSeason: isOverduePastSeason,
+      );
+
+      if (!ignoreTermFilter) {
+        final matches = _paymentTermMatchesFilter(
+          filter: termFilter,
+          rawTerm: rawTerm,
+          displayTerm: displayTerm,
+          isOverduePastSeason: isOverduePastSeason,
+        );
+        if (!matches) continue;
+      }
+
+      results.add({
+        'zamindarId': null,
+        'name': name,
+        'village': '—',
+        'outstandingBalance': entry.value,
+        'paymentTerm': displayTerm,
+        'paymentTermRaw': rawTerm,
+        'lastActiveAt': lastActiveByName[name],
+        'lastActiveLabel': _formatRelativeActivity(lastActiveByName[name]),
+        'whatsappNumber': null,
+        'isCritical': isOverduePastSeason || entry.value >= 400000,
+        'oldestUnpaidDays': oldestAge,
+      });
+    }
+
+    results.sort(
+      (a, b) => ((b['outstandingBalance'] as num).toDouble())
+          .compareTo((a['outstandingBalance'] as num).toDouble()),
+    );
+    return results;
+  }
+
+  /// Distinct non-empty villages for Reports filter dropdowns.
+  Future<List<String>> getDistinctVillages() async {
+    final db = await database;
+    final rows = await db.rawQuery(
+      '''
+      SELECT DISTINCT TRIM(${ZamindarTable.village}) AS village
+      FROM ${ZamindarTable.name}
+      WHERE ${ZamindarTable.village} IS NOT NULL
+        AND TRIM(${ZamindarTable.village}) != ''
+      ORDER BY village COLLATE NOCASE ASC
+      ''',
+    );
+    return rows
+        .map((r) => (r['village'] as String?)?.trim() ?? '')
+        .where((v) => v.isNotEmpty)
+        .toList();
+  }
+
+  static String _normalizeProductCategory(String raw) {
+    final lower = raw.trim().toLowerCase();
+    if (lower.contains('fert')) return 'Fertilizers';
+    if (lower.contains('seed')) return 'Seeds';
+    if (lower.contains('pest') || lower.contains('herb')) {
+      return 'Pesticides';
+    }
+    if (lower.isEmpty) return 'Fertilizers';
+    return raw.trim();
+  }
+
+  /// Maps stored payment-term values to Reports UI labels.
+  static String _toDisplayPaymentTerm(
+    String? raw, {
+    required bool isOverduePastSeason,
+  }) {
+    if (isOverduePastSeason) return 'Overdue / Past Season';
+    final value = raw?.trim() ?? '';
+    switch (value) {
+      case 'After Harvest':
+      case 'Harvest Settlement':
+        return 'Harvest Settlement';
+      case '90 days':
+      case '90-Day Cycle':
+        return '90-Day Cycle';
+      case 'After a Week':
+        return 'After a Week';
+      case 'After a Month':
+        return 'After a Month';
+      case 'Overdue / Past Season':
+        return 'Overdue / Past Season';
+      default:
+        return value.isNotEmpty ? value : '90-Day Cycle';
+    }
+  }
+
+  static bool _paymentTermMatchesFilter({
+    required String filter,
+    required String? rawTerm,
+    required String displayTerm,
+    required bool isOverduePastSeason,
+  }) {
+    final f = filter.trim().toLowerCase();
+    if (f == 'overdue / past season' || f == 'overdue') {
+      return isOverduePastSeason ||
+          displayTerm.toLowerCase() == 'overdue / past season';
+    }
+
+    final normalizedFilter = _toDisplayPaymentTerm(
+      filter,
+      isOverduePastSeason: false,
+    ).toLowerCase();
+    final normalizedRaw = _toDisplayPaymentTerm(
+      rawTerm,
+      isOverduePastSeason: false,
+    ).toLowerCase();
+
+    return displayTerm.toLowerCase() == normalizedFilter ||
+        normalizedRaw == normalizedFilter ||
+        (rawTerm?.trim().toLowerCase() == f);
+  }
+
+  static String _formatRelativeActivity(DateTime? dateTime) {
+    if (dateTime == null) return '—';
+    final diff = DateTime.now().difference(dateTime);
+    if (diff.inMinutes < 1) return 'Just Now';
+    if (diff.inHours < 1) return '${diff.inMinutes} min Ago';
+    if (diff.inHours < 24) {
+      return diff.inHours == 1 ? '1 Hour Ago' : '${diff.inHours} Hours Ago';
+    }
+    if (diff.inDays == 1) return '1 Day Ago';
+    if (diff.inDays < 7) return '${diff.inDays} Days Ago';
+    if (diff.inDays < 30) {
+      final weeks = (diff.inDays / 7).floor();
+      return weeks <= 1 ? '1 Week Ago' : '$weeks Weeks Ago';
+    }
+    if (diff.inDays < 365) {
+      final months = (diff.inDays / 30).floor();
+      return months <= 1 ? '1 Month Ago' : '$months Months Ago';
+    }
+    final years = (diff.inDays / 365).floor();
+    return years <= 1 ? '1 Year Ago' : '$years Years Ago';
+  }
+
   /// Gets sales for a specific zamindar
   Future<List<Map<String, dynamic>>> getSalesForZamindar(
     String zamindarName, {

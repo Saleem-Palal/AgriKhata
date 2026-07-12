@@ -4,6 +4,7 @@ import 'package:agrikhata/screens/add_zamindar_screen.dart';
 import 'package:agrikhata/screens/main_ledger_screen.dart';
 import 'package:agrikhata/screens/new_sale_screen.dart';
 import 'package:agrikhata/screens/products_screen.dart';
+import 'package:agrikhata/screens/reports_screen.dart';
 import 'package:agrikhata/screens/settings_screen.dart';
 import 'package:agrikhata/screens/zamindar_directory.dart';
 import 'package:agrikhata/screens/zamindar_profile_screen.dart';
@@ -183,7 +184,7 @@ class _ShellState extends State<Shell> {
       ), // Refresh when token changes
       onEditInvoice: _navigateToEditInvoice,
     ),
-    const Center(child: Text("Reports")),
+    const ReportsScreen(),
     SettingsScreen(onDataReset: _handleApplicationDataReset),
   ];
 

@@ -2,7 +2,7 @@ import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:flutter/material.dart';
 
 /// Premium desktop update prompt for AgriKhata shopkeepers.
-class UpdateDialog extends StatelessWidget {
+class UpdateDialog extends StatefulWidget {
   const UpdateDialog({
     super.key,
     required this.latestVersion,
@@ -16,7 +16,10 @@ class UpdateDialog extends StatelessWidget {
   final String currentVersion;
   final List<String> changelog;
   final String downloadUrl;
-  final Future<void> Function(String downloadUrl)? onUpdateNow;
+  final Future<void> Function(
+    String downloadUrl, {
+    void Function(String status)? onStatus,
+  })? onUpdateNow;
 
   /// Shows a non-dismissible update dialog. Prefer this over raw [showDialog].
   static Future<void> show(
@@ -25,7 +28,10 @@ class UpdateDialog extends StatelessWidget {
     required String currentVersion,
     required List<String> changelog,
     required String downloadUrl,
-    Future<void> Function(String downloadUrl)? onUpdateNow,
+    Future<void> Function(
+      String downloadUrl, {
+      void Function(String status)? onStatus,
+    })? onUpdateNow,
   }) {
     return showDialog<void>(
       context: context,
@@ -42,10 +48,50 @@ class UpdateDialog extends StatelessWidget {
   }
 
   @override
+  State<UpdateDialog> createState() => _UpdateDialogState();
+}
+
+class _UpdateDialogState extends State<UpdateDialog> {
+  bool _busy = false;
+  String _status = '';
+  String? _error;
+
+  Future<void> _handleUpdateNow() async {
+    final callback = widget.onUpdateNow;
+    if (callback == null || _busy) return;
+
+    setState(() {
+      _busy = true;
+      _error = null;
+      _status = 'Preparing update...';
+    });
+
+    try {
+      await callback(
+        widget.downloadUrl,
+        onStatus: (status) {
+          if (!mounted) return;
+          setState(() => _status = status);
+        },
+      );
+      // Add-AppxPackage -ForceApplicationShutdown usually kills this process.
+      // If we are still here, close the dialog.
+      if (mounted) Navigator.of(context).pop();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _status = '';
+        _error = e.toString().replaceFirst('Exception: ', '');
+      });
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final notes = changelog.isEmpty
+    final notes = widget.changelog.isEmpty
         ? const ['A newer version of AgriKhata is ready to install.']
-        : changelog;
+        : widget.changelog;
 
     return Dialog(
       backgroundColor: Colors.white,
@@ -80,8 +126,46 @@ class UpdateDialog extends StatelessWidget {
               _buildVersionBadge(),
               const SizedBox(height: 18),
               _buildChangelogBox(notes),
+              if (_busy) ...[
+                const SizedBox(height: 18),
+                const LinearProgressIndicator(
+                  color: AppColors.darkGreen,
+                  backgroundColor: AppColors.tagGreenBg,
+                  minHeight: 4,
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  _status,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: AppColors.textMuted,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+              if (_error != null) ...[
+                const SizedBox(height: 14),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppColors.dangerBg,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppColors.dangerBorder),
+                  ),
+                  child: Text(
+                    _error!,
+                    style: const TextStyle(
+                      color: AppColors.dangerText,
+                      fontSize: 12.5,
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+              ],
               const SizedBox(height: 22),
-              _buildActions(context),
+              _buildActions(),
             ],
           ),
         ),
@@ -98,8 +182,8 @@ class UpdateDialog extends StatelessWidget {
         borderRadius: BorderRadius.circular(18),
         border: Border.all(color: AppColors.border),
       ),
-      child: const Icon(
-        Icons.rocket_launch_rounded,
+      child: Icon(
+        _busy ? Icons.downloading_rounded : Icons.rocket_launch_rounded,
         color: AppColors.darkGreen,
         size: 30,
       ),
@@ -117,7 +201,7 @@ class UpdateDialog extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          _VersionChip(label: 'v$currentVersion', muted: true),
+          _VersionChip(label: 'v${widget.currentVersion}', muted: true),
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 8),
             child: Icon(
@@ -126,7 +210,7 @@ class UpdateDialog extends StatelessWidget {
               color: AppColors.mediumGreen,
             ),
           ),
-          _VersionChip(label: 'v$latestVersion', muted: false),
+          _VersionChip(label: 'v${widget.latestVersion}', muted: false),
         ],
       ),
     );
@@ -183,12 +267,12 @@ class UpdateDialog extends StatelessWidget {
     );
   }
 
-  Widget _buildActions(BuildContext context) {
+  Widget _buildActions() {
     return Row(
       children: [
         Expanded(
           child: TextButton(
-            onPressed: () => Navigator.of(context).pop(),
+            onPressed: _busy ? null : () => Navigator.of(context).pop(),
             style: TextButton.styleFrom(
               foregroundColor: AppColors.textMuted,
               padding: const EdgeInsets.symmetric(vertical: 14),
@@ -209,16 +293,11 @@ class UpdateDialog extends StatelessWidget {
         const SizedBox(width: 12),
         Expanded(
           child: ElevatedButton(
-            onPressed: () async {
-              Navigator.of(context).pop();
-              final callback = onUpdateNow;
-              if (callback != null) {
-                await callback(downloadUrl);
-              }
-            },
+            onPressed: _busy ? null : _handleUpdateNow,
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.darkGreen,
               foregroundColor: Colors.white,
+              disabledBackgroundColor: AppColors.mediumGreen,
               elevation: 0,
               shadowColor: Colors.transparent,
               padding: const EdgeInsets.symmetric(vertical: 14),
@@ -226,14 +305,24 @@ class UpdateDialog extends StatelessWidget {
                 borderRadius: BorderRadius.circular(10),
               ),
             ),
-            child: const Row(
+            child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.download_rounded, size: 18),
-                SizedBox(width: 8),
+                if (_busy)
+                  const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                else
+                  const Icon(Icons.system_update_alt_rounded, size: 18),
+                const SizedBox(width: 8),
                 Text(
-                  'Update Now',
-                  style: TextStyle(
+                  _busy ? 'Updating...' : 'Update Now',
+                  style: const TextStyle(
                     fontSize: 13.5,
                     fontWeight: FontWeight.w700,
                   ),

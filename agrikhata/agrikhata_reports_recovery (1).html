@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AgriKhata — Reports &amp; Recovery</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+<style>
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#F7F9F4;color:#1B4332}
+  .app{display:flex;min-height:100vh}
+
+  /* ---------- Sidebar ---------- */
+  .sidebar{width:200px;flex-shrink:0;background:#1B4332;display:flex;flex-direction:column}
+  .logo{padding:18px 16px 14px;border-bottom:0.5px solid rgba(255,255,255,0.5)}
+  .logo-name{font-size:20px;font-weight:700;color:#fff}
+  .logo-sub{font-size:11px;color:#A7C4A0;margin-top:2px}
+  .nav{padding:12px 10px;flex:1}
+  .nav-section{font-size:10px;color:#6B9E7A;font-weight:700;letter-spacing:1.2px;padding:10px 8px 4px;text-transform:uppercase}
+  .nav-item{display:flex;align-items:center;gap:9px;padding:10px 12px;border-radius:10px;cursor:pointer;color:#A7C4A0;font-size:12.5px;margin-bottom:2px}
+  .nav-item.active{background:#2D6A4F;color:#fff;font-weight:500}
+  .nav-item i{width:16px;text-align:center;font-size:13px}
+  .sb-footer{padding:12px 14px;border-top:0.5px solid rgba(255,255,255,0.05);display:flex;align-items:center;gap:9px}
+  .sb-av{width:30px;height:30px;border-radius:50%;background:#2D6A4F;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:500;color:#B7E4C7;border:1px solid #40916C;flex-shrink:0}
+  .sb-name{font-size:12px;font-weight:500;color:#fff}
+  .sb-role{font-size:10px;color:#6B9E7A}
+
+  /* ---------- Main ---------- */
+  .main{flex:1;display:flex;flex-direction:column;min-width:0}
+  .topbar{background:#fff;border-bottom:0.5px solid #E2EBE0;padding:12px 24px}
+  .breadcrumb{font-size:12px;color:#95B89A}
+  .breadcrumb .cur{color:#1B4332;font-weight:500}
+  .content{padding:20px;flex:1}
+
+  .card{background:#fff;border:0.5px solid #E2EBE0;border-radius:12px}
+
+  /* KPI cards */
+  .kpi-lbl{font-size:10px;font-weight:500;color:#95B89A;text-transform:uppercase;letter-spacing:.3px}
+  .kpi-val{font-size:22px;font-weight:600;color:#1B4332}
+  .progress-track{background:#E2EBE0;border-radius:20px;height:7px;overflow:hidden}
+  .progress-fill{background:#2D6A4F;height:100%;border-radius:20px}
+
+  /* Aging bar */
+  .aging-track{display:flex;height:12px;border-radius:20px;overflow:hidden;background:#E2EBE0}
+  .legend-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px}
+
+  /* Capital rank */
+  .rank-track{background:#F0F4EE;border-radius:20px;height:6px;overflow:hidden}
+  .rank-fill{height:100%;border-radius:20px}
+
+  /* Table */
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  thead th{padding:9px 14px;text-align:left;font-size:10px;font-weight:500;color:#6B8F71;border-bottom:0.5px solid #E2EBE0;background:#F7F9F4;text-transform:uppercase;letter-spacing:.3px}
+  tbody td{padding:11px 14px;border-bottom:0.5px solid #E2EBE0;vertical-align:middle}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr:hover td{background:#F5F9F2}
+
+  .badge{display:inline-block;font-size:10px;font-weight:500;padding:3px 10px;border-radius:20px;white-space:nowrap}
+  .badge.healthy{background:#D8F3DC;color:#2D6A4F}
+  .badge.warn{background:#FAEEDA;color:#633806}
+  .badge.critical{background:#FCEBEB;color:#791F1F}
+
+  .wa-btn{background:#25D366;color:#fff;font-size:11px;font-weight:500;padding:7px 12px;border-radius:8px;display:inline-flex;align-items:center;gap:6px;cursor:pointer;border:none}
+  .wa-btn:hover{background:#1fbd5a}
+  .icon-btn{width:28px;height:28px;border-radius:7px;border:0.5px solid #C6DEC9;background:#fff;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;color:#6B8F71;font-size:12px}
+  .icon-btn:hover{background:#F0F7EB;border-color:#97C459;color:#2D6A4F}
+
+  .input-field{background:#fff;border:0.5px solid #C6DEC9;border-radius:8px;font-size:12.5px;padding:8px 12px;color:#1B4332}
+  .input-field::placeholder{color:#95B89A}
+  .input-field:focus{outline:none;border-color:#40916C}
+
+  .footer-btn{border-radius:9px;padding:9px 16px;font-size:12.5px;font-weight:500;display:inline-flex;align-items:center;gap:8px;cursor:pointer}
+  .footer-btn.primary{background:#1B4332;color:#fff;border:none}
+  .footer-btn.ghost{background:#fff;color:#1B4332;border:0.5px solid #C6DEC9}
+
+  /* Toast */
+  #toast{position:fixed;bottom:24px;right:24px;z-index:60;transform:translateY(20px);opacity:0;pointer-events:none;transition:all .25s ease}
+  #toast.show{transform:translateY(0);opacity:1}
+  .toast-card{background:#fff;border:0.5px solid #E2EBE0;border-radius:14px;box-shadow:0 16px 40px rgba(27,67,50,0.18);width:340px;overflow:hidden}
+  .toast-head{background:#25D366;padding:10px 14px;display:flex;align-items:center;gap:8px}
+  .toast-body{padding:14px}
+  .toast-msg{background:#F7F9F4;border-radius:8px;padding:10px 12px;font-size:11.5px;color:#1B4332;line-height:1.5;margin-top:8px}
+
+  .hidden-row{display:none}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ================= SIDEBAR ================= -->
+  <div class="sidebar">
+    <div class="logo">
+      <div class="logo-name">AgriKhata</div>
+      <div class="logo-sub">Atta Muhammad &amp; Sons</div>
+    </div>
+    <div class="nav">
+      <div class="nav-section">Main</div>
+      <div class="nav-item"><i class="fa-solid fa-table-cells-large"></i>Dashboard</div>
+      <div class="nav-item"><i class="fa-solid fa-users"></i>Zamindars</div>
+      <div class="nav-item"><i class="fa-solid fa-cash-register"></i>New Sale</div>
+      <div class="nav-section">Inventory</div>
+      <div class="nav-item"><i class="fa-solid fa-boxes-stacked"></i>Products</div>
+      <div class="nav-item"><i class="fa-solid fa-truck-ramp-box"></i>Purchase</div>
+      <div class="nav-section">Finance</div>
+      <div class="nav-item"><i class="fa-solid fa-book"></i>Ledger</div>
+      <div class="nav-item active"><i class="fa-solid fa-chart-column"></i>Reports</div>
+      <div class="nav-section">System</div>
+      <div class="nav-item"><i class="fa-solid fa-gear"></i>Settings</div>
+    </div>
+    <div class="sb-footer">
+      <div class="sb-av">AM</div>
+      <div><div class="sb-name">Atta Muhammad</div><div class="sb-role">Owner</div></div>
+    </div>
+  </div>
+
+  <!-- ================= MAIN ================= -->
+  <div class="main">
+    <div class="topbar">
+      <div class="breadcrumb">Finance &nbsp;›&nbsp; <span class="cur">Reports</span></div>
+    </div>
+
+    <div class="content">
+
+      <!-- ===== Zone 1: Top-line metrics ===== -->
+
+      <!-- Row 1: Season Performance -->
+      <div class="text-[11px] font-semibold mb-2" style="color:#6B9E7A;text-transform:uppercase;letter-spacing:.5px">Season Performance (Sales, Revenue &amp; Profit)</div>
+      <div class="grid grid-cols-4 gap-3 mb-4">
+        <div class="card p-4">
+          <div class="kpi-lbl">Total Revenue / Sales</div>
+          <div class="kpi-val mt-1">₨ 42,00,000</div>
+          <div class="text-[10.5px] font-medium mt-3" style="color:#6B8F71">
+            Cash: ₨ 13,50,000 &nbsp;|&nbsp; Credit: ₨ 28,50,000
+          </div>
+        </div>
+        <div class="card p-4">
+          <div class="kpi-lbl">Total Purchases</div>
+          <div class="kpi-val mt-1">₨ 34,00,000</div>
+          <div class="text-[10.5px] mt-3" style="color:#95B89A">Sourced from Distributors</div>
+        </div>
+        <div class="card p-4">
+          <div class="kpi-lbl">Net Profit</div>
+          <div class="kpi-val mt-1 font-bold" style="color:#1B4332">₨ 8,00,000</div>
+          <div class="text-[10.5px] mt-3" style="color:#95B89A">This season</div>
+        </div>
+        <div class="card p-4">
+          <div class="kpi-lbl">Profit Margin</div>
+          <div class="flex items-end gap-2 mt-1">
+            <div class="kpi-val">19.0%</div>
+            <span class="badge healthy mb-1">Target: &gt;15.0%</span>
+          </div>
+          <div class="mt-3">
+            <div class="progress-track"><div class="progress-fill" style="width:19%"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Row 2: Outstanding Credit & Recovery Overview -->
+      <div class="text-[11px] font-semibold mb-2" style="color:#6B9E7A;text-transform:uppercase;letter-spacing:.5px">Outstanding Credit &amp; Recovery Overview</div>
+      <div class="grid grid-cols-3 gap-3 mb-4">
+        <div class="card p-4">
+          <div class="kpi-lbl">Total Market Debt</div>
+          <div class="kpi-val mt-1">₨ 28,50,000</div>
+          <div class="text-[11px] font-medium mt-3" style="color:#A32D2D">
+            <i class="fa-solid fa-triangle-exclamation mr-1"></i>High Risk Dues: ₨ 4,20,000
+          </div>
+        </div>
+        <div class="card p-4">
+          <div class="kpi-lbl">Today's Recovery</div>
+          <div class="kpi-val mt-1">₨ 65,000</div>
+          <div class="mt-3">
+            <div class="progress-track"><div class="progress-fill" style="width:65%"></div></div>
+            <div class="text-[10px] mt-1.5" style="color:#95B89A">65% of ₨ 1,00,000 daily target</div>
+          </div>
+        </div>
+        <div class="card p-4">
+          <div class="kpi-lbl">Collection Efficiency Rate</div>
+          <div class="flex items-end gap-2 mt-1">
+            <div class="kpi-val">78%</div>
+            <span class="badge warn mb-1">Target: &gt;85%</span>
+          </div>
+          <div class="mt-3">
+            <div class="progress-track"><div class="progress-fill" style="width:78%;background:#EF9F27"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== Zone 2: Insights split ===== -->
+      <div class="grid grid-cols-2 gap-3 mb-4">
+
+        <!-- Credit Aging -->
+        <div class="card p-4">
+          <div class="text-[13px] font-medium mb-3">Credit Aging Breakdown</div>
+          <div class="aging-track mb-3">
+            <div style="width:68%;background:#52B788"></div>
+            <div style="width:17%;background:#EF9F27"></div>
+            <div style="width:15%;background:#B23A48"></div>
+          </div>
+          <div class="space-y-2">
+            <div class="flex items-center justify-between text-[11.5px]">
+              <span class="flex items-center"><span class="legend-dot" style="background:#52B788"></span>Current (&lt;90 Days)</span>
+              <span class="font-medium">68%</span>
+            </div>
+            <div class="flex items-center justify-between text-[11.5px]">
+              <span class="flex items-center"><span class="legend-dot" style="background:#EF9F27"></span>Overdue (90–180 Days)</span>
+              <span class="font-medium">17%</span>
+            </div>
+            <div class="flex items-center justify-between text-[11.5px]">
+              <span class="flex items-center"><span class="legend-dot" style="background:#B23A48"></span>Critical (&gt;180 Days)</span>
+              <span class="font-medium">15%</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Capital Trapped -->
+        <div class="card p-4">
+          <div class="text-[13px] font-medium mb-3">Capital Trapped by Category</div>
+          <div class="space-y-3">
+            <div>
+              <div class="flex items-center justify-between text-[11.5px] mb-1">
+                <span>Fertilizers</span><span class="font-medium">₨ 12,80,000</span>
+              </div>
+              <div class="rank-track"><div class="rank-fill" style="width:82%;background:#2D6A4F"></div></div>
+            </div>
+            <div>
+              <div class="flex items-center justify-between text-[11.5px] mb-1">
+                <span>Seeds</span><span class="font-medium">₨ 8,40,000</span>
+              </div>
+              <div class="rank-track"><div class="rank-fill" style="width:54%;background:#40916C"></div></div>
+            </div>
+            <div>
+              <div class="flex items-center justify-between text-[11.5px] mb-1">
+                <span>Pesticides</span><span class="font-medium">₨ 5,10,000</span>
+              </div>
+              <div class="rank-track"><div class="rank-fill" style="width:33%;background:#97C459"></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== Zone 3: Master Outstanding Credit Directory ===== -->
+      <div class="card mb-4 overflow-hidden">
+        <div class="p-4 flex items-center justify-between border-b" style="border-color:#E2EBE0">
+          <div class="text-[13px] font-medium">Master Outstanding Credit Directory</div>
+        </div>
+        <div class="p-4 flex items-center gap-2 border-b" style="border-color:#E2EBE0">
+          <div class="relative flex-1">
+            <i class="fa-solid fa-magnifying-glass absolute" style="left:12px;top:50%;transform:translateY(-50%);color:#95B89A;font-size:11px"></i>
+            <input id="searchInput" type="text" placeholder="Search Zamindar or Village..." class="input-field w-full" style="padding-left:32px" oninput="filterTable()" />
+          </div>
+          <select id="villageFilter" class="input-field" onchange="filterTable()">
+            <option value="">All Villages</option>
+            <option value="Manga Mandi">Manga Mandi</option>
+            <option value="Burki">Burki</option>
+            <option value="Raiwind">Raiwind</option>
+            <option value="Chung">Chung</option>
+          </select>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th style="width:20%">Zamindar Name</th>
+              <th style="width:14%">Village</th>
+              <th style="width:16%">Outstanding Balance</th>
+              <th style="width:16%">Payment Terms</th>
+              <th style="width:12%">Last Active</th>
+              <th style="width:22%">Recovery Actions</th>
+            </tr>
+          </thead>
+          <tbody id="creditTableBody">
+            <tr data-name="Tariq Bajwa" data-village="Manga Mandi">
+              <td class="font-medium">Tariq Bajwa</td>
+              <td style="color:#6B8F71">Manga Mandi</td>
+              <td class="font-medium">₨ 2,45,000</td>
+              <td><span class="badge healthy">Harvest Settlement</span></td>
+              <td style="color:#95B89A;font-size:11px">3 Days Ago</td>
+              <td>
+                <div class="flex items-center gap-2">
+                  <button class="wa-btn" onclick="sendReminder('Tariq Bajwa','₨ 2,45,000','Harvest Settlement')"><i class="fa-brands fa-whatsapp"></i>Send Reminder</button>
+                  <div class="icon-btn" title="Print Statement"><i class="fa-solid fa-print"></i></div>
+                  <div class="icon-btn" title="View Ledger"><i class="fa-solid fa-book-open"></i></div>
+                </div>
+              </td>
+            </tr>
+            <tr data-name="Khan Zaman" data-village="Burki">
+              <td class="font-medium">Khan Zaman</td>
+              <td style="color:#6B8F71">Burki</td>
+              <td class="font-medium">₨ 1,82,000</td>
+              <td><span class="badge warn">90-Day Cycle</span></td>
+              <td style="color:#95B89A;font-size:11px">1 Week Ago</td>
+              <td>
+                <div class="flex items-center gap-2">
+                  <button class="wa-btn" onclick="sendReminder('Khan Zaman','₨ 1,82,000','90-Day Cycle')"><i class="fa-brands fa-whatsapp"></i>Send Reminder</button>
+                  <div class="icon-btn" title="Print Statement"><i class="fa-solid fa-print"></i></div>
+                  <div class="icon-btn" title="View Ledger"><i class="fa-solid fa-book-open"></i></div>
+                </div>
+              </td>
+            </tr>
+            <tr data-name="Bilal Jatt" data-village="Raiwind">
+              <td class="font-medium">Bilal Jatt</td>
+              <td style="color:#6B8F71">Raiwind</td>
+              <td class="font-medium" style="color:#A32D2D">₨ 4,20,000</td>
+              <td><span class="badge critical">Overdue / Past Season</span></td>
+              <td style="color:#95B89A;font-size:11px">5 Months Ago</td>
+              <td>
+                <div class="flex items-center gap-2">
+                  <button class="wa-btn" onclick="sendReminder('Bilal Jatt','₨ 4,20,000','Overdue / Past Season')"><i class="fa-brands fa-whatsapp"></i>Send Reminder</button>
+                  <div class="icon-btn" title="Print Statement"><i class="fa-solid fa-print"></i></div>
+                  <div class="icon-btn" title="View Ledger"><i class="fa-solid fa-book-open"></i></div>
+                </div>
+              </td>
+            </tr>
+            <tr data-name="Arif Cheema" data-village="Chung">
+              <td class="font-medium">Arif Cheema</td>
+              <td style="color:#6B8F71">Chung</td>
+              <td class="font-medium">₨ 95,000</td>
+              <td><span class="badge healthy">Harvest Settlement</span></td>
+              <td style="color:#95B89A;font-size:11px">2 Days Ago</td>
+              <td>
+                <div class="flex items-center gap-2">
+                  <button class="wa-btn" onclick="sendReminder('Arif Cheema','₨ 95,000','Harvest Settlement')"><i class="fa-brands fa-whatsapp"></i>Send Reminder</button>
+                  <div class="icon-btn" title="Print Statement"><i class="fa-solid fa-print"></i></div>
+                  <div class="icon-btn" title="View Ledger"><i class="fa-solid fa-book-open"></i></div>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div id="noResults" class="hidden-row p-4 text-center text-[12px]" style="color:#95B89A">No matching zamindars found.</div>
+      </div>
+
+      <!-- ===== Zone 4: Bottom action bar ===== -->
+      <div class="card p-4 flex items-center justify-end gap-2">
+        <button class="footer-btn ghost"><i class="fa-solid fa-print"></i>Print Seasonal Summary</button>
+        <button class="footer-btn primary"><i class="fa-solid fa-file-pdf"></i>Export Complete Credit Ledger (PDF)</button>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ================= TOAST NOTIFICATION ================= -->
+<div id="toast">
+  <div class="toast-card">
+    <div class="toast-head">
+      <i class="fa-brands fa-whatsapp text-white"></i>
+      <span class="text-white text-[12px] font-medium">WhatsApp Reminder Sent</span>
+    </div>
+    <div class="toast-body">
+      <div class="text-[11px]" style="color:#6B8F71">Message preview to <span id="toastName" class="font-medium" style="color:#1B4332">—</span></div>
+      <div class="toast-msg" id="toastMsg">—</div>
+    </div>
+  </div>
+</div>
+
+<script>
+function filterTable(){
+  const q = document.getElementById('searchInput').value.trim().toLowerCase();
+  const village = document.getElementById('villageFilter').value;
+  const rows = document.querySelectorAll('#creditTableBody tr');
+  let visibleCount = 0;
+
+  rows.forEach(row => {
+    const name = row.dataset.name.toLowerCase();
+    const rowVillage = row.dataset.village;
+    const matchesQuery = !q || name.includes(q) || rowVillage.toLowerCase().includes(q);
+    const matchesVillage = !village || rowVillage === village;
+    const show = matchesQuery && matchesVillage;
+    row.style.display = show ? '' : 'none';
+    if(show) visibleCount++;
+  });
+
+  document.getElementById('noResults').classList.toggle('hidden-row', visibleCount > 0);
+}
+
+let toastTimer = null;
+function sendReminder(name, amount, terms){
+  const msg = `Dear ${name}, your outstanding balance at Atta Muhammad & Sons is ${amount} under terms: ${terms}. Please arrange for payment at your earliest convenience. Thank you.`;
+  document.getElementById('toastName').textContent = name;
+  document.getElementById('toastMsg').textContent = msg;
+
+  const toast = document.getElementById('toast');
+  toast.classList.add('show');
+
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    toast.classList.remove('show');
+  }, 4500);
+}
+</script>
+</body>
+</html>
