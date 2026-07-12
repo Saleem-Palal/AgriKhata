@@ -58,17 +58,15 @@ class UpdateService {
         currentVersion: currentVersion,
         changelog: changelog,
         downloadUrl: downloadUrl,
-        onUpdateNow: downloadAndInstall,
+        onUpdateNow: (url, {onStatus}) =>
+            downloadAndInstall(url, onStatus: onStatus),
       );
     } catch (e) {
       debugPrint('UpdateService: check failed: $e');
     }
   }
 
-  /// Downloads the MSIX and installs it with Windows AppX APIs.
-  ///
-  /// [downloadUrl] must be a direct `.msix` link, e.g.
-  /// `https://github.com/.../releases/download/v1.0.3/agrikhata.msix`
+  /// Downloads the MSIX locally, then installs it. Never opens a browser URL.
   Future<void> downloadAndInstall(
     String downloadUrl, {
     void Function(String status)? onStatus,
@@ -77,13 +75,15 @@ class UpdateService {
       throw UnsupportedError('In-app updates are only supported on Windows.');
     }
 
-    final uri = Uri.tryParse(downloadUrl);
-    if (uri == null) {
+    final resolvedUrl = _resolveMsixUrl(downloadUrl);
+    final uri = Uri.tryParse(resolvedUrl);
+    if (uri == null || !uri.hasScheme) {
       throw ArgumentError('Invalid download URL');
     }
-    if (!downloadUrl.toLowerCase().contains('.msix')) {
+    if (!resolvedUrl.toLowerCase().endsWith('.msix')) {
       throw ArgumentError(
-        'download_url must point directly to an .msix file, not a web page.',
+        'download_url must end with .msix '
+        '(direct release asset), got: $downloadUrl',
       );
     }
 
@@ -95,16 +95,64 @@ class UpdateService {
       await msixFile.delete();
     }
 
+    await _downloadFile(uri, msixFile);
+
+    final length = await msixFile.length();
+    if (length < 1024 * 100) {
+      // Real packages are several MB; tiny files are usually HTML error pages.
+      throw StateError(
+        'Downloaded file looks invalid ($length bytes). '
+        'Check that download_url is a direct .msix asset link.',
+      );
+    }
+
+    onStatus?.call('Installing update...');
+    debugPrint('UpdateService: installing local file $msixPath ($length bytes)');
+
+    final installed = await _installLocalMsix(msixPath);
+    if (!installed) {
+      throw StateError(
+        'Could not install the update automatically. '
+        'Run install.bat once as Administrator to trust the certificate, '
+        'then try again.',
+      );
+    }
+
+    onStatus?.call('Update installed. The app may restart...');
+  }
+
+  /// Prefer a direct asset URL. Never returns a GitHub web page URL.
+  String _resolveMsixUrl(String raw) {
+    final url = raw.trim();
+    if (url.toLowerCase().endsWith('.msix')) return url;
+
+    // releases/tag/vX.Y.Z -> releases/download/vX.Y.Z/agrikhata.msix
+    final tagMatch = RegExp(
+      r'github\.com/([^/]+)/([^/]+)/releases/tag/(v?[\w.\-]+)',
+      caseSensitive: false,
+    ).firstMatch(url);
+    if (tagMatch != null) {
+      final owner = tagMatch.group(1);
+      final repo = tagMatch.group(2);
+      final tag = tagMatch.group(3);
+      return 'https://github.com/$owner/$repo/releases/download/$tag/agrikhata.msix';
+    }
+
+    return url;
+  }
+
+  Future<void> _downloadFile(Uri uri, File destination) async {
     final client = http.Client();
     try {
       final request = http.Request('GET', uri);
       request.headers['User-Agent'] = 'AgriKhata-Updater';
-      request.headers['Accept'] = 'application/octet-stream';
+      request.headers['Accept'] = 'application/octet-stream,*/*';
 
       final streamed = await client
           .send(request)
           .timeout(const Duration(minutes: 5));
 
+      // Follow redirects manually if needed (http.Client usually follows).
       if (streamed.statusCode < 200 || streamed.statusCode >= 300) {
         throw HttpException(
           'Download failed (HTTP ${streamed.statusCode})',
@@ -112,7 +160,15 @@ class UpdateService {
         );
       }
 
-      final sink = msixFile.openWrite();
+      final contentType = streamed.headers['content-type'] ?? '';
+      if (contentType.contains('text/html')) {
+        throw StateError(
+          'Server returned a web page instead of an MSIX file. '
+          'Use a direct releases/download/.../agrikhata.msix URL.',
+        );
+      }
+
+      final sink = destination.openWrite();
       try {
         await streamed.stream.pipe(sink);
       } finally {
@@ -121,18 +177,14 @@ class UpdateService {
     } finally {
       client.close();
     }
+  }
 
-    final length = await msixFile.length();
-    if (length < 1024) {
-      throw StateError('Downloaded update file looks invalid ($length bytes).');
-    }
-
-    onStatus?.call('Installing update...');
-    debugPrint('UpdateService: installing $msixPath ($length bytes)');
-
-    // ForceApplicationShutdown closes this running app so the package can update.
+  /// Installs a local .msix path. Returns true on apparent success.
+  Future<bool> _installLocalMsix(String msixPath) async {
     final safePath = msixPath.replaceAll("'", "''");
-    final result = await Process.run('powershell.exe', [
+
+    // 1) Preferred: silent/in-place AppX update (closes this app).
+    final addResult = await Process.run('powershell.exe', [
       '-NoProfile',
       '-ExecutionPolicy',
       'Bypass',
@@ -140,17 +192,35 @@ class UpdateService {
       "Add-AppxPackage -Path '$safePath' -ForceUpdateFromAnyVersion -ForceApplicationShutdown",
     ]);
 
-    if (result.exitCode != 0) {
-      final err = '${result.stderr}\n${result.stdout}'.trim();
-      debugPrint('UpdateService: install failed: $err');
-      throw StateError(
-        err.isEmpty
-            ? 'Install failed. Try running install.bat as Administrator once.'
-            : err,
-      );
+    if (addResult.exitCode == 0) {
+      debugPrint('UpdateService: Add-AppxPackage succeeded');
+      return true;
     }
 
-    onStatus?.call('Update installed. Restarting...');
+    debugPrint(
+      'UpdateService: Add-AppxPackage failed '
+      '(${addResult.exitCode}): ${addResult.stderr}\n${addResult.stdout}',
+    );
+
+    // 2) Fallback: open the LOCAL installer UI (not a website).
+    final startResult = await Process.run('powershell.exe', [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      "Start-Process -FilePath '$safePath'",
+    ]);
+
+    if (startResult.exitCode == 0) {
+      debugPrint('UpdateService: launched local MSIX installer UI');
+      return true;
+    }
+
+    debugPrint(
+      'UpdateService: Start-Process failed '
+      '(${startResult.exitCode}): ${startResult.stderr}\n${startResult.stdout}',
+    );
+    return false;
   }
 
   List<String> _parseChangelog(Map<String, dynamic> manifest) {
