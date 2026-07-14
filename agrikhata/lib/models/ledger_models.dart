@@ -56,9 +56,19 @@ class Season {
     required this.endDate,
   });
 
-  String get displayName => '$name $year';
+  static final Season all = Season(
+    name: 'All Seasons',
+    year: 0,
+    startDate: DateTime(2000),
+    endDate: DateTime(2100, 12, 31, 23, 59, 59),
+  );
+
+  bool get isAllSeasons => name == 'All Seasons';
+
+  String get displayName => isAllSeasons ? 'All Seasons' : '$name $year';
 
   bool containsDate(DateTime date) {
+    if (isAllSeasons) return true;
     return date.isAfter(startDate.subtract(const Duration(days: 1))) &&
         date.isBefore(endDate.add(const Duration(days: 1)));
   }
@@ -90,6 +100,10 @@ class LedgerEntry {
   final PaymentStatus status;
   final String season;
   final bool isWalkInCustomer;
+  /// Purchase payment terms label: Cash / Udhaar / Partial (purchases only).
+  final String? purchaseTerms;
+  /// Invoice-level summary (purchases only).
+  final String? description;
 
   LedgerEntry({
     required this.id,
@@ -103,6 +117,8 @@ class LedgerEntry {
     required this.status,
     required this.season,
     this.isWalkInCustomer = false,
+    this.purchaseTerms,
+    this.description,
   });
 
   double get outstanding => total - paid;
@@ -117,6 +133,13 @@ class LedgerEntry {
           return '${item.productName} x$qtyStr';
         })
         .join(', ');
+  }
+
+  /// Prefers invoice description when set; otherwise line-item summary.
+  String get ledgerSummary {
+    final d = description?.trim();
+    if (d != null && d.isNotEmpty) return d;
+    return itemsSummary;
   }
 }
 
@@ -184,6 +207,7 @@ class PaymentLedgerEntry {
   final double amountPaid;
   final String paymentMethod;
   final String season;
+  final String itemsSummary;
 
   PaymentLedgerEntry({
     required this.paymentId,
@@ -194,10 +218,13 @@ class PaymentLedgerEntry {
     required this.amountPaid,
     required this.paymentMethod,
     required this.season,
+    this.itemsSummary = '',
   });
 
   bool get isAdvanceCollection => invoiceNumber == null;
   bool get isWalletDeduction => paymentMethod == 'Advance Wallet Deduction';
+  bool get isAdvanceSummary =>
+      itemsSummary == 'N/A (Advance Collection)';
 
   factory PaymentLedgerEntry.fromMap(Map<String, dynamic> map) {
     return PaymentLedgerEntry(
@@ -209,6 +236,7 @@ class PaymentLedgerEntry {
       amountPaid: (map['amount_paid'] as num).toDouble(),
       paymentMethod: map['payment_method'] as String,
       season: map['season'] as String,
+      itemsSummary: map['items_summary'] as String? ?? '',
     );
   }
 }

@@ -32,6 +32,11 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
   List<LedgerEntry> _salesEntries = [];
   List<LedgerEntry> _purchasesEntries = [];
   List<PaymentLedgerEntry> _paymentsEntries = [];
+  Map<String, double> _purchaseKpis = const {
+    'totalPurchases': 0,
+    'paidCash': 0,
+    'outstandingDebt': 0,
+  };
   bool _isLoading = true;
   bool _isExporting = false;
 
@@ -39,8 +44,16 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
+    _tabController.addListener(() {
+      if (!_tabController.indexIsChanging) {
+        setState(() {});
+      }
+    });
     _selectedSeason = SeasonUtils.getCurrentSeason();
-    _availableSeasons = SeasonUtils.getAvailableSeasons(yearsBack: 3);
+    _availableSeasons = [
+      Season.all,
+      ...SeasonUtils.getAvailableSeasons(yearsBack: 3),
+    ];
     _loadSeasonOptions();
     _loadLedgerData();
 
@@ -49,8 +62,7 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
         _searchQuery = _searchController.text.toLowerCase();
       });
     });
-    
-    // Listen for database changes and auto-refresh
+
     db.DatabaseHelper.instance.addListener(_onDatabaseChanged);
   }
 
@@ -65,48 +77,108 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
           await db.DatabaseHelper.instance.getDistinctLedgerSeasons();
       var parsed = SeasonUtils.seasonsFromDisplayNames(seasonNames);
 
+      final purchaseDates =
+          await db.DatabaseHelper.instance.getPurchaseInvoiceDates();
+      for (final date in purchaseDates) {
+        final season = SeasonUtils.getCurrentSeason(date);
+        if (!parsed.contains(season)) parsed.add(season);
+      }
+
       if (parsed.isEmpty) {
         parsed = [SeasonUtils.getCurrentSeason()];
       }
 
-      if (!parsed.contains(_selectedSeason)) {
-        _selectedSeason = parsed.first;
+      parsed.sort((a, b) {
+        if (a.isAllSeasons) return -1;
+        if (b.isAllSeasons) return 1;
+        return b.startDate.compareTo(a.startDate);
+      });
+
+      final withAll = [Season.all, ...parsed.where((s) => !s.isAllSeasons)];
+
+      if (!withAll.contains(_selectedSeason)) {
+        _selectedSeason = withAll.firstWhere(
+          (s) => !s.isAllSeasons,
+          orElse: () => Season.all,
+        );
       }
 
       if (mounted) {
-        setState(() => _availableSeasons = parsed);
+        setState(() => _availableSeasons = withAll);
       }
     } catch (e) {
       debugPrint('Failed to load season options: $e');
     }
   }
 
-  @override
-  void didUpdateWidget(MainLedgerScreen oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    // Auto-refresh when widget updates (e.g., after returning from edit)
-    _loadLedgerData();
+  DateTime? get _seasonStart =>
+      _selectedSeason.isAllSeasons ? null : _selectedSeason.startDate;
+
+  DateTime? get _seasonEnd =>
+      _selectedSeason.isAllSeasons ? null : _selectedSeason.endDate;
+
+  List<LineItem> _parseProductSummary(String? summary) {
+    if (summary == null || summary.trim().isEmpty) return [];
+    return summary.split(', ').map((part) {
+      final match = RegExp(r'^(.*) x(\d+)$').firstMatch(part.trim());
+      if (match != null) {
+        return LineItem(
+          productName: match.group(1)!,
+          quantity: double.parse(match.group(2)!),
+          unit: '',
+          unitPrice: 0,
+        );
+      }
+      return LineItem(
+        productName: part.trim(),
+        quantity: 0,
+        unit: '',
+        unitPrice: 0,
+      );
+    }).toList();
   }
 
-  @override
-  void dispose() {
-    _tabController.dispose();
-    _searchController.dispose();
-    // Remove database listener to prevent memory leaks
-    db.DatabaseHelper.instance.removeListener(_onDatabaseChanged);
-    super.dispose();
+  PaymentStatus _purchaseStatusFromTerms(String terms, double paid, double total) {
+    switch (terms) {
+      case db.PurchasePaymentType.cash:
+        return PaymentStatus.paid;
+      case db.PurchasePaymentType.partial:
+        return PaymentStatus.partial;
+      default:
+        if (paid <= 0) return PaymentStatus.unpaid;
+        if (paid >= total) return PaymentStatus.paid;
+        return PaymentStatus.partial;
+    }
   }
 
   Future<void> _loadLedgerData({bool showLoading = true}) async {
     if (showLoading) setState(() => _isLoading = true);
 
     try {
-      // Fetch data from new three-table schema
       final salesWithDetails = await db.DatabaseHelper.instance
-          .getAllSalesWithDetails(season: _selectedSeason.displayName);
-      
-      final paymentsData = await db.DatabaseHelper.instance
-          .getAllPayments(season: _selectedSeason.displayName);
+          .getAllSalesWithDetails(
+            season: _selectedSeason.isAllSeasons
+                ? null
+                : _selectedSeason.displayName,
+          );
+
+      final paymentsData = await db.DatabaseHelper.instance.getAllPayments(
+        season: _selectedSeason.isAllSeasons
+            ? null
+            : _selectedSeason.displayName,
+      );
+
+      final purchaseRows = await db.DatabaseHelper.instance
+          .fetchPurchaseLedgerMatrix(
+            seasonStart: _seasonStart,
+            seasonEnd: _seasonEnd,
+          );
+
+      final purchaseKpis = await db.DatabaseHelper.instance
+          .fetchPurchaseLedgerKpis(
+            seasonStart: _seasonStart,
+            seasonEnd: _seasonEnd,
+          );
 
       final registeredZamindars = await db.DatabaseHelper.instance
           .getAllZamindars();
@@ -114,39 +186,36 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
           .map((zamindar) => zamindar.name)
           .toSet();
 
-      debugPrint(
-        'LEDGER DEBUG: Fetched ${salesWithDetails.length} sales with details',
-      );
-      debugPrint(
-        'LEDGER DEBUG: Fetched ${paymentsData.length} payments',
-      );
-
       final salesEntries = <LedgerEntry>[];
 
       for (final saleData in salesWithDetails) {
         final sale = saleData['sale'] as Map<String, dynamic>;
         final itemsList = saleData['items'] as List<Map<String, dynamic>>;
         final totalCollected = saleData['totalCollected'] as double;
-        
+
         final invoiceNumber = sale[db.SalesTable.invoiceNumber] as String;
         final dateTimeStr = sale[db.SalesTable.dateTime] as String;
         final zamindarName = sale[db.SalesTable.zamindarName] as String;
         final kisaanName = sale[db.SalesTable.kisaanName] as String?;
-        final totalPayable = (sale[db.SalesTable.totalPayable] as num).toDouble();
+        final totalPayable =
+            (sale[db.SalesTable.totalPayable] as num).toDouble();
 
-        // Convert sale_items to LineItem objects
         final items = itemsList.map((item) {
           return LineItem(
             productName: item[db.SaleItemsTable.productName] as String,
             quantity: (item[db.SaleItemsTable.quantity] as num).toDouble(),
             unit: '',
             unitPrice: (item[db.SaleItemsTable.unitPrice] as num).toDouble(),
-            seasonalIncrement: (item[db.SaleItemsTable.seasonalIncrement] as num?)?.toDouble() ?? 0,
-            discount: (item[db.SaleItemsTable.itemDiscount] as num?)?.toDouble() ?? 0,
+            seasonalIncrement:
+                (item[db.SaleItemsTable.seasonalIncrement] as num?)
+                        ?.toDouble() ??
+                    0,
+            discount:
+                (item[db.SaleItemsTable.itemDiscount] as num?)?.toDouble() ??
+                    0,
           );
         }).toList();
 
-        // Calculate payment status
         PaymentStatus status;
         if (totalCollected >= totalPayable) {
           status = PaymentStatus.paid;
@@ -156,34 +225,77 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
           status = PaymentStatus.unpaid;
         }
 
-        // Use invoiceNumber as the ID (no need for fake counter)
-        final ledgerEntry = LedgerEntry(
-          id: 0, // Deprecated field, kept for backward compatibility
-          invoiceNumber: invoiceNumber,
-          date: DateTime.parse(dateTimeStr),
-          stakeholderName: zamindarName,
-          kisaanName: kisaanName,
-          items: items,
-          total: totalPayable,
-          paid: totalCollected,
-          status: status,
-          season: _selectedSeason.displayName,
-          isWalkInCustomer: !registeredZamindarNames.contains(zamindarName),
+        salesEntries.add(
+          LedgerEntry(
+            id: 0,
+            invoiceNumber: invoiceNumber,
+            date: DateTime.parse(dateTimeStr),
+            stakeholderName: zamindarName,
+            kisaanName: kisaanName,
+            items: items,
+            total: totalPayable,
+            paid: totalCollected,
+            status: status,
+            season: _selectedSeason.displayName,
+            isWalkInCustomer: !registeredZamindarNames.contains(zamindarName),
+          ),
         );
-
-        salesEntries.add(ledgerEntry);
       }
 
       salesEntries.sort((a, b) => b.date.compareTo(a.date));
 
-      debugPrint('LEDGER DEBUG: Final sales entries = ${salesEntries.length}');
-      debugPrint('LEDGER DEBUG: Final payments entries = ${paymentsData.length}');
+      final purchasesEntries = <LedgerEntry>[];
+      for (final row in purchaseRows) {
+        final invoice =
+            row[db.PurchaseInvoicesTable.invoiceNumber] as String? ?? '';
+        final dateRaw = row[db.PurchaseInvoicesTable.dateTime] as String?;
+        final date = dateRaw != null
+            ? (DateTime.tryParse(dateRaw) ?? DateTime.now())
+            : DateTime.now();
+        final wholesaler =
+            row['wholesaler_name'] as String? ??
+            row[db.PurchaseInvoicesTable.wholesalerName] as String? ??
+            '—';
+        final total =
+            (row[db.PurchaseInvoicesTable.grandTotal] as num?)?.toDouble() ??
+            0;
+        final paid =
+            (row[db.PurchaseInvoicesTable.amountPaid] as num?)?.toDouble() ??
+            0;
+        final terms =
+            row[db.PurchaseInvoicesTable.paymentType] as String? ??
+            db.PurchasePaymentType.udhaar;
+        final items = _parseProductSummary(
+          row['product_summary'] as String?,
+        );
+        final description =
+            row[db.PurchaseInvoicesTable.description] as String?;
 
+        purchasesEntries.add(
+          LedgerEntry(
+            id: 0,
+            invoiceNumber: invoice,
+            date: date,
+            stakeholderName: wholesaler,
+            items: items,
+            total: total,
+            paid: paid,
+            status: _purchaseStatusFromTerms(terms, paid, total),
+            season: _selectedSeason.displayName,
+            purchaseTerms: terms,
+            description: description,
+          ),
+        );
+      }
+
+      if (!mounted) return;
       setState(() {
         _salesEntries = salesEntries;
+        _purchasesEntries = purchasesEntries;
         _paymentsEntries = paymentsData
             .map(PaymentLedgerEntry.fromMap)
             .toList();
+        _purchaseKpis = purchaseKpis;
         _isLoading = false;
       });
     } catch (e) {
@@ -198,6 +310,20 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
         );
       }
     }
+  }
+
+  @override
+  void didUpdateWidget(MainLedgerScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _loadLedgerData();
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    _searchController.dispose();
+    db.DatabaseHelper.instance.removeListener(_onDatabaseChanged);
+    super.dispose();
   }
 
   List<LedgerEntry> get _filteredSalesEntries {
@@ -216,7 +342,7 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
       return entry.invoiceNumber.toLowerCase().contains(_searchQuery) ||
           entry.stakeholderName.toLowerCase().contains(_searchQuery) ||
           (entry.kisaanName?.toLowerCase().contains(_searchQuery) ?? false) ||
-          entry.itemsSummary.toLowerCase().contains(_searchQuery);
+          entry.ledgerSummary.toLowerCase().contains(_searchQuery);
     }).toList();
   }
 
@@ -227,7 +353,8 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
           (entry.invoiceNumber?.toLowerCase().contains(_searchQuery) ??
               false) ||
           entry.zamindarName.toLowerCase().contains(_searchQuery) ||
-          (entry.kisaanName?.toLowerCase().contains(_searchQuery) ?? false);
+          (entry.kisaanName?.toLowerCase().contains(_searchQuery) ?? false) ||
+          entry.itemsSummary.toLowerCase().contains(_searchQuery);
     }).toList();
   }
 
@@ -235,22 +362,32 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
     setState(() => _isExporting = true);
 
     try {
+      final isPurchases = _tabController.index == 1;
       await PdfGenerator.saveConsolidatedLedgerToDocuments(
-        salesEntries: _filteredSalesEntries,
-        purchasesEntries: _filteredPurchasesEntries,
-        paymentEntries: _filteredPaymentsEntries,
+        salesEntries: isPurchases ? const [] : _filteredSalesEntries,
+        purchasesEntries: isPurchases
+            ? _filteredPurchasesEntries
+            : (_tabController.index == 0
+                ? const []
+                : _filteredPurchasesEntries),
+        paymentEntries: _tabController.index == 2
+            ? _filteredPaymentsEntries
+            : const [],
         season: _selectedSeason,
       );
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('PDF Saved Successfully to Local Storage'),
-            backgroundColor: Color(0xFF28A745),
+          SnackBar(
+            content: Text(
+              isPurchases
+                  ? 'Purchase Ledger PDF saved successfully'
+                  : 'PDF Saved Successfully to Local Storage',
+            ),
+            backgroundColor: const Color(0xFF28A745),
           ),
         );
       }
-
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -271,19 +408,49 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
     setState(() => _isExporting = true);
 
     try {
-      final file = await PdfGenerator.saveConsolidatedLedgerToDocuments(
-        salesEntries: _filteredSalesEntries,
-        purchasesEntries: _filteredPurchasesEntries,
-        paymentEntries: _filteredPaymentsEntries,
-        season: _selectedSeason,
-      );
+      final isPurchases = _tabController.index == 1;
+      if (isPurchases) {
+        final summary = LedgerSummary(
+          totalVolume: _purchaseKpis['totalPurchases'] ?? 0,
+          totalCashReceived: _purchaseKpis['paidCash'] ?? 0,
+          outstandingCredit: _purchaseKpis['outstandingDebt'] ?? 0,
+        );
+        final message =
+            'AgriKhata Purchase Ledger — ${_selectedSeason.displayName}\n'
+            'Total Purchases: Rs ${NumberFormat('#,##,##0').format(summary.totalVolume.round())}\n'
+            'Paid Cash Outflow: Rs ${NumberFormat('#,##,##0').format(summary.totalCashReceived.round())}\n'
+            'Outstanding Supplier Debt: Rs ${NumberFormat('#,##,##0').format(summary.outstandingCredit.round())}\n'
+            'Invoices: ${_filteredPurchasesEntries.length}';
 
-      await PdfShare.sharePdfFile(
-        file: file,
-        fileName: p.basename(file.path),
-        text: 'AgriKhata Consolidated Ledger — ${_selectedSeason.displayName}',
-        subject: 'AgriKhata Consolidated Ledger',
-      );
+        final file = await PdfGenerator.saveConsolidatedLedgerToDocuments(
+          salesEntries: const [],
+          purchasesEntries: _filteredPurchasesEntries,
+          paymentEntries: const [],
+          season: _selectedSeason,
+        );
+
+        await PdfShare.sharePdfFile(
+          file: file,
+          fileName: p.basename(file.path),
+          text: message,
+          subject: 'AgriKhata Purchase Ledger',
+        );
+      } else {
+        final file = await PdfGenerator.saveConsolidatedLedgerToDocuments(
+          salesEntries: _filteredSalesEntries,
+          purchasesEntries: _filteredPurchasesEntries,
+          paymentEntries: _filteredPaymentsEntries,
+          season: _selectedSeason,
+        );
+
+        await PdfShare.sharePdfFile(
+          file: file,
+          fileName: p.basename(file.path),
+          text:
+              'AgriKhata Consolidated Ledger — ${_selectedSeason.displayName}',
+          subject: 'AgriKhata Consolidated Ledger',
+        );
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -507,9 +674,13 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
                 Expanded(
                   child: TextField(
                     controller: _searchController,
-                    decoration: const InputDecoration(
-                      hintText: 'Search Invoice #, Zamindar or Kisaan name...',
-                      hintStyle: TextStyle(
+                    decoration: InputDecoration(
+                      hintText: _tabController.index == 1
+                          ? 'Search Invoice # or Wholesaler name...'
+                          : _tabController.index == 2
+                              ? 'Search Payment ID, Invoice # or Zamindar...'
+                              : 'Search Invoice #, Zamindar or Kisaan name...',
+                      hintStyle: const TextStyle(
                         fontSize: 12.5,
                         color: Color(0xFF95B89A),
                       ),
@@ -655,10 +826,45 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
       );
     }
 
-    final entries = _tabController.index == 0
-        ? _filteredSalesEntries
-        : _filteredPurchasesEntries;
-    final summary = LedgerSummary.fromEntries(entries);
+    if (_tabController.index == 1) {
+      final useLiveFilter = _searchQuery.isNotEmpty;
+      final summary = useLiveFilter
+          ? LedgerSummary.fromEntries(_filteredPurchasesEntries)
+          : LedgerSummary(
+              totalVolume: _purchaseKpis['totalPurchases'] ?? 0,
+              totalCashReceived: _purchaseKpis['paidCash'] ?? 0,
+              outstandingCredit: _purchaseKpis['outstandingDebt'] ?? 0,
+            );
+      return Row(
+        children: [
+          Expanded(
+            child: _buildKpiCard(
+              'Total Purchases',
+              summary.totalVolume,
+              const Color(0xFF1B4332),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: _buildKpiCard(
+              'Paid Cash Outflow',
+              summary.totalCashReceived,
+              const Color(0xFF2D6A4F),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: _buildKpiCard(
+              'Outstanding Supplier Debt',
+              summary.outstandingCredit,
+              const Color(0xFFA32D2D),
+            ),
+          ),
+        ],
+      );
+    }
+
+    final summary = LedgerSummary.fromEntries(_filteredSalesEntries);
 
     return Row(
       children: [
@@ -740,11 +946,9 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
         onDelete: _handleDeleteInvoice,
       );
     } else if (_tabController.index == 1) {
-      return LedgerTable(
+      return PurchaseLedgerTable(
         entries: _filteredPurchasesEntries,
         onRefresh: _loadLedgerData,
-        onEdit: _handleEditInvoice,
-        onDelete: _handleDeleteInvoice,
       );
     } else {
       return PaymentsLedgerTable(entries: _filteredPaymentsEntries);

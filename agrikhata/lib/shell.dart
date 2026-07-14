@@ -4,8 +4,10 @@ import 'package:agrikhata/screens/add_zamindar_screen.dart';
 import 'package:agrikhata/screens/main_ledger_screen.dart';
 import 'package:agrikhata/screens/new_sale_screen.dart';
 import 'package:agrikhata/screens/products_screen.dart';
+import 'package:agrikhata/screens/purchase_screen.dart';
 import 'package:agrikhata/screens/reports_screen.dart';
 import 'package:agrikhata/screens/settings_screen.dart';
+import 'package:agrikhata/screens/wholesalers_screen.dart';
 import 'package:agrikhata/screens/zamindar_directory.dart';
 import 'package:agrikhata/screens/zamindar_profile_screen.dart';
 import 'package:agrikhata/services/update_service.dart';
@@ -177,7 +179,8 @@ class _ShellState extends State<Shell> {
       onCancelEdit: _clearEditState,
     ),
     const ProductsScreen(),
-    const Center(child: Text("Purchase")),
+    const PurchaseScreen(),
+    const WholesalersScreen(),
     MainLedgerScreen(
       key: ValueKey(
         'ledger-$_ledgerRefreshToken',
@@ -213,17 +216,18 @@ class _ShellState extends State<Shell> {
                       _sectionTitle("INVENTORY"),
                       _navItem(3, Icons.inventory_2_outlined, "Products"),
                       _navItem(4, Icons.shopping_bag_outlined, "Purchase"),
+                      _navItem(5, Icons.handshake_outlined, "Wholesalers"),
                       const SizedBox(height: 20),
                       _sectionTitle("FINANCE"),
                       _navItem(
-                        5,
+                        6,
                         Icons.account_balance_wallet_outlined,
                         "Ledger",
                       ),
-                      _navItem(6, Icons.analytics_outlined, "Reports"),
+                      _navItem(7, Icons.analytics_outlined, "Reports"),
                       const SizedBox(height: 20),
                       _sectionTitle("SYSTEM"),
-                      _navItem(7, Icons.settings_outlined, "Settings"),
+                      _navItem(8, Icons.settings_outlined, "Settings"),
                     ],
                   ),
                 ),

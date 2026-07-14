@@ -1194,28 +1194,43 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: SaleColors.canvasBg,
-      body: _isLoading
-          ? const Center(
-              child: CircularProgressIndicator(
-                valueColor: AlwaysStoppedAnimation<Color>(SaleColors.darkGreen),
-              ),
-            )
-          : Column(
-              children: [
-                _buildTopBar(),
-                Expanded(
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _buildLeftColumn(),
-                      Expanded(child: _buildRightColumn()),
-                    ],
+    return Theme(
+      data: Theme.of(context).copyWith(
+        visualDensity: VisualDensity.compact,
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        inputDecorationTheme: Theme.of(context).inputDecorationTheme.copyWith(
+          isDense: true,
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 10,
+            vertical: 8,
+          ),
+        ),
+      ),
+      child: Scaffold(
+        backgroundColor: SaleColors.canvasBg,
+        body: _isLoading
+            ? const Center(
+                child: CircularProgressIndicator(
+                  valueColor: AlwaysStoppedAnimation<Color>(
+                    SaleColors.darkGreen,
                   ),
                 ),
-              ],
-            ),
+              )
+            : Column(
+                children: [
+                  _buildTopBar(),
+                  Expanded(
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _buildLeftColumn(),
+                        Expanded(child: _buildRightColumn()),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+      ),
     );
   }
 
@@ -1246,26 +1261,26 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
             ),
           ),
           child: Padding(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             child: Row(
               children: [
                 Container(
-                  width: 40,
-                  height: 40,
+                  width: 34,
+                  height: 34,
                   decoration: BoxDecoration(
                     color: _isDateTimeLocked
                         ? SaleColors.darkGreen.withOpacity(0.15)
                         : (isToday
                               ? SaleColors.paleGreen
                               : SaleColors.lightGreenBg),
-                    borderRadius: BorderRadius.circular(10),
+                    borderRadius: BorderRadius.circular(8),
                   ),
                   child: Center(
                     child: Icon(
                       _isDateTimeLocked
                           ? Icons.lock_clock
                           : Icons.calendar_today,
-                      size: 18,
+                      size: 15,
                       color: _isDateTimeLocked
                           ? SaleColors.darkGreen
                           : (isToday
@@ -1274,7 +1289,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                     ),
                   ),
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 8),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -1293,8 +1308,8 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                             const SizedBox(width: 6),
                             Container(
                               padding: const EdgeInsets.symmetric(
-                                horizontal: 6,
-                                vertical: 2,
+                                horizontal: 5,
+                                vertical: 1,
                               ),
                               decoration: BoxDecoration(
                                 color: SaleColors.darkGreen.withOpacity(0.1),
@@ -1313,7 +1328,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                           ],
                         ],
                       ),
-                      const SizedBox(height: 3),
+                      const SizedBox(height: 1),
                       Text(
                         displayDate,
                         style: TextStyle(
@@ -1339,12 +1354,12 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                     },
                     borderRadius: BorderRadius.circular(8),
                     child: Container(
-                      padding: const EdgeInsets.all(8),
+                      padding: const EdgeInsets.all(5),
                       decoration: BoxDecoration(
                         color: _isDateTimeLocked
                             ? SaleColors.darkGreen
                             : Colors.transparent,
-                        borderRadius: BorderRadius.circular(8),
+                        borderRadius: BorderRadius.circular(6),
                         border: Border.all(
                           color: _isDateTimeLocked
                               ? SaleColors.darkGreen
@@ -1354,7 +1369,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                       ),
                       child: Icon(
                         _isDateTimeLocked ? Icons.lock : Icons.lock_open,
-                        size: 16,
+                        size: 14,
                         color: _isDateTimeLocked
                             ? Colors.white
                             : SaleColors.textLight,
@@ -1390,7 +1405,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     final season = SeasonUtils.getSeasonString(_selectedDateTime);
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
       decoration: const BoxDecoration(
         color: SaleColors.cardBg,
         border: Border(
@@ -1512,21 +1527,21 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
 
   Widget _buildLeftColumn() {
     return Container(
-      width: 380,
-      padding: const EdgeInsets.fromLTRB(22, 18, 9, 18),
+      width: 360,
+      padding: const EdgeInsets.fromLTRB(14, 12, 8, 12),
       child: SingleChildScrollView(
         child: Column(
           children: [
             _buildTransactionDateCard(),
-            const SizedBox(height: 14),
+            const SizedBox(height: 10),
             _buildWalkInToggleCard(),
-            const SizedBox(height: 14),
+            const SizedBox(height: 10),
             if (!_isWalkInCustomer) ...[
               _buildSelectZamindarCard(),
-              const SizedBox(height: 14),
+              const SizedBox(height: 10),
               if (_selectedZamindar != null) ...[
                 _buildSelectKisaanCard(),
-                const SizedBox(height: 14),
+                const SizedBox(height: 10),
                 _buildSmartRecommendationsCard(),
               ],
             ] else ...[
@@ -1540,14 +1555,14 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
 
   Widget _buildRightColumn() {
     return Container(
-      padding: const EdgeInsets.fromLTRB(9, 18, 22, 18),
+      padding: const EdgeInsets.fromLTRB(8, 12, 14, 12),
       child: SingleChildScrollView(
         child: Column(
           children: [
             _buildAddProductCard(),
-            const SizedBox(height: 14),
+            const SizedBox(height: 10),
             _buildCartCard(),
-            const SizedBox(height: 14),
+            const SizedBox(height: 10),
             _buildSummaryCard(),
           ],
         ),
@@ -1568,12 +1583,12 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         ),
       ),
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         child: Row(
           children: [
             Icon(
               _isWalkInCustomer ? Icons.storefront : Icons.person_outline,
-              size: 20,
+              size: 19,
               color: _isWalkInCustomer
                   ? const Color(0xFFF57C00)
                   : SaleColors.darkGreen,
@@ -1593,7 +1608,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                           : SaleColors.textDark,
                     ),
                   ),
-                  const SizedBox(height: 2),
+                  const SizedBox(height: 1),
                   Text(
                     _isWalkInCustomer
                         ? 'Cash only, no credit'
@@ -1648,7 +1663,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         children: [
           const StepHeader(stepNumber: 1, title: 'Customer Name'),
           Padding(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(12),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
@@ -1670,7 +1685,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                     ),
                   ],
                 ),
-                const SizedBox(height: 5),
+                const SizedBox(height: 4),
                 TextFormField(
                   controller: _walkInCustomerNameController,
                   style: const TextStyle(
@@ -1684,7 +1699,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                       color: SaleColors.textLight,
                     ),
                     contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 11,
+                      horizontal: 10,
                       vertical: 8,
                     ),
                     isDense: true,
@@ -1713,9 +1728,12 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                     fillColor: SaleColors.cardBg,
                   ),
                 ),
-                const SizedBox(height: 10),
+                const SizedBox(height: 8),
                 Container(
-                  padding: const EdgeInsets.all(10),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 6,
+                  ),
                   decoration: BoxDecoration(
                     color: const Color(0xFFE3F2FD),
                     borderRadius: BorderRadius.circular(8),
@@ -1724,15 +1742,15 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                     children: const [
                       Icon(
                         Icons.info_outline,
-                        size: 14,
+                        size: 13,
                         color: Color(0xFF1565C0),
                       ),
-                      SizedBox(width: 8),
+                      SizedBox(width: 6),
                       Expanded(
                         child: Text(
                           'Walk-in customers are cash-only. No credit option available.',
                           style: TextStyle(
-                            fontSize: 11,
+                            fontSize: 10,
                             color: Color(0xFF1565C0),
                           ),
                         ),
@@ -1761,7 +1779,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         children: [
           const StepHeader(stepNumber: 1, title: 'Select Zamindar'),
           Padding(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(12),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
@@ -1798,7 +1816,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
             ),
           ],
         ),
-        const SizedBox(height: 5),
+        const SizedBox(height: 4),
         Autocomplete<Zamindar>(
           optionsBuilder: (TextEditingValue textEditingValue) {
             if (textEditingValue.text.isEmpty) {
@@ -1824,7 +1842,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                   color: SaleColors.textLight,
                 ),
                 contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 11,
+                  horizontal: 10,
                   vertical: 8,
                 ),
                 isDense: true,
@@ -1879,8 +1897,8 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                 borderRadius: BorderRadius.circular(9),
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(
-                    maxHeight: 200,
-                    maxWidth: 348,
+                    maxHeight: 160,
+                    maxWidth: 318,
                   ),
                   child: ListView.builder(
                     padding: EdgeInsets.zero,
@@ -1892,8 +1910,8 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                         onTap: () => onSelected(option),
                         child: Container(
                           padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 10,
+                            horizontal: 10,
+                            vertical: 8,
                           ),
                           decoration: const BoxDecoration(
                             border: Border(
@@ -1926,16 +1944,16 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
   Widget _buildZamindarPillWithClear() {
     return Container(
       margin: const EdgeInsets.only(top: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
       decoration: BoxDecoration(
         color: SaleColors.lightGreenBg,
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(9),
       ),
       child: Row(
         children: [
           Container(
-            width: 30,
-            height: 30,
+            width: 28,
+            height: 28,
             decoration: const BoxDecoration(
               color: SaleColors.midGreen,
               shape: BoxShape.circle,
@@ -2022,7 +2040,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         children: [
           const StepHeader(stepNumber: 2, title: 'Select Kisaan'),
           Padding(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(12),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
@@ -2038,7 +2056,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                 const SizedBox(height: 8),
                 if (_selectedZamindar!.kisaans.isEmpty)
                   const Padding(
-                    padding: EdgeInsets.all(16),
+                    padding: EdgeInsets.all(12),
                     child: Text(
                       'No kisaans found',
                       style: TextStyle(
@@ -2056,7 +2074,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                           crossAxisCount: 2,
                           crossAxisSpacing: 8,
                           mainAxisSpacing: 8,
-                          childAspectRatio: 1.5,
+                          childAspectRatio: 1.85,
                         ),
                     itemCount: _selectedZamindar!.kisaans.length,
                     itemBuilder: (context, index) {
@@ -2092,7 +2110,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: const BoxDecoration(
               border: Border(
                 bottom: BorderSide(color: SaleColors.borderLight, width: 0.5),
@@ -2128,7 +2146,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
             ),
           ),
           Padding(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(12),
             child: SmartRecommendationsBox(
               selectedKisaan: _selectedKisaan,
               recommendations: _getRecommendations(),
@@ -2153,14 +2171,14 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         children: [
           const StepHeader(stepNumber: 3, title: 'Add products to cart'),
           Padding(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(12),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                Expanded(flex: 3, child: _buildProductAutocomplete()),
+                Expanded(flex: 4, child: _buildProductAutocomplete()),
                 const SizedBox(width: 8),
                 SizedBox(
-                  width: 80,
+                  width: 64,
                   child: _buildCompactField(
                     'Qty',
                     _qtyController,
@@ -2169,7 +2187,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                 ),
                 const SizedBox(width: 8),
                 SizedBox(
-                  width: 100,
+                  width: 84,
                   child: _buildCompactField(
                     'Price',
                     _priceController,
@@ -2178,7 +2196,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                 ),
                 const SizedBox(width: 8),
                 SizedBox(
-                  width: 100,
+                  width: 88,
                   child: _buildCompactField(
                     'Seasonal Inc',
                     _seasonalIncrementController,
@@ -2195,7 +2213,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                       borderRadius: BorderRadius.circular(9),
                       child: Container(
                         padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
+                          horizontal: 12,
                           vertical: 8,
                         ),
                         decoration: BoxDecoration(
@@ -2235,7 +2253,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
             color: SaleColors.textMuted,
           ),
         ),
-        const SizedBox(height: 5),
+        const SizedBox(height: 4),
         Autocomplete<Product>(
           optionsBuilder: (TextEditingValue textEditingValue) {
             if (textEditingValue.text.isEmpty) {
@@ -2261,7 +2279,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                   color: SaleColors.textLight,
                 ),
                 contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 11,
+                  horizontal: 10,
                   vertical: 8,
                 ),
                 isDense: true,
@@ -2310,8 +2328,8 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                         onTap: () => onSelected(option),
                         child: Container(
                           padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 10,
+                            horizontal: 10,
+                            vertical: 8,
                           ),
                           decoration: const BoxDecoration(
                             border: Border(
@@ -2371,14 +2389,14 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
             color: SaleColors.textMuted,
           ),
         ),
-        const SizedBox(height: 5),
+        const SizedBox(height: 4),
         TextFormField(
           controller: controller,
           keyboardType: keyboardType,
           style: const TextStyle(fontSize: 13, color: SaleColors.textDark),
           decoration: InputDecoration(
             contentPadding: const EdgeInsets.symmetric(
-              horizontal: 8,
+              horizontal: 6,
               vertical: 8,
             ),
             isDense: true,
@@ -2423,7 +2441,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: const BoxDecoration(
               border: Border(
                 bottom: BorderSide(color: SaleColors.borderLight, width: 0.5),
@@ -2452,7 +2470,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           ),
           if (_cartItems.isEmpty)
             const Padding(
-              padding: EdgeInsets.all(24),
+              padding: EdgeInsets.symmetric(vertical: 16, horizontal: 12),
               child: Center(
                 child: Text(
                   'No items in cart',
@@ -2473,10 +2491,11 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: DataTable(
-        horizontalMargin: 12,
-        columnSpacing: 16,
-        headingRowHeight: 36,
-        dataRowHeight: 48,
+        horizontalMargin: 10,
+        columnSpacing: 14,
+        headingRowHeight: 32,
+        dataRowMinHeight: 36,
+        dataRowMaxHeight: 40,
         headingRowColor: WidgetStateProperty.all(SaleColors.canvasBg),
         dividerThickness: 0.5,
         decoration: const BoxDecoration(
@@ -2655,10 +2674,10 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     final showSeasonalIncrement = _paymentMethod == PaymentMethod.credit;
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
         color: SaleColors.darkGreen,
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(12),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2674,7 +2693,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           _buildOverallDiscountRow(),
           Container(
             height: 0.5,
-            margin: const EdgeInsets.symmetric(vertical: 8),
+            margin: const EdgeInsets.symmetric(vertical: 7),
             color: Colors.white.withOpacity(0.15),
           ),
           Row(
@@ -2683,7 +2702,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
               const Text(
                 'Total payable',
                 style: TextStyle(
-                  fontSize: 15,
+                  fontSize: 14,
                   fontWeight: FontWeight.w500,
                   color: Colors.white,
                 ),
@@ -2691,14 +2710,14 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
               Text(
                 CurrencyFormatter.format(summary.totalPayable),
                 style: const TextStyle(
-                  fontSize: 20,
+                  fontSize: 19,
                   fontWeight: FontWeight.w500,
                   color: SaleColors.lightGreen,
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
           PaymentMethodToggle(
             selectedMethod: _paymentMethod,
             onChanged: !_isWalkInCustomer
@@ -2719,7 +2738,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           ),
           if (_paymentMethod == PaymentMethod.credit &&
               !_isWalkInCustomer) ...[
-            const SizedBox(height: 12),
+            const SizedBox(height: 10),
             _buildCreditSplitSection(summary.totalPayable),
           ],
           const SizedBox(height: 10),
@@ -2727,15 +2746,15 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
             color: Colors.transparent,
             child: InkWell(
               onTap: _isSaving ? null : _saveAndPrint,
-              borderRadius: BorderRadius.circular(10),
+              borderRadius: BorderRadius.circular(9),
               child: Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(vertical: 11),
+                padding: const EdgeInsets.symmetric(vertical: 10),
                 decoration: BoxDecoration(
                   color: _isSaving
                       ? SaleColors.accentGreen.withOpacity(0.6)
                       : SaleColors.accentGreen,
-                  borderRadius: BorderRadius.circular(10),
+                  borderRadius: BorderRadius.circular(9),
                 ),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
@@ -2757,7 +2776,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                     Text(
                       _isSaving ? 'Saving...' : 'Save & Print receipt',
                       style: const TextStyle(
-                        fontSize: 14,
+                        fontSize: 13,
                         fontWeight: FontWeight.w500,
                         color: Colors.white,
                       ),
@@ -2767,12 +2786,12 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
               ),
             ),
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 5),
           Material(
             color: Colors.transparent,
             child: InkWell(
               onTap: () {},
-              borderRadius: BorderRadius.circular(10),
+              borderRadius: BorderRadius.circular(9),
               child: Container(
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(vertical: 8),
@@ -2782,7 +2801,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                     color: Colors.white.withOpacity(0.2),
                     width: 0.5,
                   ),
-                  borderRadius: BorderRadius.circular(10),
+                  borderRadius: BorderRadius.circular(9),
                 ),
                 child: Text(
                   _isWalkInCustomer
@@ -2804,18 +2823,18 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
 
   Widget _buildSummaryRow(String label, double value) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 5),
+      padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           Text(
             label,
-            style: const TextStyle(fontSize: 13, color: SaleColors.textLight),
+            style: const TextStyle(fontSize: 12, color: SaleColors.textLight),
           ),
           Text(
             CurrencyFormatter.format(value),
             style: const TextStyle(
-              fontSize: 13,
+              fontSize: 12,
               fontWeight: FontWeight.w500,
               color: Colors.white,
             ),
@@ -2841,65 +2860,85 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           'Cash received',
           style: TextStyle(fontSize: 12, color: SaleColors.textLight),
         ),
-        const SizedBox(height: 6),
-        TextFormField(
-          controller: _cashReceivedController,
-          keyboardType: TextInputType.number,
-          style: const TextStyle(fontSize: 13, color: Colors.white),
-          onChanged: (_) => setState(() {}),
-          decoration: InputDecoration(
-            isDense: true,
-            prefixText: 'Rs ',
-            prefixStyle: const TextStyle(fontSize: 13, color: SaleColors.textLight),
-            hintText: '0',
-            hintStyle: TextStyle(
+        const SizedBox(height: 5),
+        Theme(
+          data: Theme.of(context).copyWith(
+            textSelectionTheme: TextSelectionThemeData(
+              cursorColor: SaleColors.darkGreen,
+              selectionColor: SaleColors.accentGreen.withOpacity(0.35),
+              selectionHandleColor: SaleColors.darkGreen,
+            ),
+          ),
+          child: TextFormField(
+            controller: _cashReceivedController,
+            keyboardType: TextInputType.number,
+            cursorColor: SaleColors.darkGreen,
+            style: const TextStyle(
+              color: Color(0xFF1B4332),
               fontSize: 13,
-              color: Colors.white.withOpacity(0.35),
+              fontWeight: FontWeight.w500,
             ),
-            contentPadding: const EdgeInsets.symmetric(
-              horizontal: 10,
-              vertical: 10,
-            ),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-              borderSide: BorderSide(
-                color: Colors.white.withOpacity(0.25),
-                width: 0.5,
+            onChanged: (_) => setState(() {}),
+            decoration: InputDecoration(
+              isDense: true,
+              filled: true,
+              fillColor: Colors.white,
+              prefixText: 'Rs ',
+              prefixStyle: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+                color: Color(0xFF1B4332),
               ),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(
-                color: SaleColors.lightGreen,
-                width: 1,
+              hintText: '0',
+              hintStyle: const TextStyle(
+                fontSize: 13,
+                color: Color(0xFF95B89A),
+              ),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 10,
+                vertical: 8,
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide(
+                  color: Colors.white.withOpacity(0.25),
+                  width: 0.5,
+                ),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: const BorderSide(
+                  color: SaleColors.lightGreen,
+                  width: 1,
+                ),
               ),
             ),
           ),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 6),
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             const Text(
               'Credit (Udhaar)',
-              style: TextStyle(fontSize: 12, color: SaleColors.textLight),
+              style: TextStyle(fontSize: 11, color: SaleColors.textLight),
             ),
             Text(
               CurrencyFormatter.format(creditAmount),
               style: const TextStyle(
-                fontSize: 13,
+                fontSize: 12,
                 fontWeight: FontWeight.w600,
                 color: SaleColors.lightGreen,
               ),
             ),
           ],
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 8),
         const Text(
           'Payment term',
-          style: TextStyle(fontSize: 12, color: SaleColors.textLight),
+          style: TextStyle(fontSize: 11, color: SaleColors.textLight),
         ),
-        const SizedBox(height: 6),
+        const SizedBox(height: 4),
         if (terms.isEmpty)
           Text(
             'No payment terms on this Zamindar profile',
@@ -2911,7 +2950,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         else
           Wrap(
             spacing: 6,
-            runSpacing: 6,
+            runSpacing: 4,
             children: terms.map((term) {
               final selected = _selectedSalePaymentTerm == term;
               return ChoiceChip(
@@ -2948,21 +2987,22 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
 
   Widget _buildOverallDiscountRow() {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 5),
+      padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           const Text(
             'Overall Discount',
-            style: TextStyle(fontSize: 13, color: SaleColors.textLight),
+            style: TextStyle(fontSize: 12, color: SaleColors.textLight),
           ),
           SizedBox(
-            width: 80,
+            width: 76,
             child: TextField(
               controller: _overallDiscountController,
               textAlign: TextAlign.right,
               keyboardType: TextInputType.number,
               style: const TextStyle(fontSize: 12, color: Colors.white),
+              cursorColor: SaleColors.lightGreen,
               decoration: InputDecoration(
                 contentPadding: const EdgeInsets.symmetric(
                   horizontal: 4,

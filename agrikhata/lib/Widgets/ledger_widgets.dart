@@ -998,9 +998,22 @@ class PaymentsLedgerTable extends StatelessWidget {
           ),
           SizedBox(width: 12),
           Expanded(
-            flex: 3,
+            flex: 2,
             child: Text(
               'STAKEHOLDER',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF2D6A4F),
+                letterSpacing: 0.3,
+              ),
+            ),
+          ),
+          SizedBox(width: 8),
+          Expanded(
+            flex: 2,
+            child: Text(
+              'ITEMS SUMMARY',
               style: TextStyle(
                 fontSize: 10,
                 fontWeight: FontWeight.w600,
@@ -1139,7 +1152,7 @@ class PaymentsLedgerTable extends StatelessWidget {
           ),
           const SizedBox(width: 12),
           Expanded(
-            flex: 3,
+            flex: 2,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1164,6 +1177,23 @@ class PaymentsLedgerTable extends StatelessWidget {
                   ),
                 ],
               ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            flex: 2,
+            child: Text(
+              entry.itemsSummary.trim().isEmpty ? '—' : entry.itemsSummary.trim(),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11,
+                fontStyle:
+                    entry.isAdvanceSummary ? FontStyle.italic : FontStyle.normal,
+                color: entry.isAdvanceSummary
+                    ? const Color(0xFF95B89A)
+                    : const Color(0xFF6B8F71),
+              ),
             ),
           ),
           SizedBox(
@@ -1221,6 +1251,304 @@ class PaymentsLedgerTable extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Purchase Ledger matrix: Date, Invoice, Wholesaler, Products, Total, Terms.
+class PurchaseLedgerTable extends StatelessWidget {
+  final List<LedgerEntry> entries;
+  final VoidCallback? onRefresh;
+
+  const PurchaseLedgerTable({
+    super.key,
+    required this.entries,
+    this.onRefresh,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (entries.isEmpty) {
+      return Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0xFFE2EBE0), width: 0.5),
+        ),
+        child: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.shopping_bag_outlined,
+                size: 64,
+                color: Colors.grey[400],
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'No Purchase Invoices Match the Selected Filters',
+                style: TextStyle(fontSize: 13, color: Colors.grey[600]),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE2EBE0), width: 0.5),
+      ),
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+            decoration: const BoxDecoration(
+              color: Color(0xFFF7F9F4),
+              border: Border(
+                bottom: BorderSide(color: Color(0xFFE2EBE0), width: 0.5),
+              ),
+              borderRadius: BorderRadius.only(
+                topLeft: Radius.circular(12),
+                topRight: Radius.circular(12),
+              ),
+            ),
+            child: const Row(
+              children: [
+                SizedBox(
+                  width: 110,
+                  child: Text(
+                    'DATE / TIME',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w500,
+                      color: Color(0xFF6B8F71),
+                      letterSpacing: 0.3,
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 100,
+                  child: Text(
+                    'INVOICE',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w500,
+                      color: Color(0xFF6B8F71),
+                      letterSpacing: 0.3,
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 140,
+                  child: Text(
+                    'WHOLESALER',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w500,
+                      color: Color(0xFF6B8F71),
+                      letterSpacing: 0.3,
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: Text(
+                    'PRODUCTS DETAILS',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w500,
+                      color: Color(0xFF6B8F71),
+                      letterSpacing: 0.3,
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 100,
+                  child: Text(
+                    'GRAND TOTAL',
+                    textAlign: TextAlign.right,
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w500,
+                      color: Color(0xFF6B8F71),
+                      letterSpacing: 0.3,
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 90,
+                  child: Text(
+                    'TERMS',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w500,
+                      color: Color(0xFF6B8F71),
+                      letterSpacing: 0.3,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: RefreshIndicator(
+              onRefresh: () async => onRefresh?.call(),
+              child: ListView.builder(
+                itemCount: entries.length,
+                itemBuilder: (context, index) {
+                  return _buildRow(
+                    entries[index],
+                    index == entries.length - 1,
+                  );
+                },
+              ),
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.all(10),
+            alignment: Alignment.centerLeft,
+            child: Text(
+              'Showing ${entries.length} purchase invoice${entries.length == 1 ? '' : 's'}'
+              ' · ₨ ${_currencyFormat.format(entries.fold<double>(0, (s, e) => s + e.outstanding))} outstanding supplier debt',
+              style: const TextStyle(fontSize: 11, color: Color(0xFF95B89A)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRow(LedgerEntry entry, bool isLast) {
+    final terms = entry.purchaseTerms ??
+        (entry.status == PaymentStatus.paid
+            ? 'Cash'
+            : entry.status == PaymentStatus.partial
+                ? 'Partial'
+                : 'Udhaar');
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+      decoration: BoxDecoration(
+        border: isLast
+            ? null
+            : const Border(
+                bottom: BorderSide(color: Color(0xFFE2EBE0), width: 0.5),
+              ),
+      ),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 110,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _dateFormat.format(entry.date),
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: Color(0xFF1B4332),
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  _timeFormat.format(entry.date),
+                  style: const TextStyle(
+                    fontSize: 10.5,
+                    color: Color(0xFF95B89A),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          SizedBox(
+            width: 100,
+            child: Text(
+              entry.invoiceNumber,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF1B4332),
+              ),
+            ),
+          ),
+          SizedBox(
+            width: 140,
+            child: Text(
+              entry.stakeholderName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: Color(0xFF1B4332),
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              entry.ledgerSummary,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 11.5,
+                color: Color(0xFF6B8F71),
+              ),
+            ),
+          ),
+          SizedBox(
+            width: 100,
+            child: Text(
+              '₨ ${_currencyFormat.format(entry.total.round())}',
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF1B4332),
+              ),
+            ),
+          ),
+          SizedBox(
+            width: 90,
+            child: Center(child: _termsBadge(terms)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _termsBadge(String terms) {
+    late Color bg;
+    late Color fg;
+    switch (terms) {
+      case 'Cash':
+        bg = const Color(0xFFD8F3DC);
+        fg = const Color(0xFF2D6A4F);
+      case 'Partial':
+        bg = const Color(0xFFFAEEDA);
+        fg = const Color(0xFF633806);
+      default:
+        bg = const Color(0xFFFCEBEB);
+        fg = const Color(0xFF791F1F);
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        terms,
+        style: TextStyle(
+          fontSize: 9.5,
+          fontWeight: FontWeight.w500,
+          color: fg,
+        ),
       ),
     );
   }

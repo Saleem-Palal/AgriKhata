@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AgriKhata — Wholesalers (Suppliers)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+<style>
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#F7F9F4;color:#1B4332}
+  .app{display:flex;min-height:100vh}
+
+  /* ---------- Sidebar ---------- */
+  .sidebar{width:200px;flex-shrink:0;background:#1B4332;display:flex;flex-direction:column}
+  .logo{padding:18px 16px 14px;border-bottom:0.5px solid rgba(255,255,255,0.5)}
+  .logo-name{font-size:20px;font-weight:700;color:#fff}
+  .logo-sub{font-size:11px;color:#A7C4A0;margin-top:2px}
+  .nav{padding:12px 10px;flex:1}
+  .nav-section{font-size:10px;color:#6B9E7A;font-weight:700;letter-spacing:1.2px;padding:10px 8px 4px;text-transform:uppercase}
+  .nav-item{display:flex;align-items:center;gap:9px;padding:10px 12px;border-radius:10px;cursor:pointer;color:#A7C4A0;font-size:12.5px;margin-bottom:2px}
+  .nav-item.active{background:#2D6A4F;color:#fff;font-weight:500}
+  .nav-item i{width:16px;text-align:center;font-size:13px}
+  .sb-footer{padding:12px 14px;border-top:0.5px solid rgba(255,255,255,0.05);display:flex;align-items:center;gap:9px}
+  .sb-av{width:30px;height:30px;border-radius:50%;background:#2D6A4F;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:500;color:#B7E4C7;border:1px solid #40916C;flex-shrink:0}
+  .sb-name{font-size:12px;font-weight:500;color:#fff}
+  .sb-role{font-size:10px;color:#6B9E7A}
+
+  /* ---------- Main ---------- */
+  .main{flex:1;display:flex;flex-direction:column;min-width:0}
+  .topbar{background:#fff;border-bottom:0.5px solid #E2EBE0;padding:12px 24px;display:flex;align-items:center;justify-content:space-between}
+  .breadcrumb{font-size:12px;color:#95B89A}
+  .breadcrumb .cur{color:#1B4332;font-weight:500}
+  .content{padding:20px;flex:1}
+
+  .card{background:#fff;border:0.5px solid #E2EBE0;border-radius:12px}
+
+  .btn-primary{background:#1B4332;color:#fff;border:none;border-radius:9px;padding:9px 16px;font-size:12.5px;font-weight:500;display:inline-flex;align-items:center;gap:7px;cursor:pointer}
+  .btn-primary:hover{background:#163828}
+  .btn-ghost{background:#fff;color:#1B4332;border:0.5px solid #C6DEC9;border-radius:9px;padding:9px 16px;font-size:12.5px;font-weight:500;display:inline-flex;align-items:center;gap:7px;cursor:pointer}
+  .btn-ghost:hover{background:#F0F7EB}
+
+  .input-field{background:#fff;border:0.5px solid #C6DEC9;border-radius:8px;font-size:12.5px;padding:8px 12px;color:#1B4332}
+  .input-field::placeholder{color:#95B89A}
+  .input-field:focus{outline:none;border-color:#40916C}
+
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  thead th{padding:9px 14px;text-align:left;font-size:10px;font-weight:500;color:#6B8F71;border-bottom:0.5px solid #E2EBE0;background:#F7F9F4;text-transform:uppercase;letter-spacing:.3px}
+  tbody td{padding:11px 14px;border-bottom:0.5px solid #E2EBE0;vertical-align:middle}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr:hover td{background:#F5F9F2}
+
+  .row-link{cursor:pointer}
+
+  .open-khata-btn{background:#fff;color:#1B4332;border:0.5px solid #C6DEC9;border-radius:8px;padding:6px 12px;font-size:11.5px;font-weight:500;cursor:pointer}
+  .open-khata-btn:hover{background:#F0F7EB;border-color:#97C459}
+
+  .badge{display:inline-block;font-size:10px;font-weight:500;padding:3px 10px;border-radius:20px;white-space:nowrap}
+  .badge.debit{background:#D8F3DC;color:#2D6A4F}
+  .badge.credit{background:#FCEBEB;color:#791F1F}
+
+  /* Tabs */
+  .ptab{padding:11px 16px;font-size:12.5px;font-weight:500;color:#95B89A;cursor:pointer;border-bottom:2px solid transparent}
+  .ptab.active{color:#1B4332;border-bottom-color:#1B4332}
+  .ptab-panel{display:none}
+  .ptab-panel.active{display:block}
+
+  .icon-btn{width:28px;height:28px;border-radius:7px;border:0.5px solid #C6DEC9;background:#fff;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;color:#6B8F71;font-size:12px}
+  .icon-btn:hover{background:#F0F7EB;border-color:#97C459;color:#2D6A4F}
+
+  .back-link{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#6B8F71;cursor:pointer}
+  .back-link:hover{color:#1B4332}
+
+  /* View toggling */
+  .view{display:none}
+  .view.active{display:block}
+
+  /* Modal */
+  .modal-overlay{position:fixed;inset:0;background:rgba(27,67,50,0.4);display:none;align-items:center;justify-content:center;z-index:60}
+  .modal-overlay.open{display:flex}
+  .modal{background:#fff;border-radius:14px;width:400px;max-width:92vw;overflow:hidden;box-shadow:0 20px 50px rgba(27,67,50,0.25)}
+  .modal-head{background:#1B4332;padding:14px 18px;display:flex;align-items:center;justify-content:space-between}
+  .modal-title{font-size:14px;font-weight:500;color:#fff}
+  .modal-close{width:26px;height:26px;border-radius:7px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#A7C4A0;background:transparent;border:none}
+  .modal-close:hover{background:rgba(255,255,255,0.1);color:#fff}
+  .modal-body{padding:18px}
+  .field-label{font-size:11px;font-weight:500;color:#6B8F71;margin-bottom:5px;display:block}
+  .modal-footer{padding:12px 18px;border-top:0.5px solid #E2EBE0;display:flex;gap:8px;justify-content:flex-end}
+
+  /* Toast */
+  #toast{position:fixed;bottom:24px;right:24px;z-index:70;transform:translateY(20px);opacity:0;pointer-events:none;transition:all .25s ease}
+  #toast.show{transform:translateY(0);opacity:1}
+  .toast-card{background:#fff;border:0.5px solid #E2EBE0;border-radius:12px;box-shadow:0 16px 40px rgba(27,67,50,0.18);width:300px;padding:14px;display:flex;align-items:flex-start;gap:10px}
+  .toast-ic{width:28px;height:28px;border-radius:50%;background:#D8F3DC;color:#2D6A4F;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+
+  .hidden-row{display:none}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ================= SIDEBAR ================= -->
+  <div class="sidebar">
+    <div class="logo">
+      <div class="logo-name">AgriKhata</div>
+      <div class="logo-sub">Atta Muhammad &amp; Sons</div>
+    </div>
+    <div class="nav">
+      <div class="nav-section">Main</div>
+      <div class="nav-item"><i class="fa-solid fa-table-cells-large"></i>Dashboard</div>
+      <div class="nav-item"><i class="fa-solid fa-users"></i>Zamindars</div>
+      <div class="nav-item"><i class="fa-solid fa-cash-register"></i>New Sale</div>
+      <div class="nav-section">Inventory</div>
+      <div class="nav-item"><i class="fa-solid fa-boxes-stacked"></i>Products</div>
+      <div class="nav-item"><i class="fa-solid fa-truck-ramp-box"></i>Purchase</div>
+      <div class="nav-item active"><i class="fa-solid fa-handshake"></i>Wholesalers</div>
+      <div class="nav-section">Finance</div>
+      <div class="nav-item"><i class="fa-solid fa-book"></i>Ledger</div>
+      <div class="nav-item"><i class="fa-solid fa-chart-column"></i>Reports</div>
+      <div class="nav-section">System</div>
+      <div class="nav-item"><i class="fa-solid fa-gear"></i>Settings</div>
+    </div>
+    <div class="sb-footer">
+      <div class="sb-av">AM</div>
+      <div><div class="sb-name">Atta Muhammad</div><div class="sb-role">Owner</div></div>
+    </div>
+  </div>
+
+  <!-- ================= MAIN ================= -->
+  <div class="main">
+
+    <!-- ============ TOPBAR (changes per view) ============ -->
+    <div class="topbar">
+      <div class="breadcrumb" id="topbarBreadcrumb">Inventory &nbsp;›&nbsp; <span class="cur">Wholesalers</span></div>
+      <div id="topbarActions">
+        <button class="btn-primary" onclick="alert('Add New Wholesaler form would open here.')"><i class="fa-solid fa-plus"></i>Add New Wholesaler</button>
+      </div>
+    </div>
+
+    <div class="content">
+
+      <!-- ======================================================= -->
+      <!-- VIEW A: MASTER DIRECTORY -->
+      <!-- ======================================================= -->
+      <div id="viewDirectory" class="view active">
+
+        <div class="card overflow-hidden">
+          <div class="p-4 flex items-center gap-2 border-b" style="border-color:#E2EBE0">
+            <div class="relative flex-1">
+              <i class="fa-solid fa-magnifying-glass absolute" style="left:12px;top:50%;transform:translateY(-50%);color:#95B89A;font-size:11px"></i>
+              <input id="dirSearch" type="text" placeholder="Search Wholesaler or Mandi City..." class="input-field w-full" style="padding-left:32px" oninput="filterDirectory()" />
+            </div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th style="width:26%">Wholesaler / Shop Name</th>
+                <th style="width:16%">Mobile Phone</th>
+                <th style="width:18%">Mandi / City</th>
+                <th style="width:20%">Current Owed Balance</th>
+                <th style="width:20%">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="directoryBody">
+              <!-- rows injected by JS from WHOLESALERS data -->
+            </tbody>
+          </table>
+          <div id="dirNoResults" class="hidden-row p-4 text-center text-[12px]" style="color:#95B89A">No matching wholesalers found.</div>
+        </div>
+      </div>
+
+      <!-- ======================================================= -->
+      <!-- VIEW B: DETAILED WHOLESALER PROFILE -->
+      <!-- ======================================================= -->
+      <div id="viewProfile" class="view">
+
+        <div class="back-link mb-3" onclick="showDirectory()">
+          <i class="fa-solid fa-arrow-left"></i> Back to Wholesaler Directory
+        </div>
+
+        <!-- Profile header -->
+        <div class="card p-5 mb-4">
+          <div class="flex items-start justify-between flex-wrap gap-4">
+            <div>
+              <div class="text-[17px] font-semibold" id="profName">—</div>
+              <div class="text-[12px] mt-1" style="color:#6B8F71">
+                <i class="fa-solid fa-location-dot mr-1"></i><span id="profCity">—</span>
+                &nbsp;&nbsp;<i class="fa-solid fa-phone mr-1"></i><span id="profPhone">—</span>
+              </div>
+              <div class="flex gap-2 mt-4">
+                <button class="btn-primary" onclick="openPaymentModal()"><i class="fa-solid fa-money-bill-wave"></i>Record Payment</button>
+                <button class="btn-ghost"><i class="fa-solid fa-print"></i>Print Statement</button>
+              </div>
+            </div>
+            <div class="rounded-xl px-6 py-4" style="background:#1B4332;min-width:230px">
+              <div class="text-[10px] font-medium uppercase tracking-wide" style="color:#A7C4A0">Total Outstanding Udhaar</div>
+              <div class="text-[24px] font-bold text-white mt-1" id="profBalance">₨ 0</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="card overflow-hidden">
+          <div class="flex border-b" style="border-color:#E2EBE0">
+            <div class="ptab active" data-tab="tabLedger" onclick="switchTab('tabLedger')">📋 Khata Statement</div>
+            <div class="ptab" data-tab="tabPurchases" onclick="switchTab('tabPurchases')">📦 Bulk Purchase Invoices</div>
+            <div class="ptab" data-tab="tabPayments" onclick="switchTab('tabPayments')">💸 Payment Logs</div>
+          </div>
+
+          <!-- Tab 1: Khata Statement -->
+          <div id="tabLedger" class="ptab-panel active">
+            <table>
+              <thead>
+                <tr>
+                  <th style="width:14%">Date</th>
+                  <th style="width:22%">Transaction Type</th>
+                  <th style="width:18%">Reference ID</th>
+                  <th style="width:14%">Paid (Debit)</th>
+                  <th style="width:14%">Owed (Credit)</th>
+                  <th style="width:18%">Balance</th>
+                </tr>
+              </thead>
+              <tbody id="ledgerBody"></tbody>
+            </table>
+          </div>
+
+          <!-- Tab 2: Bulk Purchase Invoices -->
+          <div id="tabPurchases" class="ptab-panel">
+            <table>
+              <thead>
+                <tr>
+                  <th style="width:16%">Date</th>
+                  <th style="width:22%">Gate Pass / Invoice No.</th>
+                  <th style="width:18%">Transport Charges</th>
+                  <th style="width:18%">Total Bill</th>
+                  <th style="width:26%">Items</th>
+                </tr>
+              </thead>
+              <tbody id="purchasesBody"></tbody>
+            </table>
+          </div>
+
+          <!-- Tab 3: Payment Logs -->
+          <div id="tabPayments" class="ptab-panel">
+            <table>
+              <thead>
+                <tr>
+                  <th style="width:16%">Date</th>
+                  <th style="width:18%">Receipt No.</th>
+                  <th style="width:16%">Amount Paid</th>
+                  <th style="width:18%">Payment Method</th>
+                  <th style="width:32%">Remarks</th>
+                </tr>
+              </thead>
+              <tbody id="paymentsBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ================= RECORD PAYMENT MODAL ================= -->
+<div class="modal-overlay" id="paymentModal" onclick="if(event.target===this)closePaymentModal()">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">Record Payment</div>
+      <button class="modal-close" onclick="closePaymentModal()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="mb-3">
+        <label class="field-label">Wholesaler</label>
+        <input type="text" class="input-field w-full" id="modalWholesalerName" disabled style="background:#F7F9F4" />
+      </div>
+      <div class="mb-3">
+        <label class="field-label">Amount Paid (₨)</label>
+        <input type="number" class="input-field w-full" id="modalAmount" placeholder="e.g. 50000" />
+      </div>
+      <div class="mb-3">
+        <label class="field-label">Payment Method</label>
+        <select class="input-field w-full" id="modalMethod">
+          <option>Cash</option>
+          <option>Bank Transfer</option>
+        </select>
+      </div>
+      <div>
+        <label class="field-label">Remarks (optional)</label>
+        <input type="text" class="input-field w-full" id="modalRemarks" placeholder="e.g. Partial settlement for June stock" />
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" onclick="closePaymentModal()">Cancel</button>
+      <button class="btn-primary" onclick="submitPayment()"><i class="fa-solid fa-check"></i>Save Payment</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= TOAST ================= -->
+<div id="toast">
+  <div class="toast-card">
+    <div class="toast-ic"><i class="fa-solid fa-check"></i></div>
+    <div>
+      <div class="text-[12.5px] font-medium">Payment Recorded</div>
+      <div class="text-[11px] mt-0.5" style="color:#6B8F71" id="toastMsg">—</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// MOCK DATA — TODO: replace with SQLite repository queries
+// ============================================================
+const WHOLESALERS = [
+  {
+    id: 'w1',
+    name: 'Khan Traders',
+    city: 'Sukkur',
+    phone: '0301-2345678',
+    balance: 450000,
+    ledger: [
+      { date: '28 Jun 2026', type: 'Opening Balance', ref: '—', debit: 0, credit: 300000, balance: 300000 },
+      { date: '2 Jul 2026', type: 'Purchase Invoice', ref: 'GP-1042', debit: 0, credit: 220000, balance: 520000 },
+      { date: '5 Jul 2026', type: 'Cash Payment', ref: 'RCPT-881', debit: 70000, credit: 0, balance: 450000 },
+    ],
+    purchases: [
+      { date: '2 Jul 2026', ref: 'GP-1042', transport: 3500, total: 220000 },
+      { date: '15 Jun 2026', ref: 'GP-0997', transport: 3000, total: 300000 },
+    ],
+    payments: [
+      { date: '5 Jul 2026', receipt: 'RCPT-881', amount: 70000, method: 'Cash', remarks: 'Partial settlement' },
+      { date: '18 Jun 2026', receipt: 'RCPT-844', amount: 50000, method: 'Bank Transfer', remarks: 'Advance against next order' },
+    ],
+  },
+  {
+    id: 'w2',
+    name: 'Baloch Seed Agency',
+    city: 'Multan',
+    phone: '0333-9081234',
+    balance: 182000,
+    ledger: [
+      { date: '20 Jun 2026', type: 'Opening Balance', ref: '—', debit: 0, credit: 120000, balance: 120000 },
+      { date: '29 Jun 2026', type: 'Purchase Invoice', ref: 'GP-2210', debit: 0, credit: 90000, balance: 210000 },
+      { date: '3 Jul 2026', type: 'Cash Payment', ref: 'RCPT-905', debit: 28000, credit: 0, balance: 182000 },
+    ],
+    purchases: [
+      { date: '29 Jun 2026', ref: 'GP-2210', transport: 2200, total: 90000 },
+    ],
+    payments: [
+      { date: '3 Jul 2026', receipt: 'RCPT-905', amount: 28000, method: 'Cash', remarks: 'Weekly clearance' },
+    ],
+  },
+  {
+    id: 'w3',
+    name: 'Punjab Fertilizer Depot',
+    city: 'Lahore',
+    phone: '0321-7765432',
+    balance: 0,
+    ledger: [
+      { date: '10 Jun 2026', type: 'Opening Balance', ref: '—', debit: 0, credit: 180000, balance: 180000 },
+      { date: '25 Jun 2026', type: 'Cash Payment', ref: 'RCPT-799', debit: 180000, credit: 0, balance: 0 },
+    ],
+    purchases: [
+      { date: '10 Jun 2026', ref: 'GP-0850', transport: 4200, total: 180000 },
+    ],
+    payments: [
+      { date: '25 Jun 2026', receipt: 'RCPT-799', amount: 180000, method: 'Bank Transfer', remarks: 'Full clearance, season closing' },
+    ],
+  },
+  {
+    id: 'w4',
+    name: 'Al-Rehman Agro Traders',
+    city: 'Bahawalpur',
+    phone: '0345-1122334',
+    balance: 96500,
+    ledger: [
+      { date: '1 Jul 2026', type: 'Opening Balance', ref: '—', debit: 0, credit: 60000, balance: 60000 },
+      { date: '6 Jul 2026', type: 'Purchase Invoice', ref: 'GP-2287', debit: 0, credit: 36500, balance: 96500 },
+    ],
+    purchases: [
+      { date: '6 Jul 2026', ref: 'GP-2287', transport: 1800, total: 36500 },
+    ],
+    payments: [],
+  },
+];
+
+let activeWholesalerId = null;
+
+function formatPKR(amount) {
+  const isNeg = amount < 0;
+  let digits = Math.round(Math.abs(amount)).toString();
+  if (digits.length <= 3) return '₨ ' + (isNeg ? '-' : '') + digits;
+  const last3 = digits.slice(-3);
+  let rest = digits.slice(0, -3);
+  rest = rest.replace(/\B(?=(\d{2})+(?!\d))/g, ',');
+  return '₨ ' + (isNeg ? '-' : '') + rest + ',' + last3;
+}
+
+// ============================================================
+// VIEW A: DIRECTORY
+// ============================================================
+function renderDirectory() {
+  const body = document.getElementById('directoryBody');
+  body.innerHTML = '';
+  WHOLESALERS.forEach(w => {
+    const tr = document.createElement('tr');
+    tr.dataset.name = w.name.toLowerCase();
+    tr.dataset.city = w.city.toLowerCase();
+    tr.innerHTML = `
+      <td class="font-medium">${w.name}</td>
+      <td style="color:#6B8F71">${w.phone}</td>
+      <td style="color:#6B8F71">${w.city}</td>
+      <td class="font-semibold" style="color:${w.balance > 0 ? '#A32D2D' : '#2D6A4F'}">${formatPKR(w.balance)}</td>
+      <td><button class="open-khata-btn" onclick="showProfile('${w.id}')"><i class="fa-solid fa-book-open mr-1"></i>Open Khata</button></td>
+    `;
+    body.appendChild(tr);
+  });
+}
+
+function filterDirectory() {
+  const q = document.getElementById('dirSearch').value.trim().toLowerCase();
+  const rows = document.querySelectorAll('#directoryBody tr');
+  let visible = 0;
+  rows.forEach(row => {
+    const match = !q || row.dataset.name.includes(q) || row.dataset.city.includes(q);
+    row.style.display = match ? '' : 'none';
+    if (match) visible++;
+  });
+  document.getElementById('dirNoResults').classList.toggle('hidden-row', visible > 0);
+}
+
+// ============================================================
+// VIEW TOGGLING
+// ============================================================
+function showDirectory() {
+  document.getElementById('viewDirectory').classList.add('active');
+  document.getElementById('viewProfile').classList.remove('active');
+  document.getElementById('topbarBreadcrumb').innerHTML = 'Inventory &nbsp;›&nbsp; <span class="cur">Wholesalers</span>';
+  document.getElementById('topbarActions').innerHTML = `
+    <button class="btn-primary" onclick="alert('Add New Wholesaler form would open here.')"><i class="fa-solid fa-plus"></i>Add New Wholesaler</button>
+  `;
+}
+
+function showProfile(id) {
+  const w = WHOLESALERS.find(x => x.id === id);
+  if (!w) return;
+  activeWholesalerId = id;
+
+  document.getElementById('profName').textContent = w.name;
+  document.getElementById('profCity').textContent = w.city;
+  document.getElementById('profPhone').textContent = w.phone;
+  document.getElementById('profBalance').textContent = formatPKR(w.balance);
+
+  // Ledger tab
+  document.getElementById('ledgerBody').innerHTML = w.ledger.map(row => `
+    <tr>
+      <td style="color:#95B89A;font-size:11px">${row.date}</td>
+      <td class="font-medium">${row.type}</td>
+      <td style="color:#6B8F71">${row.ref}</td>
+      <td>${row.debit > 0 ? `<span class="badge debit">${formatPKR(row.debit)}</span>` : '—'}</td>
+      <td>${row.credit > 0 ? `<span class="badge credit">${formatPKR(row.credit)}</span>` : '—'}</td>
+      <td class="font-semibold">${formatPKR(row.balance)}</td>
+    </tr>
+  `).join('') || `<tr><td colspan="6" class="text-center p-4" style="color:#95B89A">No ledger entries yet.</td></tr>`;
+
+  // Purchases tab
+  document.getElementById('purchasesBody').innerHTML = w.purchases.map(row => `
+    <tr>
+      <td style="color:#95B89A;font-size:11px">${row.date}</td>
+      <td class="font-medium">${row.ref}</td>
+      <td style="color:#6B8F71">${formatPKR(row.transport)}</td>
+      <td class="font-semibold">${formatPKR(row.total)}</td>
+      <td><div class="icon-btn" title="View Items"><i class="fa-solid fa-chevron-down"></i></div></td>
+    </tr>
+  `).join('') || `<tr><td colspan="5" class="text-center p-4" style="color:#95B89A">No bulk purchase invoices yet.</td></tr>`;
+
+  // Payments tab
+  document.getElementById('paymentsBody').innerHTML = w.payments.map(row => `
+    <tr>
+      <td style="color:#95B89A;font-size:11px">${row.date}</td>
+      <td class="font-medium">${row.receipt}</td>
+      <td class="font-semibold" style="color:#2D6A4F">${formatPKR(row.amount)}</td>
+      <td style="color:#6B8F71">${row.method}</td>
+      <td style="color:#6B8F71">${row.remarks || '—'}</td>
+    </tr>
+  `).join('') || `<tr><td colspan="5" class="text-center p-4" style="color:#95B89A">No payments recorded yet.</td></tr>`;
+
+  // Reset to first tab
+  switchTab('tabLedger');
+
+  document.getElementById('viewDirectory').classList.remove('active');
+  document.getElementById('viewProfile').classList.add('active');
+  document.getElementById('topbarBreadcrumb').innerHTML = `Inventory &nbsp;›&nbsp; Wholesalers &nbsp;›&nbsp; <span class="cur">${w.name}</span>`;
+  document.getElementById('topbarActions').innerHTML = '';
+}
+
+// ============================================================
+// TAB SWITCHING
+// ============================================================
+function switchTab(tabId) {
+  document.querySelectorAll('.ptab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabId));
+  document.querySelectorAll('.ptab-panel').forEach(p => p.classList.toggle('active', p.id === tabId));
+}
+
+// ============================================================
+// RECORD PAYMENT MODAL
+// ============================================================
+function openPaymentModal() {
+  const w = WHOLESALERS.find(x => x.id === activeWholesalerId);
+  if (!w) return;
+  document.getElementById('modalWholesalerName').value = w.name;
+  document.getElementById('modalAmount').value = '';
+  document.getElementById('modalMethod').value = 'Cash';
+  document.getElementById('modalRemarks').value = '';
+  document.getElementById('paymentModal').classList.add('open');
+}
+
+function closePaymentModal() {
+  document.getElementById('paymentModal').classList.remove('open');
+}
+
+function submitPayment() {
+  const w = WHOLESALERS.find(x => x.id === activeWholesalerId);
+  if (!w) return;
+  const amount = parseFloat(document.getElementById('modalAmount').value);
+  if (!amount || amount <= 0) {
+    alert('Please enter a valid payment amount.');
+    return;
+  }
+  const method = document.getElementById('modalMethod').value;
+  const remarks = document.getElementById('modalRemarks').value;
+
+  // Update mock state — TODO: replace with actual DB write
+  w.balance = Math.max(0, w.balance - amount);
+  const today = 'Today';
+  const receiptNo = 'RCPT-' + Math.floor(900 + Math.random() * 99);
+  w.payments.unshift({ date: today, receipt: receiptNo, amount, method, remarks });
+  w.ledger.push({ date: today, type: 'Cash Payment', ref: receiptNo, debit: amount, credit: 0, balance: w.balance });
+
+  closePaymentModal();
+  showProfile(w.id);
+
+  document.getElementById('toastMsg').textContent = `${formatPKR(amount)} via ${method} for ${w.name}`;
+  const toast = document.getElementById('toast');
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), 4000);
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closePaymentModal();
+});
+
+// ============================================================
+// INIT
+// ============================================================
+renderDirectory();
+</script>
+</body>
+</html>

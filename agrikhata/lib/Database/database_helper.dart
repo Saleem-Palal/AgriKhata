@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
@@ -61,7 +62,7 @@ class DatabaseHelper with ChangeNotifier {
     return databaseFactory.openDatabase(
       path,
       options: OpenDatabaseOptions(
-        version: 17,
+        version: 22,
         onConfigure: (db) async {
           await db.execute('PRAGMA foreign_keys = ON');
         },
@@ -75,7 +76,16 @@ class DatabaseHelper with ChangeNotifier {
           await db.execute(_createPaymentsTable());
           await db.execute(_createPaymentSequencesTable());
           await db.execute(_createStockMovementsTable());
+          await db.execute(_createWholesalersTable());
+          await db.execute(_createPurchaseInvoicesTable());
+          await db.execute(_createPurchaseItemsTable());
+          await db.execute(_createWholesalerLedgerTable());
+          await db.execute(_createWholesalerPaymentsTable());
           await _createIndexes(db);
+        },
+        onOpen: (db) async {
+          await _ensureWholesalerLedgerSchema(db);
+          await _ensureWholesalerPaymentsSchema(db);
         },
         onUpgrade: (db, oldVersion, newVersion) async {
           if (oldVersion < 3) {
@@ -333,9 +343,224 @@ class DatabaseHelper with ChangeNotifier {
               debugPrint('Error migrating to version 17: $e');
             }
           }
+          if (oldVersion < 18) {
+            debugPrint(
+              'Migrating to version 18: Wholesalers + Purchase invoices',
+            );
+            try {
+              await db.execute(_createWholesalersTable());
+              await db.execute(_createPurchaseInvoicesTable());
+              await db.execute(_createPurchaseItemsTable());
+              await db.execute('''
+                CREATE INDEX IF NOT EXISTS idx_purchase_items_invoice
+                ON ${PurchaseItemsTable.name}(${PurchaseItemsTable.invoiceNumber})
+              ''');
+              await db.execute('''
+                CREATE INDEX IF NOT EXISTS idx_wholesalers_name
+                ON ${WholesalerTable.name}(${WholesalerTable.nameColumn})
+              ''');
+              debugPrint('Version 18 migration completed');
+            } catch (e) {
+              debugPrint('Error migrating to version 18: $e');
+            }
+          }
+          if (oldVersion < 19) {
+            debugPrint('Migrating to version 19: wholesaler_ledger');
+            try {
+              await db.execute(_createWholesalerLedgerTable());
+              await db.execute('''
+                CREATE INDEX IF NOT EXISTS idx_wholesaler_ledger_wholesaler
+                ON ${WholesalerLedgerTable.name}(${WholesalerLedgerTable.wholesalerId})
+              ''');
+              debugPrint('Version 19 migration completed');
+            } catch (e) {
+              debugPrint('Error migrating to version 19: $e');
+            }
+          }
+          if (oldVersion < 20) {
+            debugPrint(
+              'Migrating to version 20: backfill wholesaler_ledger from purchases',
+            );
+            try {
+              await _ensureWholesalerLedgerSchema(db);
+              debugPrint('Version 20 migration completed');
+            } catch (e) {
+              debugPrint('Error migrating to version 20: $e');
+            }
+          }
+          if (oldVersion < 21) {
+            debugPrint('Migrating to version 21: wholesaler_payments');
+            try {
+              await _ensureWholesalerPaymentsSchema(db);
+              debugPrint('Version 21 migration completed');
+            } catch (e) {
+              debugPrint('Error migrating to version 21: $e');
+            }
+          }
+          if (oldVersion < 22) {
+            debugPrint(
+              'Migrating to version 22: purchase + wholesaler ledger description',
+            );
+            try {
+              await db.execute(
+                'ALTER TABLE ${PurchaseInvoicesTable.name} '
+                'ADD COLUMN ${PurchaseInvoicesTable.description} TEXT',
+              );
+            } catch (e) {
+              debugPrint(
+                'Column ${PurchaseInvoicesTable.description} might already exist: $e',
+              );
+            }
+            try {
+              await db.execute(
+                'ALTER TABLE ${WholesalerLedgerTable.name} '
+                'ADD COLUMN ${WholesalerLedgerTable.description} TEXT',
+              );
+            } catch (e) {
+              debugPrint(
+                'Column ${WholesalerLedgerTable.description} might already exist: $e',
+              );
+            }
+            debugPrint('Version 22 migration completed');
+          }
         },
       ),
     );
+  }
+
+  /// Creates wholesaler_ledger if missing and backfills rows from purchase_invoices.
+  Future<void> _ensureWholesalerLedgerSchema(Database db) async {
+    await db.execute(_createWholesalerLedgerTable());
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_wholesaler_ledger_wholesaler
+      ON ${WholesalerLedgerTable.name}(${WholesalerLedgerTable.wholesalerId})
+    ''');
+    await _backfillWholesalerLedgerFromPurchases(db);
+  }
+
+  Future<void> _ensureWholesalerPaymentsSchema(Database db) async {
+    await db.execute(_createWholesalerPaymentsTable());
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_wholesaler_payments_wholesaler
+      ON ${WholesalerPaymentsTable.name}(${WholesalerPaymentsTable.wholesalerId})
+    ''');
+    await _backfillWholesalerPaymentsFromPurchases(db);
+  }
+
+  Future<void> _backfillWholesalerPaymentsFromPurchases(Database db) async {
+    final missing = await db.rawQuery(
+      '''
+      SELECT pi.*
+      FROM ${PurchaseInvoicesTable.name} pi
+      WHERE pi.${PurchaseInvoicesTable.amountPaid} > 0
+        AND NOT EXISTS (
+          SELECT 1 FROM ${WholesalerPaymentsTable.name} wp
+          WHERE wp.${WholesalerPaymentsTable.referenceNo} = pi.${PurchaseInvoicesTable.invoiceNumber}
+            AND wp.${WholesalerPaymentsTable.paymentSource} = ?
+        )
+      ORDER BY pi.${PurchaseInvoicesTable.dateTime} ASC
+    ''',
+      [WholesalerPaymentSource.cashPurchaseOutlay],
+    );
+
+    if (missing.isEmpty) return;
+    debugPrint('Backfilling ${missing.length} cash purchase outlay payment(s)');
+
+    for (final row in missing) {
+      final paid =
+          (row[PurchaseInvoicesTable.amountPaid] as num?)?.toDouble() ?? 0;
+      if (paid <= 0) continue;
+      await db.insert(WholesalerPaymentsTable.name, {
+        WholesalerPaymentsTable.wholesalerId:
+            row[PurchaseInvoicesTable.wholesalerId],
+        WholesalerPaymentsTable.amount: paid,
+        WholesalerPaymentsTable.paymentMethod: 'Cash',
+        WholesalerPaymentsTable.paymentSource:
+            WholesalerPaymentSource.cashPurchaseOutlay,
+        WholesalerPaymentsTable.referenceNo:
+            row[PurchaseInvoicesTable.invoiceNumber],
+        WholesalerPaymentsTable.date:
+            row[PurchaseInvoicesTable.dateTime] as String? ??
+            DateTime.now().toIso8601String(),
+        WholesalerPaymentsTable.notes:
+            'Auto-backfill from ${row[PurchaseInvoicesTable.paymentType]} purchase',
+      });
+    }
+  }
+
+  Future<void> _backfillWholesalerLedgerFromPurchases(Database db) async {
+    final missing = await db.rawQuery(
+      '''
+      SELECT pi.*
+      FROM ${PurchaseInvoicesTable.name} pi
+      WHERE NOT EXISTS (
+        SELECT 1 FROM ${WholesalerLedgerTable.name} wl
+        WHERE wl.${WholesalerLedgerTable.referenceId} = pi.${PurchaseInvoicesTable.invoiceNumber}
+          AND wl.${WholesalerLedgerTable.transactionType} = ?
+      )
+      ORDER BY pi.${PurchaseInvoicesTable.dateTime} ASC,
+               pi.${PurchaseInvoicesTable.invoiceNumber} ASC
+    ''',
+      [WholesalerLedgerTxnType.purchase],
+    );
+
+    if (missing.isEmpty) return;
+
+    debugPrint(
+      'Backfilling ${missing.length} purchase(s) into wholesaler_ledger',
+    );
+
+    for (final row in missing) {
+      final wholesalerId = row[PurchaseInvoicesTable.wholesalerId] as int;
+      final invoiceNumber = row[PurchaseInvoicesTable.invoiceNumber] as String;
+      final dateRaw =
+          row[PurchaseInvoicesTable.dateTime] as String? ??
+          DateTime.now().toIso8601String();
+      final grandTotal =
+          (row[PurchaseInvoicesTable.grandTotal] as num?)?.toDouble() ?? 0;
+      final paid =
+          (row[PurchaseInvoicesTable.amountPaid] as num?)?.toDouble() ?? 0;
+      final outstanding =
+          (row[PurchaseInvoicesTable.outstanding] as num?)?.toDouble() ??
+          (grandTotal - paid);
+
+      // Reconstruct running balance snapshot from current vendor balance
+      // (best-effort for historical rows).
+      final balRows = await db.query(
+        WholesalerTable.name,
+        columns: [WholesalerTable.balance],
+        where: '${WholesalerTable.id} = ?',
+        whereArgs: [wholesalerId],
+        limit: 1,
+      );
+      final currentBal = balRows.isEmpty
+          ? outstanding
+          : (balRows.first[WholesalerTable.balance] as num?)?.toDouble() ??
+                outstanding;
+
+      await db.insert(WholesalerLedgerTable.name, {
+        WholesalerLedgerTable.wholesalerId: wholesalerId,
+        WholesalerLedgerTable.transactionType: WholesalerLedgerTxnType.purchase,
+        WholesalerLedgerTable.referenceId: invoiceNumber,
+        WholesalerLedgerTable.date: dateRaw,
+        WholesalerLedgerTable.debit: grandTotal > 0 ? grandTotal : outstanding,
+        WholesalerLedgerTable.credit: 0,
+        WholesalerLedgerTable.runningBalance: currentBal,
+      });
+
+      if (paid > 0) {
+        await db.insert(WholesalerLedgerTable.name, {
+          WholesalerLedgerTable.wholesalerId: wholesalerId,
+          WholesalerLedgerTable.transactionType:
+              WholesalerLedgerTxnType.payment,
+          WholesalerLedgerTable.referenceId: '$invoiceNumber-PAID',
+          WholesalerLedgerTable.date: dateRaw,
+          WholesalerLedgerTable.debit: 0,
+          WholesalerLedgerTable.credit: paid,
+          WholesalerLedgerTable.runningBalance: currentBal,
+        });
+      }
+    }
   }
 
   Future<void> _ensureDatabaseFactory() async {
@@ -367,8 +592,7 @@ class DatabaseHelper with ChangeNotifier {
     try {
       final rows = await db.query(
         LedgerTransactionTable.name,
-        where:
-            'UPPER(${LedgerTransactionTable.category}) IN (?, ?)',
+        where: 'UPPER(${LedgerTransactionTable.category}) IN (?, ?)',
         whereArgs: const ['ADVANCE_PAYMENT', 'ADVANCE'],
       );
 
@@ -380,8 +604,8 @@ class DatabaseHelper with ChangeNotifier {
         final correctSeason = SeasonUtils.getSeasonString(
           _parseDateTime(dateRaw),
         );
-        final current =
-            (row[LedgerTransactionTable.season] as String? ?? '').trim();
+        final current = (row[LedgerTransactionTable.season] as String? ?? '')
+            .trim();
         if (current == correctSeason) continue;
 
         await db.update(
@@ -447,7 +671,9 @@ class DatabaseHelper with ChangeNotifier {
           invoiceNumber: invoiceNumber,
           zamindarName: zamindarName,
           kisaanName: kisaanName,
-          description: description.isEmpty ? 'Sale $invoiceNumber' : description,
+          description: description.isEmpty
+              ? 'Sale $invoiceNumber'
+              : description,
           totalPayable: totalPayable,
           paidAmount: paidAmount,
           paymentMethod: paymentMethod,
@@ -533,8 +759,9 @@ class DatabaseHelper with ChangeNotifier {
         LedgerTransactionTable.invoiceNumber: invoiceNumber,
         LedgerTransactionTable.paymentId: cashPaymentId,
         LedgerTransactionTable.type: LedgerTransactionType.credit,
-        LedgerTransactionTable.category:
-            paymentMethod == 'Cash' ? 'CASH_PAYMENT' : 'PAYMENT',
+        LedgerTransactionTable.category: paymentMethod == 'Cash'
+            ? 'CASH_PAYMENT'
+            : 'PAYMENT',
         LedgerTransactionTable.description: paymentMethod == 'Cash'
             ? 'Cash payment for sale'
             : 'Payment for $invoiceNumber',
@@ -560,8 +787,7 @@ class DatabaseHelper with ChangeNotifier {
     );
   }
 
-  String _createPaymentSequencesTable() =>
-      '''
+  String _createPaymentSequencesTable() => '''
     CREATE TABLE IF NOT EXISTS payment_sequences (
       sequence_key TEXT PRIMARY KEY,
       last_value INTEGER NOT NULL DEFAULT 1000
@@ -588,11 +814,10 @@ class DatabaseHelper with ChangeNotifier {
       }
 
       final key = isAdvance ? 'advance' : 'standard';
-      await db.insert(
-        'payment_sequences',
-        {'sequence_key': key, 'last_value': maxSeq},
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
+      await db.insert('payment_sequences', {
+        'sequence_key': key,
+        'last_value': maxSeq,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
     }
   }
 
@@ -683,6 +908,26 @@ class DatabaseHelper with ChangeNotifier {
     await db.execute('''
       CREATE INDEX IF NOT EXISTS idx_ledger_kisaan_id
       ON ledger_transactions(kisaan_id)
+    ''');
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_purchase_items_invoice
+      ON ${PurchaseItemsTable.name}(${PurchaseItemsTable.invoiceNumber})
+    ''');
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_wholesalers_name
+      ON ${WholesalerTable.name}(${WholesalerTable.nameColumn})
+    ''');
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_wholesaler_ledger_wholesaler
+      ON ${WholesalerLedgerTable.name}(${WholesalerLedgerTable.wholesalerId})
+    ''');
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_wholesaler_payments_wholesaler
+      ON ${WholesalerPaymentsTable.name}(${WholesalerPaymentsTable.wholesalerId})
     ''');
   }
 
@@ -813,6 +1058,88 @@ class DatabaseHelper with ChangeNotifier {
     )
   ''';
 
+  String _createWholesalersTable() =>
+      '''
+    CREATE TABLE IF NOT EXISTS ${WholesalerTable.name} (
+      ${WholesalerTable.id} INTEGER PRIMARY KEY AUTOINCREMENT,
+      ${WholesalerTable.nameColumn} TEXT NOT NULL,
+      ${WholesalerTable.city} TEXT NOT NULL,
+      ${WholesalerTable.phone} TEXT NOT NULL,
+      ${WholesalerTable.balance} REAL NOT NULL DEFAULT 0
+    )
+  ''';
+
+  String _createPurchaseInvoicesTable() =>
+      '''
+    CREATE TABLE IF NOT EXISTS ${PurchaseInvoicesTable.name} (
+      ${PurchaseInvoicesTable.invoiceNumber} TEXT PRIMARY KEY,
+      ${PurchaseInvoicesTable.wholesalerId} INTEGER NOT NULL,
+      ${PurchaseInvoicesTable.wholesalerName} TEXT NOT NULL,
+      ${PurchaseInvoicesTable.dateTime} TEXT NOT NULL,
+      ${PurchaseInvoicesTable.subtotal} REAL NOT NULL,
+      ${PurchaseInvoicesTable.transportCharges} REAL NOT NULL DEFAULT 0,
+      ${PurchaseInvoicesTable.grandTotal} REAL NOT NULL,
+      ${PurchaseInvoicesTable.paymentType} TEXT NOT NULL,
+      ${PurchaseInvoicesTable.amountPaid} REAL NOT NULL DEFAULT 0,
+      ${PurchaseInvoicesTable.outstanding} REAL NOT NULL DEFAULT 0,
+      ${PurchaseInvoicesTable.description} TEXT,
+      FOREIGN KEY (${PurchaseInvoicesTable.wholesalerId})
+        REFERENCES ${WholesalerTable.name}(${WholesalerTable.id})
+    )
+  ''';
+
+  String _createPurchaseItemsTable() =>
+      '''
+    CREATE TABLE IF NOT EXISTS ${PurchaseItemsTable.name} (
+      ${PurchaseItemsTable.id} INTEGER PRIMARY KEY AUTOINCREMENT,
+      ${PurchaseItemsTable.invoiceNumber} TEXT NOT NULL,
+      ${PurchaseItemsTable.productId} INTEGER,
+      ${PurchaseItemsTable.productName} TEXT NOT NULL,
+      ${PurchaseItemsTable.quantity} INTEGER NOT NULL,
+      ${PurchaseItemsTable.purchaseRate} REAL NOT NULL,
+      ${PurchaseItemsTable.expiryDate} TEXT,
+      ${PurchaseItemsTable.lineTotal} REAL NOT NULL,
+      FOREIGN KEY (${PurchaseItemsTable.invoiceNumber})
+        REFERENCES ${PurchaseInvoicesTable.name}(${PurchaseInvoicesTable.invoiceNumber})
+        ON DELETE CASCADE
+    )
+  ''';
+
+  String _createWholesalerLedgerTable() =>
+      '''
+    CREATE TABLE IF NOT EXISTS ${WholesalerLedgerTable.name} (
+      ${WholesalerLedgerTable.id} INTEGER PRIMARY KEY AUTOINCREMENT,
+      ${WholesalerLedgerTable.wholesalerId} INTEGER NOT NULL,
+      ${WholesalerLedgerTable.transactionType} TEXT NOT NULL,
+      ${WholesalerLedgerTable.referenceId} TEXT,
+      ${WholesalerLedgerTable.date} TEXT NOT NULL,
+      ${WholesalerLedgerTable.debit} REAL NOT NULL DEFAULT 0,
+      ${WholesalerLedgerTable.credit} REAL NOT NULL DEFAULT 0,
+      ${WholesalerLedgerTable.runningBalance} REAL NOT NULL DEFAULT 0,
+      ${WholesalerLedgerTable.description} TEXT,
+      FOREIGN KEY (${WholesalerLedgerTable.wholesalerId})
+        REFERENCES ${WholesalerTable.name}(${WholesalerTable.id})
+        ON DELETE CASCADE
+    )
+  ''';
+
+  String _createWholesalerPaymentsTable() =>
+      '''
+    CREATE TABLE IF NOT EXISTS ${WholesalerPaymentsTable.name} (
+      ${WholesalerPaymentsTable.id} INTEGER PRIMARY KEY AUTOINCREMENT,
+      ${WholesalerPaymentsTable.wholesalerId} INTEGER NOT NULL,
+      ${WholesalerPaymentsTable.amount} REAL NOT NULL,
+      ${WholesalerPaymentsTable.paymentMethod} TEXT NOT NULL,
+      ${WholesalerPaymentsTable.paymentSource} TEXT NOT NULL,
+      ${WholesalerPaymentsTable.referenceNo} TEXT,
+      ${WholesalerPaymentsTable.date} TEXT NOT NULL,
+      ${WholesalerPaymentsTable.notes} TEXT,
+      FOREIGN KEY (${WholesalerPaymentsTable.wholesalerId})
+        REFERENCES ${WholesalerTable.name}(${WholesalerTable.id})
+        ON DELETE CASCADE
+    )
+  ''';
+
   Future<void> _backfillStockMovementsFromSales(Database db) async {
     final existing = await db.rawQuery(
       'SELECT COUNT(*) AS c FROM ${StockMovementTable.name}',
@@ -907,7 +1234,9 @@ class DatabaseHelper with ChangeNotifier {
     ''');
 
     await db.execute('DROP TABLE ${PaymentsTable.name}');
-    await db.execute('ALTER TABLE payments_new RENAME TO ${PaymentsTable.name}');
+    await db.execute(
+      'ALTER TABLE payments_new RENAME TO ${PaymentsTable.name}',
+    );
     await db.execute('''
       CREATE INDEX IF NOT EXISTS idx_payments_invoice
       ON ${PaymentsTable.name}(${PaymentsTable.invoiceNumber})
@@ -980,11 +1309,7 @@ class DatabaseHelper with ChangeNotifier {
     return seq >= 1001 && seq <= 99999;
   }
 
-  Future<void> _renamePaymentId(
-    Database db,
-    String oldId,
-    String newId,
-  ) async {
+  Future<void> _renamePaymentId(Database db, String oldId, String newId) async {
     if (oldId == newId) return;
     await db.update(
       LedgerTransactionTable.name,
@@ -1018,8 +1343,7 @@ class DatabaseHelper with ChangeNotifier {
     final prefix = isAdvance ? 'PAY-ADV-' : 'PAY-';
     final rows = await db.query(
       PaymentsTable.name,
-      orderBy:
-          '${PaymentsTable.dateTime} ASC, ${PaymentsTable.paymentId} ASC',
+      orderBy: '${PaymentsTable.dateTime} ASC, ${PaymentsTable.paymentId} ASC',
     );
 
     final groupRows = rows.where((row) {
@@ -1072,11 +1396,10 @@ class DatabaseHelper with ChangeNotifier {
     final key = isAdvance ? 'advance' : 'standard';
     final prefix = isAdvance ? 'PAY-ADV-' : 'PAY-';
 
-    await executor.insert(
-      'payment_sequences',
-      {'sequence_key': key, 'last_value': 1000},
-      conflictAlgorithm: ConflictAlgorithm.ignore,
-    );
+    await executor.insert('payment_sequences', {
+      'sequence_key': key,
+      'last_value': 1000,
+    }, conflictAlgorithm: ConflictAlgorithm.ignore);
 
     await executor.rawUpdate(
       'UPDATE payment_sequences SET last_value = last_value + 1 WHERE sequence_key = ?',
@@ -1483,7 +1806,9 @@ class DatabaseHelper with ChangeNotifier {
     await _insertStockMovement(
       db,
       productId: productId,
-      movementType: delta > 0 ? StockMovementType.stockIn : StockMovementType.stockOut,
+      movementType: delta > 0
+          ? StockMovementType.stockIn
+          : StockMovementType.stockOut,
       quantity: delta.abs(),
       partyLabel: 'Stock Adjusted',
       referenceType: StockMovementRef.adjust,
@@ -1513,7 +1838,8 @@ class DatabaseHelper with ChangeNotifier {
       StockMovementTable.name,
       where: '${StockMovementTable.productId} = ?',
       whereArgs: [productId],
-      orderBy: '${StockMovementTable.dateTime} DESC, ${StockMovementTable.id} DESC',
+      orderBy:
+          '${StockMovementTable.dateTime} DESC, ${StockMovementTable.id} DESC',
     );
 
     return rows.map((row) {
@@ -1522,7 +1848,8 @@ class DatabaseHelper with ChangeNotifier {
       return ProductHistoryEntry(
         id: row[StockMovementTable.id] as int?,
         productId: productId,
-        dateTime: DateTime.tryParse(
+        dateTime:
+            DateTime.tryParse(
               row[StockMovementTable.dateTime] as String? ?? '',
             ) ??
             DateTime.now(),
@@ -1610,14 +1937,17 @@ class DatabaseHelper with ChangeNotifier {
   }) async {
     final db = await database;
     final limitClause = limit != null ? ' LIMIT $limit' : '';
-    return db.rawQuery('''
+    return db.rawQuery(
+      '''
       SELECT lt.*, k.${KisaanTable.nameColumn} AS kisaan_name
       FROM ${LedgerTransactionTable.name} lt
       LEFT JOIN ${KisaanTable.name} k
         ON lt.${LedgerTransactionTable.kisaanId} = k.${KisaanTable.id}
       WHERE lt.${LedgerTransactionTable.zamindarId} = ?
       ORDER BY lt.${LedgerTransactionTable.dateTime} DESC$limitClause
-    ''', [zamindarId]);
+    ''',
+      [zamindarId],
+    );
   }
 
   /// Seasons that actually appear on this zamindar's ledger rows.
@@ -1673,17 +2003,14 @@ class DatabaseHelper with ChangeNotifier {
 
     final db = await database;
     final placeholders = List.filled(unique.length, '?').join(',');
-    final rows = await db.rawQuery(
-      '''
+    final rows = await db.rawQuery('''
       SELECT ${SaleItemsTable.invoiceNumber},
              ${SaleItemsTable.productName},
              ${SaleItemsTable.quantity}
       FROM ${SaleItemsTable.name}
       WHERE ${SaleItemsTable.invoiceNumber} IN ($placeholders)
       ORDER BY ${SaleItemsTable.id} ASC
-      ''',
-      unique,
-    );
+      ''', unique);
 
     final Map<String, List<String>> grouped = {};
     for (final row in rows) {
@@ -1767,7 +2094,20 @@ class DatabaseHelper with ChangeNotifier {
   // Business helper methods
   // -----------------------------
 
-  /// Calculates total land allocated to all Kisaans under a Zamindar (in Acres).
+  /// Kisaan land is stored as Acre-equivalent (1 Athaas = 1/4 Acre).
+  static double landAcresToUnit(double landAcres, String unit) {
+    if (unit == 'Athaas') return landAcres / 4.0;
+    return landAcres;
+  }
+
+  /// Converts a value entered in [unit] to Acre-equivalent for storage.
+  static double landUnitToAcres(double value, String unit) {
+    if (unit == 'Athaas') return value * 4.0;
+    return value;
+  }
+
+  /// Calculates total land allocated to all Kisaans under a Zamindar.
+  /// Returns the sum in Acre-equivalent (internal storage unit).
   /// Excludes a specific kisaan ID if provided (useful for edit validation).
   Future<double> getTotalAllocatedLandForZamindar(
     int zamindarId, {
@@ -1790,6 +2130,38 @@ class DatabaseHelper with ChangeNotifier {
     final totalLand = result.first['total_land'];
     if (totalLand is num) return totalLand.toDouble();
     return 0.0;
+  }
+
+  /// Land allocation totals expressed in the Zamindar's preferred [land_unit].
+  Future<ZamindarLandAllocationSummary> getZamindarLandAllocationSummary(
+    int zamindarId, {
+    int? excludeKisaanId,
+  }) async {
+    final zamindar = await getZamindar(zamindarId);
+    if (zamindar == null) {
+      return const ZamindarLandAllocationSummary(
+        totalLand: 0,
+        allocatedLand: 0,
+        remainingLand: 0,
+        landUnit: 'Acre',
+      );
+    }
+
+    final activeUnit = zamindar.landUnit;
+    final allocatedInAcres = await getTotalAllocatedLandForZamindar(
+      zamindarId,
+      excludeKisaanId: excludeKisaanId,
+    );
+    final allocatedLand = landAcresToUnit(allocatedInAcres, activeUnit);
+    final totalLand = zamindar.landArea;
+    final remainingLand = totalLand - allocatedLand;
+
+    return ZamindarLandAllocationSummary(
+      totalLand: totalLand,
+      allocatedLand: allocatedLand,
+      remainingLand: remainingLand < 0 ? 0 : remainingLand,
+      landUnit: activeUnit,
+    );
   }
 
   /// Calculates total debits, total credits, outstanding balance,
@@ -2031,6 +2403,601 @@ class DatabaseHelper with ChangeNotifier {
     return 'INV-1000';
   }
 
+  // ---------------------------------------------------------------------------
+  // Wholesalers
+  // ---------------------------------------------------------------------------
+
+  Future<List<DbWholesaler>> getAllWholesalers() async {
+    final db = await database;
+    final maps = await db.query(
+      WholesalerTable.name,
+      orderBy: '${WholesalerTable.nameColumn} COLLATE NOCASE ASC',
+    );
+    return maps.map(DbWholesaler.fromMap).toList();
+  }
+
+  Future<DbWholesaler?> getWholesaler(int id) async {
+    final db = await database;
+    final maps = await db.query(
+      WholesalerTable.name,
+      where: '${WholesalerTable.id} = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (maps.isEmpty) return null;
+    return DbWholesaler.fromMap(maps.first);
+  }
+
+  Future<int> insertWholesaler(DbWholesaler wholesaler) async {
+    final db = await database;
+    late final int id;
+    await db.transaction((txn) async {
+      id = await txn.insert(WholesalerTable.name, wholesaler.toMap());
+      if (wholesaler.balance > 0) {
+        await txn.insert(WholesalerLedgerTable.name, {
+          WholesalerLedgerTable.wholesalerId: id,
+          WholesalerLedgerTable.transactionType:
+              WholesalerLedgerTxnType.purchase,
+          WholesalerLedgerTable.referenceId: 'OPENING',
+          WholesalerLedgerTable.date: _formatDateTime(DateTime.now()),
+          WholesalerLedgerTable.debit: wholesaler.balance,
+          WholesalerLedgerTable.credit: 0,
+          WholesalerLedgerTable.runningBalance: wholesaler.balance,
+        });
+      }
+    });
+    notifyListeners();
+    return id;
+  }
+
+  Future<int> updateWholesaler(DbWholesaler wholesaler) async {
+    if (wholesaler.id == null) {
+      throw ArgumentError('Wholesaler id is required for update');
+    }
+    final db = await database;
+    final result = await db.update(
+      WholesalerTable.name,
+      wholesaler.toMap(),
+      where: '${WholesalerTable.id} = ?',
+      whereArgs: [wholesaler.id],
+    );
+    notifyListeners();
+    return result;
+  }
+
+  /// Khata statement rows for a wholesaler, newest first.
+  Future<List<Map<String, dynamic>>> fetchWholesalerLedger(
+    int wholesalerId,
+  ) async {
+    final db = await database;
+    await _ensureWholesalerLedgerSchema(db);
+    final rows = await db.rawQuery(
+      'SELECT * FROM ${WholesalerLedgerTable.name} '
+      'WHERE ${WholesalerLedgerTable.wholesalerId} = ? '
+      'ORDER BY ${WholesalerLedgerTable.date} DESC, '
+      '${WholesalerLedgerTable.id} DESC',
+      [wholesalerId],
+    );
+    debugPrint('fetchWholesalerLedger($wholesalerId) -> ${rows.length} row(s)');
+    return rows;
+  }
+
+  Future<void> _insertWholesalerLedgerEntry(
+    DatabaseExecutor txn, {
+    required int wholesalerId,
+    required String transactionType,
+    required String? referenceId,
+    required DateTime date,
+    required double debit,
+    required double credit,
+    required double runningBalance,
+    String? description,
+  }) async {
+    await txn.insert(WholesalerLedgerTable.name, {
+      WholesalerLedgerTable.wholesalerId: wholesalerId,
+      WholesalerLedgerTable.transactionType: transactionType,
+      WholesalerLedgerTable.referenceId: referenceId,
+      WholesalerLedgerTable.date: _formatDateTime(date),
+      WholesalerLedgerTable.debit: debit,
+      WholesalerLedgerTable.credit: credit,
+      WholesalerLedgerTable.runningBalance: runningBalance,
+      if (description != null && description.trim().isNotEmpty)
+        WholesalerLedgerTable.description: description.trim(),
+    });
+  }
+
+  Future<void> _insertWholesalerPaymentRow(
+    DatabaseExecutor txn, {
+    required int wholesalerId,
+    required double amount,
+    required String paymentMethod,
+    required String paymentSource,
+    required String? referenceNo,
+    required DateTime date,
+    String notes = '',
+  }) async {
+    await txn.insert(WholesalerPaymentsTable.name, {
+      WholesalerPaymentsTable.wholesalerId: wholesalerId,
+      WholesalerPaymentsTable.amount: amount,
+      WholesalerPaymentsTable.paymentMethod: paymentMethod,
+      WholesalerPaymentsTable.paymentSource: paymentSource,
+      WholesalerPaymentsTable.referenceNo: referenceNo,
+      WholesalerPaymentsTable.date: _formatDateTime(date),
+      WholesalerPaymentsTable.notes: notes.isEmpty ? null : notes,
+    });
+  }
+
+  /// Bulk purchase invoices for a wholesaler, newest first.
+  Future<List<Map<String, dynamic>>> fetchWholesalerPurchases(
+    int wholesalerId,
+  ) async {
+    final db = await database;
+    return db.rawQuery(
+      'SELECT * FROM ${PurchaseInvoicesTable.name} '
+      'WHERE ${PurchaseInvoicesTable.wholesalerId} = ? '
+      'ORDER BY ${PurchaseInvoicesTable.dateTime} DESC, '
+      '${PurchaseInvoicesTable.invoiceNumber} DESC',
+      [wholesalerId],
+    );
+  }
+
+  /// Line items for a single purchase invoice.
+  Future<List<Map<String, dynamic>>> fetchPurchaseItems(
+    String invoiceNumber,
+  ) async {
+    final db = await database;
+    return db.query(
+      PurchaseItemsTable.name,
+      where: '${PurchaseItemsTable.invoiceNumber} = ?',
+      whereArgs: [invoiceNumber],
+      orderBy: '${PurchaseItemsTable.id} ASC',
+    );
+  }
+
+  /// All purchase line items for a wholesaler, grouped by invoice number.
+  Future<Map<String, List<Map<String, dynamic>>>>
+  fetchWholesalerPurchaseItemsGrouped(int wholesalerId) async {
+    final db = await database;
+    final rows = await db.rawQuery(
+      '''
+      SELECT pi_items.*
+      FROM ${PurchaseItemsTable.name} pi_items
+      INNER JOIN ${PurchaseInvoicesTable.name} pi
+        ON pi.${PurchaseInvoicesTable.invoiceNumber}
+         = pi_items.${PurchaseItemsTable.invoiceNumber}
+      WHERE pi.${PurchaseInvoicesTable.wholesalerId} = ?
+      ORDER BY pi_items.${PurchaseItemsTable.id} ASC
+      ''',
+      [wholesalerId],
+    );
+
+    final grouped = <String, List<Map<String, dynamic>>>{};
+    for (final row in rows) {
+      final invoice = row[PurchaseItemsTable.invoiceNumber] as String? ?? '';
+      grouped.putIfAbsent(invoice, () => []).add(row);
+    }
+    return grouped;
+  }
+
+  /// Payment logs for a wholesaler, newest first.
+  ///
+  /// Includes [WholesalerPaymentsTable.itemsSummary]: invoice line items for
+  /// cash purchase outlays, or a fixed label for manual khata payments.
+  Future<List<Map<String, dynamic>>> fetchWholesalerPayments(
+    int wholesalerId,
+  ) async {
+    final db = await database;
+    await _ensureWholesalerPaymentsSchema(db);
+    return db.rawQuery(
+      '''
+      SELECT
+        wp.*,
+        CASE
+          WHEN wp.${WholesalerPaymentsTable.paymentSource} = ?
+            THEN 'N/A (Account Clearance)'
+          WHEN wp.${WholesalerPaymentsTable.paymentSource} = ?
+            THEN (
+              SELECT GROUP_CONCAT(
+                item.${PurchaseItemsTable.productName}
+                  || ' x'
+                  || CAST(item.${PurchaseItemsTable.quantity} AS INTEGER),
+                ', '
+              )
+              FROM ${PurchaseItemsTable.name} item
+              WHERE item.${PurchaseItemsTable.invoiceNumber}
+                  = wp.${WholesalerPaymentsTable.referenceNo}
+            )
+          ELSE NULL
+        END AS ${WholesalerPaymentsTable.itemsSummary}
+      FROM ${WholesalerPaymentsTable.name} wp
+      WHERE wp.${WholesalerPaymentsTable.wholesalerId} = ?
+      ORDER BY wp.${WholesalerPaymentsTable.date} DESC,
+               wp.${WholesalerPaymentsTable.id} DESC
+      ''',
+      [
+        WholesalerPaymentSource.manualKhataPayment,
+        WholesalerPaymentSource.cashPurchaseOutlay,
+        wholesalerId,
+      ],
+    );
+  }
+
+  /// Global purchase ledger matrix with product summary aggregation.
+  ///
+  /// Optional [search] matches wholesaler name or invoice number.
+  /// Optional [seasonStart]/[seasonEnd] bound `date_time` (ISO) inclusively.
+  Future<List<Map<String, dynamic>>> fetchPurchaseLedgerMatrix({
+    String? search,
+    DateTime? seasonStart,
+    DateTime? seasonEnd,
+  }) async {
+    final db = await database;
+    final where = <String>[];
+    final args = <Object?>[];
+
+    final q = search?.trim() ?? '';
+    if (q.isNotEmpty) {
+      where.add(
+        '(COALESCE(w.${WholesalerTable.nameColumn}, pi.${PurchaseInvoicesTable.wholesalerName}) LIKE ? '
+        'OR pi.${PurchaseInvoicesTable.invoiceNumber} LIKE ?)',
+      );
+      args.add('%$q%');
+      args.add('%$q%');
+    }
+
+    if (seasonStart != null && seasonEnd != null) {
+      where.add(
+        'pi.${PurchaseInvoicesTable.dateTime} >= ? '
+        'AND pi.${PurchaseInvoicesTable.dateTime} <= ?',
+      );
+      args.add(_formatDateTime(seasonStart));
+      args.add(_formatDateTime(seasonEnd));
+    }
+
+    final whereSql = where.isEmpty ? '' : 'WHERE ${where.join(' AND ')}';
+
+    return db.rawQuery('''
+      SELECT
+        pi.*,
+        COALESCE(
+          w.${WholesalerTable.nameColumn},
+          pi.${PurchaseInvoicesTable.wholesalerName}
+        ) AS wholesaler_name,
+        (
+          SELECT GROUP_CONCAT(
+            item.${PurchaseItemsTable.productName}
+              || ' x'
+              || CAST(item.${PurchaseItemsTable.quantity} AS INTEGER),
+            ', '
+          )
+          FROM ${PurchaseItemsTable.name} item
+          WHERE item.${PurchaseItemsTable.invoiceNumber}
+              = pi.${PurchaseInvoicesTable.invoiceNumber}
+        ) AS product_summary
+      FROM ${PurchaseInvoicesTable.name} pi
+      LEFT JOIN ${WholesalerTable.name} w
+        ON w.${WholesalerTable.id} = pi.${PurchaseInvoicesTable.wholesalerId}
+      $whereSql
+      ORDER BY pi.${PurchaseInvoicesTable.dateTime} DESC,
+               pi.${PurchaseInvoicesTable.invoiceNumber} DESC
+      ''', args);
+  }
+
+  /// KPI aggregates for the Purchase Ledger dashboard.
+  Future<Map<String, double>> fetchPurchaseLedgerKpis({
+    DateTime? seasonStart,
+    DateTime? seasonEnd,
+  }) async {
+    final db = await database;
+    final where = <String>[];
+    final args = <Object?>[];
+
+    if (seasonStart != null && seasonEnd != null) {
+      where.add(
+        '${PurchaseInvoicesTable.dateTime} >= ? '
+        'AND ${PurchaseInvoicesTable.dateTime} <= ?',
+      );
+      args.add(_formatDateTime(seasonStart));
+      args.add(_formatDateTime(seasonEnd));
+    }
+
+    final whereSql = where.isEmpty ? '' : 'WHERE ${where.join(' AND ')}';
+    final rows = await db.rawQuery('''
+      SELECT
+        COALESCE(SUM(${PurchaseInvoicesTable.grandTotal}), 0) AS total_purchases,
+        COALESCE(SUM(${PurchaseInvoicesTable.amountPaid}), 0) AS paid_cash,
+        COALESCE(SUM(${PurchaseInvoicesTable.outstanding}), 0) AS outstanding_debt
+      FROM ${PurchaseInvoicesTable.name}
+      $whereSql
+      ''', args);
+
+    final row = rows.first;
+    return {
+      'totalPurchases': (row['total_purchases'] as num?)?.toDouble() ?? 0,
+      'paidCash': (row['paid_cash'] as num?)?.toDouble() ?? 0,
+      'outstandingDebt': (row['outstanding_debt'] as num?)?.toDouble() ?? 0,
+    };
+  }
+
+  /// Distinct purchase invoice dates (for season picker enrichment).
+  Future<List<DateTime>> getPurchaseInvoiceDates() async {
+    final db = await database;
+    final rows = await db.query(
+      PurchaseInvoicesTable.name,
+      columns: [PurchaseInvoicesTable.dateTime],
+    );
+    return rows
+        .map((r) {
+          final raw = r[PurchaseInvoicesTable.dateTime] as String?;
+          if (raw == null || raw.isEmpty) return null;
+          return DateTime.tryParse(raw);
+        })
+        .whereType<DateTime>()
+        .toList();
+  }
+
+  /// Records a vendor payment: reduces balance and appends a Payment ledger row.
+  Future<void> recordWholesalerPayment({
+    required int wholesalerId,
+    required double amount,
+    required String method,
+    String remarks = '',
+    DateTime? dateTime,
+  }) async {
+    if (amount <= 0) {
+      throw ArgumentError('Payment amount must be greater than zero');
+    }
+    final when = dateTime ?? DateTime.now();
+    final suffix = method == 'Bank Transfer' ? 'BT' : 'CA';
+    final receiptNo = 'RCPT-$suffix-${900 + Random().nextInt(99)}';
+
+    final db = await database;
+    await _ensureWholesalerPaymentsSchema(db);
+    await db.transaction((txn) async {
+      final rows = await txn.query(
+        WholesalerTable.name,
+        columns: [WholesalerTable.balance],
+        where: '${WholesalerTable.id} = ?',
+        whereArgs: [wholesalerId],
+        limit: 1,
+      );
+      if (rows.isEmpty) {
+        throw StateError('Wholesaler $wholesalerId not found');
+      }
+      final current =
+          (rows.first[WholesalerTable.balance] as num?)?.toDouble() ?? 0;
+      final newBalance = (current - amount).clamp(0.0, double.infinity);
+
+      await txn.rawUpdate(
+        'UPDATE ${WholesalerTable.name} '
+        'SET ${WholesalerTable.balance} = ? '
+        'WHERE ${WholesalerTable.id} = ?',
+        [newBalance, wholesalerId],
+      );
+
+      await _insertWholesalerLedgerEntry(
+        txn,
+        wholesalerId: wholesalerId,
+        transactionType: WholesalerLedgerTxnType.payment,
+        referenceId: receiptNo,
+        date: when,
+        debit: 0,
+        credit: amount,
+        runningBalance: newBalance,
+      );
+
+      await _insertWholesalerPaymentRow(
+        txn,
+        wholesalerId: wholesalerId,
+        amount: amount,
+        paymentMethod: method,
+        paymentSource: WholesalerPaymentSource.manualKhataPayment,
+        referenceNo: receiptNo,
+        date: when,
+        notes: remarks,
+      );
+    });
+
+    notifyListeners();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Purchase invoices
+  // ---------------------------------------------------------------------------
+
+  Future<String> getNextPurchaseInvoiceNumber() async {
+    final db = await database;
+    final maps = await db.query(
+      PurchaseInvoicesTable.name,
+      columns: [PurchaseInvoicesTable.invoiceNumber],
+      orderBy: 'ROWID DESC',
+      limit: 1,
+    );
+
+    if (maps.isEmpty) return 'PI-1000';
+
+    final latest = maps.first[PurchaseInvoicesTable.invoiceNumber] as String;
+    final numMatch = RegExp(r'\d+').stringMatch(latest);
+    if (numMatch != null) {
+      return 'PI-${int.parse(numMatch) + 1}';
+    }
+    return 'PI-1000';
+  }
+
+  /// Atomically saves a purchase invoice:
+  /// 1) insert header  2) insert line items  3) increment stock
+  /// 4) increase wholesaler balance when Udhaar / Partial
+  Future<String> insertPurchaseInvoice({
+    required int wholesalerId,
+    required String wholesalerName,
+    required DateTime dateTime,
+    required List<PurchaseLineItem> items,
+    required double transportCharges,
+    required String paymentType,
+    required double amountPaid,
+    String description = '',
+  }) async {
+    if (items.isEmpty) {
+      throw ArgumentError('Purchase must include at least one line item');
+    }
+
+    final invoiceNumber = await getNextPurchaseInvoiceNumber();
+    final subtotal = items.fold<double>(0, (sum, i) => sum + i.lineTotal);
+    final grandTotal = subtotal + transportCharges;
+
+    double paid = amountPaid;
+    double outstanding;
+
+    switch (paymentType) {
+      case PurchasePaymentType.cash:
+        paid = grandTotal;
+        outstanding = 0;
+      case PurchasePaymentType.udhaar:
+        paid = 0;
+        outstanding = grandTotal;
+      case PurchasePaymentType.partial:
+        if (paid < 0) paid = 0;
+        if (paid > grandTotal) paid = grandTotal;
+        outstanding = grandTotal - paid;
+      default:
+        throw ArgumentError('Unknown payment type: $paymentType');
+    }
+
+    final trimmedDescription = description.trim();
+
+    final db = await database;
+    await _ensureWholesalerPaymentsSchema(db);
+    await db.transaction((txn) async {
+      await txn.insert(PurchaseInvoicesTable.name, {
+        PurchaseInvoicesTable.invoiceNumber: invoiceNumber,
+        PurchaseInvoicesTable.wholesalerId: wholesalerId,
+        PurchaseInvoicesTable.wholesalerName: wholesalerName,
+        PurchaseInvoicesTable.dateTime: _formatDateTime(dateTime),
+        PurchaseInvoicesTable.subtotal: subtotal,
+        PurchaseInvoicesTable.transportCharges: transportCharges,
+        PurchaseInvoicesTable.grandTotal: grandTotal,
+        PurchaseInvoicesTable.paymentType: paymentType,
+        PurchaseInvoicesTable.amountPaid: paid,
+        PurchaseInvoicesTable.outstanding: outstanding,
+        if (trimmedDescription.isNotEmpty)
+          PurchaseInvoicesTable.description: trimmedDescription,
+      });
+
+      for (final item in items) {
+        await txn.insert(PurchaseItemsTable.name, {
+          PurchaseItemsTable.invoiceNumber: invoiceNumber,
+          PurchaseItemsTable.productId: item.productId,
+          PurchaseItemsTable.productName: item.productName,
+          PurchaseItemsTable.quantity: item.quantity,
+          PurchaseItemsTable.purchaseRate: item.purchaseRate,
+          PurchaseItemsTable.expiryDate: item.expiryDate != null
+              ? _formatDateOnly(item.expiryDate!)
+              : null,
+          PurchaseItemsTable.lineTotal: item.lineTotal,
+        });
+
+        if (item.productId == null || item.quantity <= 0) continue;
+
+        final updates = <String, Object?>{
+          ProductTable.costPrice: item.purchaseRate.round(),
+        };
+        if (item.expiryDate != null) {
+          updates[ProductTable.expiryDate] = _formatDateOnly(item.expiryDate!);
+        }
+
+        await txn.rawUpdate(
+          'UPDATE ${ProductTable.name} '
+          'SET ${ProductTable.availableStock} = ${ProductTable.availableStock} + ? '
+          'WHERE ${ProductTable.id} = ?',
+          [item.quantity, item.productId],
+        );
+        await txn.update(
+          ProductTable.name,
+          updates,
+          where: '${ProductTable.id} = ?',
+          whereArgs: [item.productId],
+        );
+
+        await _insertStockMovement(
+          txn,
+          productId: item.productId!,
+          movementType: StockMovementType.stockIn,
+          quantity: item.quantity,
+          partyLabel: wholesalerName,
+          referenceType: StockMovementRef.purchase,
+          referenceId: invoiceNumber,
+          dateTime: dateTime,
+          notes: 'Purchase $invoiceNumber',
+        );
+      }
+
+      if (outstanding > 0 &&
+          (paymentType == PurchasePaymentType.udhaar ||
+              paymentType == PurchasePaymentType.partial)) {
+        await txn.rawUpdate(
+          'UPDATE ${WholesalerTable.name} '
+          'SET ${WholesalerTable.balance} = ${WholesalerTable.balance} + ? '
+          'WHERE ${WholesalerTable.id} = ?',
+          [outstanding, wholesalerId],
+        );
+      }
+
+      // Always write khata rows so purchases appear in Wholesaler ledger.
+      final balRows = await txn.query(
+        WholesalerTable.name,
+        columns: [WholesalerTable.balance],
+        where: '${WholesalerTable.id} = ?',
+        whereArgs: [wholesalerId],
+        limit: 1,
+      );
+      final runningBalance = balRows.isEmpty
+          ? outstanding
+          : (balRows.first[WholesalerTable.balance] as num?)?.toDouble() ??
+                outstanding;
+
+      await _insertWholesalerLedgerEntry(
+        txn,
+        wholesalerId: wholesalerId,
+        transactionType: WholesalerLedgerTxnType.purchase,
+        referenceId: invoiceNumber,
+        date: dateTime,
+        debit: grandTotal,
+        credit: 0,
+        runningBalance: runningBalance,
+        description: trimmedDescription.isNotEmpty
+            ? trimmedDescription
+            : 'Purchase $invoiceNumber',
+      );
+
+      if (paid > 0) {
+        await _insertWholesalerLedgerEntry(
+          txn,
+          wholesalerId: wholesalerId,
+          transactionType: WholesalerLedgerTxnType.payment,
+          referenceId: '$invoiceNumber-PAID',
+          date: dateTime,
+          debit: 0,
+          credit: paid,
+          runningBalance: runningBalance,
+        );
+
+        await _insertWholesalerPaymentRow(
+          txn,
+          wholesalerId: wholesalerId,
+          amount: paid,
+          paymentMethod: 'Cash',
+          paymentSource: WholesalerPaymentSource.cashPurchaseOutlay,
+          referenceNo: invoiceNumber,
+          date: dateTime,
+          notes: '$paymentType purchase outlay',
+        );
+      }
+    });
+
+    notifyListeners();
+    return invoiceNumber;
+  }
+
   /// Fetches complete invoice data for editing via invoice_number
   /// Returns a map with all necessary information to reconstruct the sale
   Future<Map<String, dynamic>?> getInvoiceDataByInvoiceNumber(
@@ -2073,8 +3040,7 @@ class DatabaseHelper with ChangeNotifier {
     final season = sale[SalesTable.season] as String;
 
     // Calculate total collected
-    final totalCollected =
-        _sumPaymentsCollected(initialPaid, paymentsMaps);
+    final totalCollected = _sumPaymentsCollected(initialPaid, paymentsMaps);
 
     // Convert line items to a format suitable for the edit form
     final items = itemsMaps.map((item) {
@@ -2227,10 +3193,9 @@ class DatabaseHelper with ChangeNotifier {
     await db.transaction((txn) async {
       for (final table in tables) {
         await txn.delete(table);
-        await txn.rawDelete(
-          'DELETE FROM sqlite_sequence WHERE name = ?',
-          [table],
-        );
+        await txn.rawDelete('DELETE FROM sqlite_sequence WHERE name = ?', [
+          table,
+        ]);
       }
     });
 
@@ -2294,10 +3259,7 @@ class DatabaseHelper with ChangeNotifier {
       if (isCashSale) {
         final zamindarRows = await txn.query(
           ZamindarTable.name,
-          columns: [
-            ZamindarTable.id,
-            ZamindarTable.advanceBalance,
-          ],
+          columns: [ZamindarTable.id, ZamindarTable.advanceBalance],
           where: '${ZamindarTable.nameColumn} = ?',
           whereArgs: [zamindarName],
           limit: 1,
@@ -2526,8 +3488,7 @@ class DatabaseHelper with ChangeNotifier {
       // Calculate total collected (initial paid + subsequent payments)
       final initialPaid =
           (saleMap[SalesTable.paidAmount] as num?)?.toDouble() ?? 0.0;
-      final totalCollected =
-          _sumPaymentsCollected(initialPaid, paymentsMaps);
+      final totalCollected = _sumPaymentsCollected(initialPaid, paymentsMaps);
 
       salesWithDetails.add({
         'sale': saleMap,
@@ -2551,8 +3512,7 @@ class DatabaseHelper with ChangeNotifier {
   /// - `season` — season display name used for the aggregation
   Future<Map<String, dynamic>> getSeasonalMetrics({String? season}) async {
     final db = await database;
-    final seasonName =
-        season ?? SeasonUtils.getCurrentSeason().displayName;
+    final seasonName = season ?? SeasonUtils.getCurrentSeason().displayName;
 
     final revenueRows = await db.rawQuery(
       '''
@@ -2649,8 +3609,10 @@ class DatabaseHelper with ChangeNotifier {
     }
 
     const dailyTarget = 100000.0;
-    final recoveredCredit = (creditSales - creditOutstandingSeason)
-        .clamp(0.0, double.infinity);
+    final recoveredCredit = (creditSales - creditOutstandingSeason).clamp(
+      0.0,
+      double.infinity,
+    );
     final collectionEfficiency = creditSales > 0
         ? (recoveredCredit / creditSales) * 100.0
         : 0.0;
@@ -2686,8 +3648,7 @@ class DatabaseHelper with ChangeNotifier {
 
     for (final saleData in salesWithDetails) {
       final sale = saleData['sale'] as Map<String, dynamic>;
-      final items =
-          (saleData['items'] as List).cast<Map<String, dynamic>>();
+      final items = (saleData['items'] as List).cast<Map<String, dynamic>>();
       final totalPayable =
           (sale[SalesTable.totalPayable] as num?)?.toDouble() ?? 0.0;
       final totalCollected =
@@ -2741,18 +3702,18 @@ class DatabaseHelper with ChangeNotifier {
       (m, v) => v > m ? v : m,
     );
 
-    final capitalTrapped = capitalByCategory.entries.map((e) {
-      return {
-        'category': e.key,
-        'amount': e.value,
-        'ratio': maxCapital > 0 ? e.value / maxCapital : 0.0,
-      };
-    }).toList()
-      ..sort(
-        (a, b) =>
-            ((b['amount'] as num).toDouble())
-                .compareTo((a['amount'] as num).toDouble()),
-      );
+    final capitalTrapped =
+        capitalByCategory.entries.map((e) {
+          return {
+            'category': e.key,
+            'amount': e.value,
+            'ratio': maxCapital > 0 ? e.value / maxCapital : 0.0,
+          };
+        }).toList()..sort(
+          (a, b) => ((b['amount'] as num).toDouble()).compareTo(
+            (a['amount'] as num).toDouble(),
+          ),
+        );
 
     return {
       'creditAging': {
@@ -2839,8 +3800,8 @@ class DatabaseHelper with ChangeNotifier {
       }
 
       // Also consider payment timestamps for "last active".
-      final payments =
-          (saleData['payments'] as List).cast<Map<String, dynamic>>();
+      final payments = (saleData['payments'] as List)
+          .cast<Map<String, dynamic>>();
       for (final payment in payments) {
         final paidAt = _parseDateTime(
           payment[PaymentsTable.dateTime] as String? ?? '',
@@ -2872,8 +3833,8 @@ class DatabaseHelper with ChangeNotifier {
     }
 
     final termFilter = paymentTerm?.trim() ?? '';
-    final ignoreTermFilter = termFilter.isEmpty ||
-        termFilter.toLowerCase() == 'all terms';
+    final ignoreTermFilter =
+        termFilter.isEmpty || termFilter.toLowerCase() == 'all terms';
 
     final results = <Map<String, dynamic>>[];
 
@@ -2916,8 +3877,8 @@ class DatabaseHelper with ChangeNotifier {
         'village': zamindar.village?.trim().isNotEmpty == true
             ? zamindar.village!.trim()
             : (zamindar.locationGoth?.trim().isNotEmpty == true
-                ? zamindar.locationGoth!.trim()
-                : '—'),
+                  ? zamindar.locationGoth!.trim()
+                  : '—'),
         'outstandingBalance': balance,
         'paymentTerm': displayTerm,
         'paymentTermRaw': rawTerm,
@@ -2936,8 +3897,7 @@ class DatabaseHelper with ChangeNotifier {
       if (results.any((r) => r['name'] == name)) continue;
 
       final searchLower = searchQuery.toLowerCase();
-      if (searchLower.isNotEmpty &&
-          !name.toLowerCase().contains(searchLower)) {
+      if (searchLower.isNotEmpty && !name.toLowerCase().contains(searchLower)) {
         continue;
       }
       if (villageFilter.isNotEmpty &&
@@ -2979,8 +3939,9 @@ class DatabaseHelper with ChangeNotifier {
     }
 
     results.sort(
-      (a, b) => ((b['outstandingBalance'] as num).toDouble())
-          .compareTo((a['outstandingBalance'] as num).toDouble()),
+      (a, b) => ((b['outstandingBalance'] as num).toDouble()).compareTo(
+        (a['outstandingBalance'] as num).toDouble(),
+      ),
     );
     return results;
   }
@@ -2988,15 +3949,13 @@ class DatabaseHelper with ChangeNotifier {
   /// Distinct non-empty villages for Reports filter dropdowns.
   Future<List<String>> getDistinctVillages() async {
     final db = await database;
-    final rows = await db.rawQuery(
-      '''
+    final rows = await db.rawQuery('''
       SELECT DISTINCT TRIM(${ZamindarTable.village}) AS village
       FROM ${ZamindarTable.name}
       WHERE ${ZamindarTable.village} IS NOT NULL
         AND TRIM(${ZamindarTable.village}) != ''
       ORDER BY village COLLATE NOCASE ASC
-      ''',
-    );
+      ''');
     return rows
         .map((r) => (r['village'] as String?)?.trim() ?? '')
         .where((v) => v.isNotEmpty)
@@ -3119,8 +4078,7 @@ class DatabaseHelper with ChangeNotifier {
 
       final initialPaid =
           (saleMap[SalesTable.paidAmount] as num?)?.toDouble() ?? 0.0;
-      final totalCollected =
-          _sumPaymentsCollected(initialPaid, paymentsMaps);
+      final totalCollected = _sumPaymentsCollected(initialPaid, paymentsMaps);
 
       salesWithDetails.add({
         'sale': saleMap,
@@ -3164,8 +4122,8 @@ class DatabaseHelper with ChangeNotifier {
     final db = await database;
     late final String resolvedPaymentId;
     await db.transaction((txn) async {
-      resolvedPaymentId = paymentId ??
-          await generateNextPaymentId(txn, isAdvance: false);
+      resolvedPaymentId =
+          paymentId ?? await generateNextPaymentId(txn, isAdvance: false);
 
       await txn.insert(PaymentsTable.name, {
         PaymentsTable.paymentId: resolvedPaymentId,
@@ -3308,8 +4266,7 @@ class DatabaseHelper with ChangeNotifier {
         if (remainingCash <= 0) break;
 
         final invoiceNumber = inv[SalesTable.invoiceNumber] as String;
-        final totalPayable =
-            (inv[SalesTable.totalPayable] as num).toDouble();
+        final totalPayable = (inv[SalesTable.totalPayable] as num).toDouble();
         final initialPaid = (inv[SalesTable.paidAmount] as num).toDouble();
 
         final paymentsResult = await txn.rawQuery(
@@ -3384,23 +4341,41 @@ class DatabaseHelper with ChangeNotifier {
     );
   }
 
-  /// Gets all payments
+  /// Gets all payments with aggregated sale line items for linked invoices.
   Future<List<Map<String, dynamic>>> getAllPayments({String? season}) async {
     final db = await database;
-    String? whereClause;
-    List<dynamic>? whereArgs;
+    final where = <String>[];
+    final args = <Object?>[];
 
     if (season != null) {
-      whereClause = '${PaymentsTable.season} = ?';
-      whereArgs = [season];
+      where.add('p.${PaymentsTable.season} = ?');
+      args.add(season);
     }
 
-    return await db.query(
-      PaymentsTable.name,
-      where: whereClause,
-      whereArgs: whereArgs,
-      orderBy: '${PaymentsTable.dateTime} DESC',
-    );
+    final whereSql = where.isEmpty ? '' : 'WHERE ${where.join(' AND ')}';
+
+    return db.rawQuery('''
+      SELECT
+        p.*,
+        CASE
+          WHEN p.${PaymentsTable.invoiceNumber} IS NULL
+            THEN 'N/A (Advance Collection)'
+          ELSE (
+            SELECT GROUP_CONCAT(
+              item.${SaleItemsTable.productName}
+                || ' x'
+                || CAST(item.${SaleItemsTable.quantity} AS TEXT),
+              ', '
+            )
+            FROM ${SaleItemsTable.name} item
+            WHERE item.${SaleItemsTable.invoiceNumber}
+                = p.${PaymentsTable.invoiceNumber}
+          )
+        END AS ${PaymentsTable.itemsSummary}
+      FROM ${PaymentsTable.name} p
+      $whereSql
+      ORDER BY p.${PaymentsTable.dateTime} DESC
+      ''', args);
   }
 
   /// Gets payments for a specific invoice
@@ -3546,8 +4521,9 @@ class DatabaseHelper with ChangeNotifier {
           SalesTable.paidAmount: paidAmount,
           SalesTable.paymentMethod: paymentMethod,
           SalesTable.season: season,
-          SalesTable.paymentTerm:
-              paymentMethod == 'Credit' ? paymentTerm : null,
+          SalesTable.paymentTerm: paymentMethod == 'Credit'
+              ? paymentTerm
+              : null,
         },
         where: '${SalesTable.invoiceNumber} = ?',
         whereArgs: [invoiceNumber],
@@ -3652,10 +4628,7 @@ class DatabaseHelper with ChangeNotifier {
     await db.transaction((txn) async {
       final zamindarMaps = await txn.query(
         ZamindarTable.name,
-        columns: [
-          ZamindarTable.advanceBalance,
-          ZamindarTable.nameColumn,
-        ],
+        columns: [ZamindarTable.advanceBalance, ZamindarTable.nameColumn],
         where: '${ZamindarTable.id} = ?',
         whereArgs: [zamindarId],
         limit: 1,
@@ -3667,8 +4640,9 @@ class DatabaseHelper with ChangeNotifier {
 
       final zamindarName =
           zamindarMaps.first[ZamindarTable.nameColumn] as String;
-      final currentBalance =
-          _readIntValue(zamindarMaps.first[ZamindarTable.advanceBalance]);
+      final currentBalance = _readIntValue(
+        zamindarMaps.first[ZamindarTable.advanceBalance],
+      );
       final newBalance = currentBalance + amount;
 
       await txn.update(
@@ -3838,6 +4812,9 @@ class PaymentsTable {
   static const String amountPaid = 'amount_paid';
   static const String paymentMethod = 'payment_method';
   static const String season = 'season';
+
+  /// Query alias: aggregated sale line items or advance-collection label.
+  static const String itemsSummary = 'items_summary';
 }
 
 class StockMovementTable {
@@ -3863,11 +4840,106 @@ class StockMovementRef {
   static const String restock = 'RESTOCK';
   static const String create = 'CREATE';
   static const String adjust = 'ADJUST';
+  static const String purchase = 'PURCHASE';
+}
+
+class WholesalerTable {
+  static const String name = 'wholesalers';
+  static const String id = 'id';
+  static const String nameColumn = 'name';
+  static const String city = 'city';
+  static const String phone = 'phone';
+  static const String balance = 'balance';
+}
+
+class PurchaseInvoicesTable {
+  static const String name = 'purchase_invoices';
+  static const String invoiceNumber = 'invoice_number';
+  static const String wholesalerId = 'wholesaler_id';
+  static const String wholesalerName = 'wholesaler_name';
+  static const String dateTime = 'date_time';
+  static const String subtotal = 'subtotal';
+  static const String transportCharges = 'transport_charges';
+  static const String grandTotal = 'grand_total';
+  static const String paymentType = 'payment_type';
+  static const String amountPaid = 'amount_paid';
+  static const String outstanding = 'outstanding';
+  static const String description = 'description';
+}
+
+class PurchaseItemsTable {
+  static const String name = 'purchase_items';
+  static const String id = 'id';
+  static const String invoiceNumber = 'invoice_number';
+  static const String productId = 'product_id';
+  static const String productName = 'product_name';
+  static const String quantity = 'quantity';
+  static const String purchaseRate = 'purchase_rate';
+  static const String expiryDate = 'expiry_date';
+  static const String lineTotal = 'line_total';
+}
+
+class WholesalerLedgerTable {
+  static const String name = 'wholesaler_ledger';
+  static const String id = 'id';
+  static const String wholesalerId = 'wholesaler_id';
+  static const String transactionType = 'transaction_type';
+  static const String referenceId = 'reference_id';
+  static const String date = 'date';
+  static const String debit = 'debit';
+  static const String credit = 'credit';
+  static const String runningBalance = 'running_balance';
+  static const String description = 'description';
+}
+
+class WholesalerLedgerTxnType {
+  static const String purchase = 'Purchase';
+  static const String payment = 'Payment';
+}
+
+class WholesalerPaymentsTable {
+  static const String name = 'wholesaler_payments';
+  static const String id = 'id';
+  static const String wholesalerId = 'wholesaler_id';
+  static const String amount = 'amount';
+  static const String paymentMethod = 'payment_method';
+  static const String paymentSource = 'payment_source';
+  static const String referenceNo = 'reference_no';
+  static const String date = 'date';
+  static const String notes = 'notes';
+
+  /// Query alias: aggregated purchase line items or clearance label.
+  static const String itemsSummary = 'items_summary';
+}
+
+class WholesalerPaymentSource {
+  static const String cashPurchaseOutlay = 'Cash Purchase Outlay';
+  static const String manualKhataPayment = 'Manual Khata Payment';
+}
+
+class PurchasePaymentType {
+  static const String udhaar = 'Udhaar';
+  static const String cash = 'Cash';
+  static const String partial = 'Partial';
 }
 
 /// =========================
 /// Models
 /// =========================
+
+class ZamindarLandAllocationSummary {
+  final double totalLand;
+  final double allocatedLand;
+  final double remainingLand;
+  final String landUnit;
+
+  const ZamindarLandAllocationSummary({
+    required this.totalLand,
+    required this.allocatedLand,
+    required this.remainingLand,
+    required this.landUnit,
+  });
+}
 
 class Zamindar {
   final int? id;
@@ -3966,7 +5038,10 @@ class Zamindar {
 
   static List<String> _parseCsvList(Object? value) {
     if (value is List) {
-      return value.map((e) => e.toString().trim()).where((e) => e.isNotEmpty).toList();
+      return value
+          .map((e) => e.toString().trim())
+          .where((e) => e.isNotEmpty)
+          .toList();
     }
     final raw = value as String? ?? '';
     if (raw.isEmpty) return [];
@@ -4241,6 +5316,73 @@ class SaleLineItem {
     required this.unitPrice,
     this.discount = 0,
   });
+}
+
+class PurchaseLineItem {
+  final int? productId;
+  final String productName;
+  final int quantity;
+  final double purchaseRate;
+  final DateTime? expiryDate;
+
+  const PurchaseLineItem({
+    this.productId,
+    required this.productName,
+    required this.quantity,
+    required this.purchaseRate,
+    this.expiryDate,
+  });
+
+  double get lineTotal => quantity * purchaseRate;
+}
+
+class DbWholesaler {
+  final int? id;
+  final String name;
+  final String city;
+  final String phone;
+  final double balance;
+
+  const DbWholesaler({
+    this.id,
+    required this.name,
+    required this.city,
+    required this.phone,
+    this.balance = 0,
+  });
+
+  Map<String, Object?> toMap() => {
+    WholesalerTable.nameColumn: name,
+    WholesalerTable.city: city,
+    WholesalerTable.phone: phone,
+    WholesalerTable.balance: balance,
+  };
+
+  factory DbWholesaler.fromMap(Map<String, Object?> map) {
+    return DbWholesaler(
+      id: map[WholesalerTable.id] as int?,
+      name: map[WholesalerTable.nameColumn] as String,
+      city: map[WholesalerTable.city] as String? ?? '',
+      phone: map[WholesalerTable.phone] as String? ?? '',
+      balance: (map[WholesalerTable.balance] as num?)?.toDouble() ?? 0,
+    );
+  }
+
+  DbWholesaler copyWith({
+    int? id,
+    String? name,
+    String? city,
+    String? phone,
+    double? balance,
+  }) {
+    return DbWholesaler(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      city: city ?? this.city,
+      phone: phone ?? this.phone,
+      balance: balance ?? this.balance,
+    );
+  }
 }
 
 class ProductHistoryEntry {

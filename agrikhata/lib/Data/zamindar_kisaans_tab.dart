@@ -25,6 +25,7 @@ class ZamindarKisaansTab extends StatefulWidget {
 class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
   List<Kisaan> _kisaans = [];
   Map<int, double> _kisaanBalances = {};
+  ZamindarLandAllocationSummary? _landSummary;
   bool _isLoading = true;
   String? _loadError;
 
@@ -60,6 +61,8 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
       final kisaans = await DatabaseHelper.instance.getKisaansForZamindar(
         widget.zamindarId,
       );
+      final landSummary = await DatabaseHelper.instance
+          .getZamindarLandAllocationSummary(widget.zamindarId);
 
       final Map<int, double> balances = {};
       for (final kisaan in kisaans) {
@@ -75,6 +78,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
       setState(() {
         _kisaans = kisaans;
         _kisaanBalances = balances;
+        _landSummary = landSummary;
         _isLoading = false;
       });
     } catch (e) {
@@ -110,39 +114,26 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
               editTarget: editTarget,
               onSaved: (kisaan) async {
                 try {
-                  final zamindar = await DatabaseHelper.instance.getZamindar(
-                    widget.zamindarId,
-                  );
-                  if (zamindar == null) {
-                    throw Exception('Zamindar not found');
-                  }
-
-                  final totalAllocated = await DatabaseHelper.instance
-                      .getTotalAllocatedLandForZamindar(
+                  final summary = await DatabaseHelper.instance
+                      .getZamindarLandAllocationSummary(
                         widget.zamindarId,
                         excludeKisaanId: editTarget?.id,
                       );
 
-                  // Kisaan land is stored in Acre-equivalent (Athaas × 4).
-                  // Zamindar.landArea stays in zamindar.landUnit — compare in
-                  // that same unit so Athaas limits are not falsely inflated.
-                  final landUnit = zamindar.landUnit;
-                  double toZamindarUnit(double acreEquivalent) {
-                    if (landUnit == 'Athaas') return acreEquivalent / 4.0;
-                    return acreEquivalent;
-                  }
-
+                  final newAllocationInZamindarUnit =
+                      DatabaseHelper.landAcresToUnit(
+                        kisaan.landAcres,
+                        summary.landUnit,
+                      );
                   final newTotalInZamindarUnit =
-                      toZamindarUnit(totalAllocated) +
-                      toZamindarUnit(kisaan.landAcres);
-                  final zamindarTotalLand = zamindar.landArea;
+                      summary.allocatedLand + newAllocationInZamindarUnit;
 
-                  if (newTotalInZamindarUnit > zamindarTotalLand + 1e-9) {
+                  if (newTotalInZamindarUnit > summary.totalLand + 1e-9) {
                     if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
                           content: Text(
-                            'Cannot allocate land. Total assigned (${newTotalInZamindarUnit.toStringAsFixed(2)} $landUnit) exceeds Zamindar\'s limit (${zamindarTotalLand.toStringAsFixed(2)} $landUnit).',
+                            'Cannot allocate land. Total assigned (${newTotalInZamindarUnit.toStringAsFixed(2)} ${summary.landUnit}) exceeds Zamindar\'s limit (${summary.totalLand.toStringAsFixed(2)} ${summary.landUnit}).',
                           ),
                           backgroundColor: Colors.red,
                           duration: Duration(minutes: 1),
@@ -607,7 +598,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
                             ),
                             const SizedBox(height: 4),
                             Text(
-                              "${kisaan.landAcres.toStringAsFixed(0)} Acres · ${kisaan.currentCrop}",
+                              "${_formatKisaanLand(kisaan)} · ${kisaan.currentCrop}",
                               style: const TextStyle(
                                 fontSize: 14,
                                 fontWeight: FontWeight.w600,
@@ -884,6 +875,59 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
     );
   }
 
+  String _formatKisaanLand(Kisaan kisaan) {
+    final unit = _landSummary?.landUnit ?? 'Acre';
+    final value = DatabaseHelper.landAcresToUnit(kisaan.landAcres, unit);
+    return '${value.toStringAsFixed(value == value.roundToDouble() ? 0 : 2)} $unit';
+  }
+
+  Widget _buildLandAllocationSummary() {
+    final summary = _landSummary;
+    if (summary == null) return const SizedBox.shrink();
+
+    final activeUnit = summary.landUnit;
+    final allocatedText =
+        '${summary.allocatedLand.toStringAsFixed(2)} $activeUnit';
+    final totalText = '${summary.totalLand.toStringAsFixed(2)} $activeUnit';
+    final remainingText =
+        '${summary.remainingLand.toStringAsFixed(2)} $activeUnit';
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F9F4),
+        border: Border(
+          bottom: BorderSide(color: AppColors.border.withValues(alpha: 0.5)),
+        ),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              'Total land allocated: $allocatedText / $totalText',
+              style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
+                color: AppColors.darkGreen,
+              ),
+            ),
+          ),
+          Text(
+            'Remaining: $remainingText',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: summary.remainingLand <= 0
+                  ? const Color(0xFFA32D2D)
+                  : const Color(0xFF27500A),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -968,6 +1012,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
                   ],
                 ),
               ),
+              _buildLandAllocationSummary(),
               ...List.generate(
                 _kisaans.length,
                 (i) =>
@@ -1028,7 +1073,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  "${k.village} · ${k.landAcres.toStringAsFixed(0)} Acres · ${k.currentCrop}",
+                  "${k.village} · ${_formatKisaanLand(k)} · ${k.currentCrop}",
                   style: const TextStyle(
                     fontSize: 10,
                     color: AppColors.textMuted,
@@ -1149,48 +1194,65 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
   final _phoneController = TextEditingController();
   final _landController = TextEditingController();
   String _landUnit = "Acre";
+  ZamindarLandAllocationSummary? _landSummary;
   List<String> _availableCrops = [];
   final Set<String> _selectedCrops = {};
   bool _loadingCrops = true;
+  bool _loadingLandSummary = true;
 
   @override
   void initState() {
     super.initState();
-    if (widget.editTarget != null) {
-      _nameController.text = widget.editTarget!.name;
-      _villageController.text = widget.editTarget!.village;
-      _phoneController.text = widget.editTarget!.phone ?? '';
-      _landController.text = widget.editTarget!.landAcres.toStringAsFixed(2);
-      final existing = widget.editTarget!.currentCrop
-          .split(',')
-          .map((c) => c.trim())
-          .where((c) => c.isNotEmpty);
-      _selectedCrops.addAll(existing);
-    }
-    _loadZamindarCrops();
+    _loadZamindarContext();
   }
 
-  Future<void> _loadZamindarCrops() async {
+  Future<void> _loadZamindarContext() async {
     try {
+      final summary = await DatabaseHelper.instance
+          .getZamindarLandAllocationSummary(
+            widget.zamindarId,
+            excludeKisaanId: widget.editTarget?.id,
+          );
       final zamindar = await DatabaseHelper.instance.getZamindar(
         widget.zamindarId,
       );
       final crops = zamindar?.activeCrops ?? const <String>[];
+
+      if (widget.editTarget != null) {
+        _nameController.text = widget.editTarget!.name;
+        _villageController.text = widget.editTarget!.village;
+        _phoneController.text = widget.editTarget!.phone ?? '';
+        final displayLand = DatabaseHelper.landAcresToUnit(
+          widget.editTarget!.landAcres,
+          summary.landUnit,
+        );
+        _landController.text = displayLand.toStringAsFixed(2);
+        final existing = widget.editTarget!.currentCrop
+            .split(',')
+            .map((c) => c.trim())
+            .where((c) => c.isNotEmpty);
+        _selectedCrops.addAll(existing);
+      }
+
       if (!mounted) return;
       setState(() {
+        _landUnit = summary.landUnit;
+        _landSummary = summary;
         _availableCrops = List<String>.from(crops);
-        // Keep any previously selected crops that are still valid; if editing
-        // with crops outside the current list, still show them as options.
         for (final crop in _selectedCrops) {
           if (!_availableCrops.contains(crop)) {
             _availableCrops.add(crop);
           }
         }
         _loadingCrops = false;
+        _loadingLandSummary = false;
       });
     } catch (_) {
       if (!mounted) return;
-      setState(() => _loadingCrops = false);
+      setState(() {
+        _loadingCrops = false;
+        _loadingLandSummary = false;
+      });
     }
   }
 
@@ -1204,8 +1266,33 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
   }
 
   double _convertToAcres(double value, String unit) {
-    if (unit == "Athaas") return value * 4;
-    return value;
+    return DatabaseHelper.landUnitToAcres(value, unit);
+  }
+
+  String? _validateLandAllocation(String? val) {
+    if (val == null || val.trim().isEmpty) {
+      return 'Land area is required';
+    }
+    final number = double.tryParse(val.trim());
+    if (number == null || number <= 0) {
+      return 'Enter valid land area';
+    }
+
+    final summary = _landSummary;
+    if (summary == null) return null;
+
+    final proposedInZamindarUnit = DatabaseHelper.landAcresToUnit(
+      _convertToAcres(number, _landUnit),
+      summary.landUnit,
+    );
+    if (proposedInZamindarUnit > summary.remainingLand + 1e-9) {
+      return 'Exceeds remaining ${summary.remainingLand.toStringAsFixed(2)} ${summary.landUnit}';
+    }
+    return null;
+  }
+
+  String _otherLandUnitLabel() {
+    return _landUnit == 'Acre' ? 'Athaas' : 'Acre';
   }
 
   String _getConversionText() {
@@ -1214,10 +1301,10 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
 
     if (_landUnit == "Acre") {
       final athaas = inputValue / 4;
-      return "= ${athaas.toStringAsFixed(2)} Athaas";
+      return "= ${athaas.toStringAsFixed(2)} ${_otherLandUnitLabel()}";
     } else {
       final acres = inputValue * 4;
-      return "= ${acres.toStringAsFixed(2)} Acres";
+      return "= ${acres.toStringAsFixed(2)} ${_otherLandUnitLabel()}";
     }
   }
 
@@ -1376,6 +1463,37 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
                       ],
                     ),
                     const SizedBox(height: 10),
+                    if (_loadingLandSummary)
+                      const Padding(
+                        padding: EdgeInsets.only(bottom: 8),
+                        child: SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      )
+                    else if (_landSummary != null) ...[
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF7F9F4),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: AppColors.border.withValues(alpha: 0.4),
+                          ),
+                        ),
+                        child: Text(
+                          'Remaining unallocated land: ${_landSummary!.remainingLand.toStringAsFixed(2)} ${_landSummary!.landUnit}',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.darkGreen,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                    ],
                     Row(
                       children: [
                         Container(
@@ -1391,7 +1509,10 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               InkWell(
-                                onTap: () => setState(() => _landUnit = "Acre"),
+                                onTap: () {
+                                  setState(() => _landUnit = "Acre");
+                                  _formKey.currentState?.validate();
+                                },
                                 child: Container(
                                   padding: const EdgeInsets.symmetric(
                                     horizontal: 8,
@@ -1417,8 +1538,10 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
                               ),
                               const SizedBox(width: 4),
                               InkWell(
-                                onTap: () =>
-                                    setState(() => _landUnit = "Athaas"),
+                                onTap: () {
+                                  setState(() => _landUnit = "Athaas");
+                                  _formKey.currentState?.validate();
+                                },
                                 child: Container(
                                   padding: const EdgeInsets.symmetric(
                                     horizontal: 8,
@@ -1453,16 +1576,7 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
                       controller: _landController,
                       required: true,
                       isNumber: true,
-                      validator: (val) {
-                        if (val == null || val.trim().isEmpty) {
-                          return 'Land area is required';
-                        }
-                        final number = double.tryParse(val.trim());
-                        if (number == null || number <= 0) {
-                          return 'Enter valid land area';
-                        }
-                        return null;
-                      },
+                      validator: _validateLandAllocation,
                     ),
                     if (_getConversionText().isNotEmpty) ...[
                       const SizedBox(height: 6),

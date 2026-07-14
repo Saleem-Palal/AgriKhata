@@ -50,7 +50,7 @@ class StepHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: const BoxDecoration(
         border: Border(
           bottom: BorderSide(color: SaleColors.borderLight, width: 0.5),
@@ -59,8 +59,8 @@ class StepHeader extends StatelessWidget {
       child: Row(
         children: [
           Container(
-            width: 20,
-            height: 20,
+            width: 19,
+            height: 19,
             decoration: const BoxDecoration(
               color: SaleColors.midGreen,
               shape: BoxShape.circle,
@@ -76,7 +76,7 @@ class StepHeader extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 7),
           Text(
             title,
             style: const TextStyle(
@@ -194,14 +194,14 @@ class KisaanCard extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(10),
         child: Container(
-          padding: const EdgeInsets.all(10),
+          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 8),
           decoration: BoxDecoration(
             color: isSelected ? SaleColors.lightGreenBg : SaleColors.cardBg,
             border: Border.all(
               color: isSelected ? SaleColors.accentGreen : SaleColors.borderMid,
               width: isSelected ? 1.5 : 0.5,
             ),
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(9),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -210,7 +210,7 @@ class KisaanCard extends StatelessWidget {
               Text(
                 kisaan.name,
                 style: const TextStyle(
-                  fontSize: 13,
+                  fontSize: 12,
                   fontWeight: FontWeight.w500,
                   color: SaleColors.textDark,
                 ),
@@ -223,12 +223,12 @@ class KisaanCard extends StatelessWidget {
                   color: SaleColors.textLight,
                 ),
               ),
-              const SizedBox(height: 6),
+              const SizedBox(height: 5),
               Row(
                 children: [
                   Container(
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 7,
+                      horizontal: 6,
                       vertical: 2,
                     ),
                     decoration: BoxDecoration(
@@ -279,7 +279,7 @@ class SmartRecommendationsBox extends StatelessWidget {
   Widget build(BuildContext context) {
     if (selectedKisaan == null || recommendations.isEmpty) {
       return Container(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
         child: const Text(
           'Select a Kisaan to see recommendations',
           style: TextStyle(fontSize: 12, color: SaleColors.textMuted),
@@ -288,7 +288,7 @@ class SmartRecommendationsBox extends StatelessWidget {
     }
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
         color: SaleColors.recBoxBg,
         borderRadius: BorderRadius.circular(10),
@@ -609,14 +609,14 @@ class PaymentMethodToggle extends StatelessWidget {
         onTap: () => onChanged(method),
         borderRadius: BorderRadius.circular(10),
         child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 8),
+          padding: const EdgeInsets.symmetric(vertical: 7),
           decoration: BoxDecoration(
             color: isActive ? Colors.white : Colors.white.withOpacity(0.1),
             border: Border.all(
               color: isActive ? Colors.white : Colors.white.withOpacity(0.15),
-              width: 1.5,
+              width: 1.25,
             ),
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(9),
           ),
           child: Text(
             method.displayName,
