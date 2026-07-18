@@ -7,6 +7,7 @@ class Zamindar {
   final int kisaanCount;
   final bool isOverLimit;
   final List<String> paymentTerms;
+  final String whatsappNumber;
   final List<Kisaan> kisaans;
 
   Zamindar({
@@ -16,6 +17,7 @@ class Zamindar {
     required this.kisaanCount,
     this.isOverLimit = false,
     this.paymentTerms = const [],
+    this.whatsappNumber = '',
     required this.kisaans,
   });
 

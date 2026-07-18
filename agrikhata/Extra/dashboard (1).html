@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AgriKhata — Dashboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+<style>
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#F7F9F4;color:#1B4332;font-size:12px}
+  .app{display:flex;min-height:100vh}
+
+  /* ---------- Sidebar ---------- */
+  .sidebar{width:200px;flex-shrink:0;background:#1B4332;display:flex;flex-direction:column}
+  .logo{padding:18px 16px 14px;border-bottom:0.5px solid rgba(255,255,255,0.5)}
+  .logo-name{font-size:20px;font-weight:700;color:#fff}
+  .logo-sub{font-size:11px;color:#A7C4A0;margin-top:2px}
+  .nav{padding:12px 10px;flex:1}
+  .nav-section{font-size:10px;color:#6B9E7A;font-weight:700;letter-spacing:1.2px;padding:10px 8px 4px;text-transform:uppercase}
+  .nav-item{display:flex;align-items:center;gap:9px;padding:10px 12px;border-radius:10px;cursor:pointer;color:#A7C4A0;font-size:12.5px;margin-bottom:2px}
+  .nav-item.active{background:#2D6A4F;color:#fff;font-weight:500}
+  .nav-item i{width:16px;text-align:center;font-size:13px}
+  .sb-footer{padding:12px 14px;border-top:0.5px solid rgba(255,255,255,0.05);display:flex;align-items:center;gap:9px}
+  .sb-av{width:30px;height:30px;border-radius:50%;background:#2D6A4F;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:500;color:#B7E4C7;border:1px solid #40916C;flex-shrink:0}
+  .sb-name{font-size:12px;font-weight:500;color:#fff}
+  .sb-role{font-size:10px;color:#6B9E7A}
+
+  /* ---------- Main ---------- */
+  .main{flex:1;display:flex;flex-direction:column;min-width:0}
+  .topbar{background:#fff;border-bottom:0.5px solid #E2EBE0;padding:10px 22px;display:flex;align-items:center;justify-content:space-between}
+  .breadcrumb{font-size:12px;color:#95B89A}
+  .breadcrumb .cur{color:#1B4332;font-weight:500}
+  .content{padding:16px;flex:1}
+
+  .card{background:#fff;border:0.5px solid #E2EBE0;border-radius:12px}
+  .section-title{font-size:12.5px;font-weight:600;color:#1B4332;display:flex;align-items:center;gap:6px}
+
+  .badge{display:inline-block;font-size:9.5px;font-weight:500;padding:2px 8px;border-radius:20px;white-space:nowrap}
+  .badge.low{background:#FAEEDA;color:#633806}
+  .badge.crit{background:#FCEBEB;color:#791F1F}
+
+  .qbtn{border-radius:10px;padding:12px;display:flex;flex-direction:column;align-items:flex-start;gap:6px;cursor:pointer;border:0.5px solid #E2EBE0;background:#fff;transition:all .12s}
+  .qbtn:hover{background:#F0F7EB;border-color:#97C459;transform:translateY(-1px)}
+  .qbtn .qi{font-size:17px}
+  .qbtn .qt{font-size:11.5px;font-weight:600;color:#1B4332}
+
+  .view-link{font-size:10.5px;font-weight:500;color:#2D6A4F;border:0.5px solid #C6DEC9;border-radius:7px;padding:4px 9px;cursor:pointer;white-space:nowrap}
+  .view-link:hover{background:#F0F7EB;border-color:#97C459}
+
+  .wa-link{font-size:10.5px;font-weight:500;border:1px solid #059669;color:#059669;border-radius:7px;padding:4px 9px;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center}
+  .wa-link:hover{background:#ECFDF5}
+
+  table{width:100%;border-collapse:collapse;font-size:11.5px}
+  thead th{padding:6px 10px;text-align:left;font-size:9.5px;font-weight:600;color:#6B8F71;border-bottom:0.5px solid #E2EBE0;text-transform:uppercase;letter-spacing:.3px}
+  tbody td{padding:7px 10px;border-bottom:0.5px solid #F0F4EE;vertical-align:middle}
+  tbody tr:last-child td{border-bottom:none}
+
+  .stock-row{display:flex;align-items:center;justify-content:space-between;padding:7px 10px;border-bottom:0.5px solid #F0F4EE}
+  .stock-row:last-child{border-bottom:none}
+  .expiry-row{display:flex;align-items:center;justify-content:space-between;padding:7px 10px;border-bottom:0.5px solid #F0F4EE}
+  .expiry-row:last-child{border-bottom:none}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ================= SIDEBAR ================= -->
+  <div class="sidebar">
+    <div class="logo">
+      <div class="logo-name">AgriKhata</div>
+      <div class="logo-sub">Atta Muhammad &amp; Sons</div>
+    </div>
+    <div class="nav">
+      <div class="nav-section">Main</div>
+      <div class="nav-item active"><i class="fa-solid fa-table-cells-large"></i>Dashboard</div>
+      <div class="nav-item"><i class="fa-solid fa-users"></i>Zamindars</div>
+      <div class="nav-item"><i class="fa-solid fa-cash-register"></i>New Sale</div>
+      <div class="nav-section">Inventory</div>
+      <div class="nav-item"><i class="fa-solid fa-boxes-stacked"></i>Products</div>
+      <div class="nav-item"><i class="fa-solid fa-truck-ramp-box"></i>Purchase</div>
+      <div class="nav-item"><i class="fa-solid fa-handshake"></i>Wholesalers</div>
+      <div class="nav-section">Finance</div>
+      <div class="nav-item"><i class="fa-solid fa-book"></i>Ledger</div>
+      <div class="nav-item"><i class="fa-solid fa-chart-column"></i>Reports</div>
+      <div class="nav-section">System</div>
+      <div class="nav-item"><i class="fa-solid fa-gear"></i>Settings</div>
+    </div>
+    <div class="sb-footer">
+      <div class="sb-av">AM</div>
+      <div><div class="sb-name">Atta Muhammad</div><div class="sb-role">Owner</div></div>
+    </div>
+  </div>
+
+  <!-- ================= MAIN ================= -->
+  <div class="main">
+    <div class="topbar">
+      <div class="breadcrumb">Main &nbsp;›&nbsp; <span class="cur">Dashboard</span></div>
+      <div class="text-[11px]" style="color:#95B89A">Wednesday, 15 July 2026 &nbsp;·&nbsp; 3:42 PM</div>
+    </div>
+
+    <div class="content">
+
+      <!-- ===== Top KPI Row (4 cards) ===== -->
+      <div class="grid grid-cols-4 gap-3 mb-3">
+        <div class="card p-3 bg-emerald-50" style="border-color:#BEE3CC">
+          <div class="text-[11px] font-medium" style="color:#2D6A4F">🟢 You Will Get</div>
+          <div class="text-[21px] font-bold mt-1" style="color:#1B4332">₨ 2,45,000</div>
+          <div class="text-[10px] mt-1" style="color:#4C8067">Lene Hain (Zamindar Udhaar)</div>
+        </div>
+        <div class="card p-3 bg-rose-50" style="border-color:#F3C6C6">
+          <div class="text-[11px] font-medium" style="color:#A32D2D">🔴 You Will Give</div>
+          <div class="text-[21px] font-bold mt-1" style="color:#791F1F">₨ 1,80,000</div>
+          <div class="text-[10px] mt-1" style="color:#A85B5B">Dene Hain (Wholesalers)</div>
+        </div>
+        <div class="card p-3 bg-blue-50" style="border-color:#C3D9F0">
+          <div class="text-[11px] font-medium" style="color:#0C447C">💵 Cash in Hand</div>
+          <div class="text-[21px] font-bold mt-1" style="color:#0C447C">₨ 42,500</div>
+          <div class="text-[10px] mt-1" style="color:#5B84AA">Today's Drawer Cash</div>
+        </div>
+        <div class="card p-3 bg-slate-100" style="border-color:#DCE2DE">
+          <div class="text-[11px] font-medium" style="color:#4B5A50">👥 Active Accounts</div>
+          <div class="text-[21px] font-bold mt-1" style="color:#1B4332">142</div>
+          <div class="text-[10px] mt-1" style="color:#6B8F71">Zamindars: 120 | Wholesalers: 22</div>
+        </div>
+      </div>
+
+      <!-- ===== Main split: Left (alerts) / Right (actions) ===== -->
+      <div class="grid grid-cols-2 gap-3">
+
+        <!-- ============ LEFT COLUMN ============ -->
+        <div class="flex flex-col gap-3">
+
+          <!-- Box A: Sowing Season Monitor -->
+          <div class="card p-3">
+            <div class="section-title mb-3">🗓️ Sowing Season Monitor</div>
+            <div class="flex items-center gap-4">
+              <div class="relative flex-shrink-0" style="width:88px;height:88px">
+                <svg width="88" height="88" viewBox="0 0 88 88">
+                  <circle cx="44" cy="44" r="38" fill="none" stroke="#E2EBE0" stroke-width="8"/>
+                  <circle cx="44" cy="44" r="38" fill="none" stroke="#40916C" stroke-width="8"
+                          stroke-dasharray="238.76" stroke-dashoffset="119.38"
+                          stroke-linecap="round" transform="rotate(-90 44 44)"/>
+                </svg>
+                <div class="absolute inset-0 flex flex-col items-center justify-center">
+                  <div class="text-[11px] font-bold" style="color:#1B4332">May–Oct</div>
+                  <div class="text-[9px]" style="color:#95B89A">50%</div>
+                </div>
+              </div>
+              <div>
+                <div class="text-[12px] font-semibold" style="color:#1B4332">Current Season: Kharif</div>
+                <div class="text-[10.5px] mt-1" style="color:#6B8F71">Rice, Cotton, Sugarcane, Maize</div>
+                <div class="text-[10px] mt-2" style="color:#95B89A">Mid-season execution point — July</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Box B: Low Stock Alerts -->
+          <div class="card p-3">
+            <div class="section-title mb-2">📦 Low Stock Alerts</div>
+            <div>
+              <div class="stock-row">
+                <div class="font-medium">Urea Sona Bag (50kg)</div>
+                <span class="badge crit">5 left</span>
+              </div>
+              <div class="stock-row">
+                <div class="font-medium">DAP Fertilizer (50kg)</div>
+                <span class="badge crit">3 left</span>
+              </div>
+              <div class="stock-row">
+                <div class="font-medium">Karate 2.5 EC (500ml)</div>
+                <span class="badge low">9 left</span>
+              </div>
+              <div class="stock-row">
+                <div class="font-medium">Cotton Seed (Bt-121, 1kg)</div>
+                <span class="badge low">11 left</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Box C: Product Expiry Warnings -->
+          <div class="card p-3">
+            <div class="section-title mb-2">⏳ Product Expiry Warnings</div>
+            <div>
+              <div class="expiry-row">
+                <div>
+                  <div class="font-medium">Alpha Pesticide</div>
+                  <div class="text-[10px]" style="color:#95B89A">Expiry: 8 Aug 2026</div>
+                </div>
+                <span class="badge crit">Expiring in 24 Days</span>
+              </div>
+              <div class="expiry-row">
+                <div>
+                  <div class="font-medium">Confidor Insecticide</div>
+                  <div class="text-[10px]" style="color:#95B89A">Expiry: 2 Sep 2026</div>
+                </div>
+                <span class="badge low">Expiring in 49 Days</span>
+              </div>
+              <div class="expiry-row">
+                <div>
+                  <div class="font-medium">Weedmar Herbicide</div>
+                  <div class="text-[10px]" style="color:#95B89A">Expiry: 19 Sep 2026</div>
+                </div>
+                <span class="badge low">Expiring in 66 Days</span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- ============ RIGHT COLUMN ============ -->
+        <div class="flex flex-col gap-3">
+
+          <!-- Box D: Top Pending Recoveries -->
+          <div class="card p-3">
+            <div class="flex items-center justify-between mb-2">
+              <div class="section-title">👤 Top Pending Recoveries</div>
+              <select class="text-xs bg-slate-100 border rounded p-1" style="border-color:#C6DEC9;color:#1B4332">
+                <option>Weekly</option>
+                <option>Monthly</option>
+                <option>90 Days</option>
+                <option>After Harvest</option>
+              </select>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th style="width:40%">Zamindar</th>
+                  <th style="width:26%">Owed (₨)</th>
+                  <th style="width:34%"></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="font-medium">Zamindar Khan</td>
+                  <td class="font-semibold" style="color:#A32D2D">₨ 89,500</td>
+                  <td><span class="wa-link"><i class="fa-brands fa-whatsapp mr-1"></i>WhatsApp</span></td>
+                </tr>
+                <tr>
+                  <td class="font-medium">Ali Murad</td>
+                  <td class="font-semibold" style="color:#A32D2D">₨ 76,200</td>
+                  <td><span class="wa-link"><i class="fa-brands fa-whatsapp mr-1"></i>WhatsApp</span></td>
+                </tr>
+                <tr>
+                  <td class="font-medium">Chaudhry Akbar</td>
+                  <td class="font-semibold" style="color:#A32D2D">₨ 61,300</td>
+                  <td><span class="wa-link"><i class="fa-brands fa-whatsapp mr-1"></i>WhatsApp</span></td>
+                </tr>
+                <tr>
+                  <td class="font-medium">Malik Rasheed</td>
+                  <td class="font-semibold" style="color:#A32D2D">₨ 48,200</td>
+                  <td><span class="wa-link"><i class="fa-brands fa-whatsapp mr-1"></i>WhatsApp</span></td>
+                </tr>
+                <tr>
+                  <td class="font-medium">Sardar Iqbal</td>
+                  <td class="font-semibold" style="color:#A32D2D">₨ 39,900</td>
+                  <td><span class="wa-link"><i class="fa-brands fa-whatsapp mr-1"></i>WhatsApp</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Box E: Counter Ledger Snapshot -->
+          <div class="card p-3">
+            <div class="section-title mb-2">🧾 Counter Ledger Snapshot</div>
+            <div class="grid grid-cols-2 gap-2">
+              <div class="rounded-lg p-3" style="background:#F7F9F4;border:0.5px solid #E2EBE0">
+                <div class="text-[10px] font-medium" style="color:#6B8F71">Today's Cash Sales</div>
+                <div class="text-[16px] font-bold mt-1" style="color:#1B4332">₨ 15,000</div>
+              </div>
+              <div class="rounded-lg p-3" style="background:#F7F9F4;border:0.5px solid #E2EBE0">
+                <div class="text-[10px] font-medium" style="color:#6B8F71">Today's Credit Sales</div>
+                <div class="text-[16px] font-bold mt-1" style="color:#1B4332">₨ 28,000</div>
+              </div>
+            </div>
+            <div class="mt-2 flex items-center gap-2">
+              <div class="flex-1" style="height:6px;border-radius:20px;background:#E2EBE0;overflow:hidden">
+                <div style="width:35%;height:100%;background:#40916C"></div>
+              </div>
+              <span class="text-[9.5px]" style="color:#95B89A">35% Cash / 65% Credit</span>
+            </div>
+          </div>
+
+          <!-- Box F: Quick Action Buttons -->
+          <div class="card p-3">
+            <div class="section-title mb-2">⚡ Quick Actions</div>
+            <div class="grid grid-cols-3 gap-2">
+              <div class="qbtn">
+                <span class="qi">➕</span>
+                <span class="qt">New Invoice<br/>(Sale Screen)</span>
+              </div>
+              <div class="qbtn">
+                <span class="qi">🚜</span>
+                <span class="qt">Add Zamindar<br/>Profile</span>
+              </div>
+              <div class="qbtn">
+                <span class="qi">💰</span>
+                <span class="qt">Record Wholesaler<br/>Payment</span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+</body>
+</html>

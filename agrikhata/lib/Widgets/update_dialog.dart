@@ -19,6 +19,7 @@ class UpdateDialog extends StatefulWidget {
   final Future<void> Function(
     String downloadUrl, {
     void Function(String status)? onStatus,
+    void Function(int receivedBytes, int totalBytes)? onProgress,
   })? onUpdateNow;
 
   /// Shows a non-dismissible update dialog. Prefer this over raw [showDialog].
@@ -31,6 +32,7 @@ class UpdateDialog extends StatefulWidget {
     Future<void> Function(
       String downloadUrl, {
       void Function(String status)? onStatus,
+      void Function(int receivedBytes, int totalBytes)? onProgress,
     })? onUpdateNow,
   }) {
     return showDialog<void>(
@@ -55,6 +57,18 @@ class _UpdateDialogState extends State<UpdateDialog> {
   bool _busy = false;
   String _status = '';
   String? _error;
+  double? _progress; // null => indeterminate
+
+  static String _formatDownloadLabel(int receivedBytes, int totalBytes) {
+    final downloadedMB = receivedBytes / (1024 * 1024);
+    if (totalBytes > 0) {
+      final totalMB = totalBytes / (1024 * 1024);
+      final percentage = ((receivedBytes / totalBytes) * 100).round();
+      return 'Downloading: ${downloadedMB.toStringAsFixed(1)} MB / '
+          '${totalMB.toStringAsFixed(1)} MB ($percentage%)';
+    }
+    return 'Downloading: ${downloadedMB.toStringAsFixed(1)} MB';
+  }
 
   Future<void> _handleUpdateNow() async {
     final callback = widget.onUpdateNow;
@@ -64,6 +78,7 @@ class _UpdateDialogState extends State<UpdateDialog> {
       _busy = true;
       _error = null;
       _status = 'Preparing update...';
+      _progress = null;
     });
 
     try {
@@ -71,10 +86,24 @@ class _UpdateDialogState extends State<UpdateDialog> {
         widget.downloadUrl,
         onStatus: (status) {
           if (!mounted) return;
-          setState(() => _status = status);
+          setState(() {
+            _status = status;
+            // Non-download phases use an indeterminate bar.
+            if (!status.startsWith('Downloading:')) {
+              _progress = null;
+            }
+          });
+        },
+        onProgress: (receivedBytes, totalBytes) {
+          if (!mounted) return;
+          setState(() {
+            _status = _formatDownloadLabel(receivedBytes, totalBytes);
+            _progress =
+                totalBytes > 0 ? (receivedBytes / totalBytes).clamp(0.0, 1.0) : null;
+          });
         },
       );
-      // Add-AppxPackage -ForceApplicationShutdown usually kills this process.
+      // Detached install + exit(0) normally kills this process first.
       // If we are still here, close the dialog.
       if (mounted) Navigator.of(context).pop();
     } catch (e) {
@@ -82,6 +111,7 @@ class _UpdateDialogState extends State<UpdateDialog> {
       setState(() {
         _busy = false;
         _status = '';
+        _progress = null;
         _error = e.toString().replaceFirst('Exception: ', '');
       });
     }
@@ -128,7 +158,8 @@ class _UpdateDialogState extends State<UpdateDialog> {
               _buildChangelogBox(notes),
               if (_busy) ...[
                 const SizedBox(height: 18),
-                const LinearProgressIndicator(
+                LinearProgressIndicator(
+                  value: _progress,
                   color: AppColors.darkGreen,
                   backgroundColor: AppColors.tagGreenBg,
                   minHeight: 4,
@@ -139,8 +170,10 @@ class _UpdateDialogState extends State<UpdateDialog> {
                   textAlign: TextAlign.center,
                   style: const TextStyle(
                     color: AppColors.textMuted,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                    height: 1.35,
                   ),
                 ),
               ],

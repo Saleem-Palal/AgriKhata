@@ -18,6 +18,7 @@ class ZamindarProfileScreen extends StatefulWidget {
   final int? initialTabIndex;
   final VoidCallback? onNavigateToSaleWithZamindar;
   final void Function(int kisaanId)? onNavigateToSaleWithKisaan;
+  final void Function(String invoiceNumber)? onEditInvoice;
 
   const ZamindarProfileScreen({
     super.key,
@@ -28,6 +29,7 @@ class ZamindarProfileScreen extends StatefulWidget {
     this.initialTabIndex,
     this.onNavigateToSaleWithZamindar,
     this.onNavigateToSaleWithKisaan,
+    this.onEditInvoice,
   });
 
   @override
@@ -354,7 +356,10 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
           onNavigateToSale: widget.onNavigateToSaleWithKisaan,
         );
       case 2:
-        return ZamindarLedgerTab(zamindarId: z.id!);
+        return ZamindarLedgerTab(
+          zamindarId: z.id!,
+          onEditInvoice: widget.onEditInvoice,
+        );
       default:
         return ZamindarOverviewTab(
           zamindar: z,

@@ -445,7 +445,7 @@ class _ProductsScreenState extends State<ProductsScreen> {
                           ),
                         ),
                         child: _showAddForm
-                            ? _AddProductPanel(
+                            ? AddProductPanel(
                                 product: _selectedProduct,
                                 onSaved: _saveProduct,
                                 onCancel: _closePanel,
@@ -1200,22 +1200,24 @@ class _TrendChartPainter extends CustomPainter {
   }
 }
 
-class _AddProductPanel extends StatefulWidget {
+/// Full product create/edit form (shared with Purchase Invoice quick-add).
+class AddProductPanel extends StatefulWidget {
   final void Function(ProductItem product) onSaved;
   final VoidCallback onCancel;
   final ProductItem? product;
 
-  const _AddProductPanel({
+  const AddProductPanel({
+    super.key,
     required this.onSaved,
     required this.onCancel,
     this.product,
   });
 
   @override
-  State<_AddProductPanel> createState() => _AddProductPanelState();
+  State<AddProductPanel> createState() => _AddProductPanelState();
 }
 
-class _AddProductPanelState extends State<_AddProductPanel> {
+class _AddProductPanelState extends State<AddProductPanel> {
   late final TextEditingController _nameController;
   late final TextEditingController _brandController;
   late final TextEditingController _packSizeController;

@@ -1,6 +1,8 @@
 import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Database/database_helper.dart';
 import 'package:agrikhata/screens/add_zamindar_screen.dart';
+import 'package:agrikhata/screens/dashboard_screen.dart';
+import 'package:agrikhata/screens/expense_screen.dart';
 import 'package:agrikhata/screens/main_ledger_screen.dart';
 import 'package:agrikhata/screens/new_sale_screen.dart';
 import 'package:agrikhata/screens/products_screen.dart';
@@ -24,13 +26,16 @@ class Shell extends StatefulWidget {
 }
 
 class _ShellState extends State<Shell> {
-  int _selectedIndex = 2;
+  /// Landing route: Dashboard (index 0) instead of New Sale.
+  int _selectedIndex = 0;
   ZamindarView _zamindarView = ZamindarView.directory;
   Zamindar? _selectedZamindar;
   int _directoryRefreshToken = 0;
   int? _preSelectedZamindarIdForSale;
   int? _preSelectedKisaanIdForSale;
   String? _editInvoiceNumber; // For edit mode
+  /// Sidebar index to restore after edit save/cancel (e.g. Zamindar Ledger / Main Ledger).
+  int? _editReturnIndex;
   int _ledgerRefreshToken = 0; // For forcing ledger refresh
   String _appVersion = '';
 
@@ -60,12 +65,14 @@ class _ShellState extends State<Shell> {
       _preSelectedKisaanIdForSale = kisaanId;
       _editInvoiceNumber =
           null; // Clear edit mode when navigating from zamindar
+      _editReturnIndex = null;
       _selectedIndex = 2; // Navigate to New Sale screen
     });
   }
 
   void _navigateToEditInvoice(String invoiceNumber) {
     setState(() {
+      _editReturnIndex = _selectedIndex;
       _editInvoiceNumber = invoiceNumber;
       _preSelectedZamindarIdForSale = null; // Clear pre-selection
       _preSelectedKisaanIdForSale = null;
@@ -77,9 +84,19 @@ class _ShellState extends State<Shell> {
   void _clearEditState() {
     print('🧹 Shell: Clearing edit state (was: $_editInvoiceNumber)');
     setState(() {
+      final returnIndex = _editReturnIndex;
       _editInvoiceNumber = null;
       _preSelectedZamindarIdForSale = null;
       _preSelectedKisaanIdForSale = null;
+      _editReturnIndex = null;
+      // Return to the screen where Edit was clicked (after save or discard).
+      if (returnIndex != null) {
+        _selectedIndex = returnIndex;
+        // Avoid resetting Zamindar profile → directory when returning to Zamindars.
+        if (returnIndex == 1) {
+          _ledgerRefreshToken++;
+        }
+      }
     });
     print('🧹 Shell: Edit state cleared (now: $_editInvoiceNumber)');
   }
@@ -138,6 +155,7 @@ class _ShellState extends State<Shell> {
                   kisaanId: kisaanId,
                 )
               : null,
+          onEditInvoice: _navigateToEditInvoice,
         );
       case ZamindarView.directory:
         return ZamindarDirectoryScreen(
@@ -159,6 +177,7 @@ class _ShellState extends State<Shell> {
       _selectedZamindar = null;
       _zamindarView = ZamindarView.directory;
       _editInvoiceNumber = null;
+      _editReturnIndex = null;
       _preSelectedZamindarIdForSale = null;
       _preSelectedKisaanIdForSale = null;
       _directoryRefreshToken++;
@@ -166,8 +185,36 @@ class _ShellState extends State<Shell> {
     });
   }
 
+  void _navigateToNewSaleFromDashboard() {
+    setState(() {
+      _editInvoiceNumber = null;
+      _editReturnIndex = null;
+      _preSelectedZamindarIdForSale = null;
+      _preSelectedKisaanIdForSale = null;
+      _selectedIndex = 2;
+    });
+  }
+
+  void _navigateToAddZamindarFromDashboard() {
+    setState(() {
+      _selectedZamindar = null;
+      _zamindarView = ZamindarView.add;
+      _selectedIndex = 1;
+    });
+  }
+
+  void _navigateToWholesalersFromDashboard() {
+    setState(() {
+      _selectedIndex = 5;
+    });
+  }
+
   List<Widget> get _screens => [
-    const Center(child: Text("Dashboard")),
+    DashboardScreen(
+      onNavigateToNewSale: _navigateToNewSaleFromDashboard,
+      onNavigateToAddZamindar: _navigateToAddZamindarFromDashboard,
+      onNavigateToWholesalers: _navigateToWholesalersFromDashboard,
+    ),
     _buildZamindarsScreen(),
     NewSaleScreen(
       key: ValueKey(
@@ -187,6 +234,7 @@ class _ShellState extends State<Shell> {
       ), // Refresh when token changes
       onEditInvoice: _navigateToEditInvoice,
     ),
+    const ExpenseScreen(),
     const ReportsScreen(),
     SettingsScreen(onDataReset: _handleApplicationDataReset),
   ];
@@ -224,10 +272,15 @@ class _ShellState extends State<Shell> {
                         Icons.account_balance_wallet_outlined,
                         "Ledger",
                       ),
-                      _navItem(7, Icons.analytics_outlined, "Reports"),
+                      _navItem(
+                        7,
+                        Icons.payments_outlined,
+                        "Expenses",
+                      ),
+                      _navItem(8, Icons.analytics_outlined, "Reports"),
                       const SizedBox(height: 20),
                       _sectionTitle("SYSTEM"),
-                      _navItem(8, Icons.settings_outlined, "Settings"),
+                      _navItem(9, Icons.settings_outlined, "Settings"),
                     ],
                   ),
                 ),
@@ -296,9 +349,10 @@ class _ShellState extends State<Shell> {
         onTap: () => setState(() {
           _selectedIndex = index;
           if (index == 1) _zamindarView = ZamindarView.directory;
-          // Clear edit mode when manually navigating to New Sale screen
-          if (index == 2) {
+          // Clear edit mode when manually navigating away from an edit session
+          if (index == 2 || _editInvoiceNumber != null) {
             _editInvoiceNumber = null;
+            _editReturnIndex = null;
             _preSelectedZamindarIdForSale = null;
             _preSelectedKisaanIdForSale = null;
           }

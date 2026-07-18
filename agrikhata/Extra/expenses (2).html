@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AgriKhata — Expenses</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+<style>
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#F7F9F4;color:#1B4332;font-size:12px}
+  .app{display:flex;min-height:100vh}
+
+  /* ---------- Sidebar ---------- */
+  .sidebar{width:200px;flex-shrink:0;background:#1B4332;display:flex;flex-direction:column}
+  .logo{padding:18px 16px 14px;border-bottom:0.5px solid rgba(255,255,255,0.5)}
+  .logo-name{font-size:20px;font-weight:700;color:#fff}
+  .logo-sub{font-size:11px;color:#A7C4A0;margin-top:2px}
+  .nav{padding:12px 10px;flex:1}
+  .nav-section{font-size:10px;color:#6B9E7A;font-weight:700;letter-spacing:1.2px;padding:10px 8px 4px;text-transform:uppercase}
+  .nav-item{display:flex;align-items:center;gap:9px;padding:10px 12px;border-radius:10px;cursor:pointer;color:#A7C4A0;font-size:12.5px;margin-bottom:2px}
+  .nav-item.active{background:#2D6A4F;color:#fff;font-weight:500}
+  .nav-item i{width:16px;text-align:center;font-size:13px}
+  .sb-footer{padding:12px 14px;border-top:0.5px solid rgba(255,255,255,0.05);display:flex;align-items:center;gap:9px}
+  .sb-av{width:30px;height:30px;border-radius:50%;background:#2D6A4F;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:500;color:#B7E4C7;border:1px solid #40916C;flex-shrink:0}
+  .sb-name{font-size:12px;font-weight:500;color:#fff}
+  .sb-role{font-size:10px;color:#6B9E7A}
+
+  /* ---------- Main ---------- */
+  .main{flex:1;display:flex;flex-direction:column;min-width:0}
+  .topbar{background:#fff;border-bottom:0.5px solid #E2EBE0;padding:10px 22px;display:flex;align-items:center;justify-content:space-between}
+  .breadcrumb{font-size:12px;color:#95B89A}
+  .breadcrumb .cur{color:#1B4332;font-weight:500}
+  .content{padding:16px;flex:1}
+
+  .card{background:#fff;border:0.5px solid #E2EBE0;border-radius:12px}
+  .section-title{font-size:13px;font-weight:600;color:#1B4332;display:flex;align-items:center;gap:6px}
+
+  .fbtn{font-size:11px;font-weight:500;padding:5px 12px;border-radius:7px;cursor:pointer;color:#6B8F71;background:#F7F9F4}
+  .fbtn.active{background:#1B4332;color:#fff}
+
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  thead th{padding:8px 12px;text-align:left;font-size:10px;font-weight:600;color:#6B8F71;border-bottom:0.5px solid #E2EBE0;text-transform:uppercase;letter-spacing:.3px}
+  tbody td{padding:9px 12px;vertical-align:middle;border-bottom:0.5px solid #EEF3EC}
+  tbody tr:nth-child(odd){background:#FAFBF8}
+  tbody tr:hover{background:#F0F7EB}
+  tbody tr:last-child td{border-bottom:none}
+  .amt{font-weight:600;color:#1B4332}
+  .cat-pill{display:inline-flex;align-items:center;gap:5px;font-size:11.5px}
+
+  .field-label{font-size:11px;font-weight:500;color:#4B5A50;margin-bottom:5px;display:block}
+  .field-input{width:100%;border:0.5px solid #C6DEC9;border-radius:8px;padding:8px 10px;font-size:12.5px;color:#1B4332;background:#fff}
+  .field-input:focus{outline:none;border-color:#40916C;box-shadow:0 0 0 2px rgba(64,145,108,0.15)}
+  .field-input::placeholder{color:#95B89A}
+
+  .rs-wrap{display:flex;align-items:stretch;border:0.5px solid #C6DEC9;border-radius:8px;overflow:hidden}
+  .rs-prefix{background:#1B4332;color:#fff;font-weight:600;font-size:12px;display:flex;align-items:center;padding:0 12px}
+  .rs-wrap input{border:none;flex:1;padding:8px 10px;font-size:13px;color:#1B4332}
+  .rs-wrap input:focus{outline:none}
+
+  .total-strip{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-radius:9px;background:#EAF3DE;border:0.5px solid #97C459}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ================= SIDEBAR ================= -->
+  <div class="sidebar">
+    <div class="logo">
+      <div class="logo-name">AgriKhata</div>
+      <div class="logo-sub">Atta Muhammad &amp; Sons</div>
+    </div>
+    <div class="nav">
+      <div class="nav-section">Main</div>
+      <div class="nav-item"><i class="fa-solid fa-table-cells-large"></i>Dashboard</div>
+      <div class="nav-item"><i class="fa-solid fa-users"></i>Zamindars</div>
+      <div class="nav-item"><i class="fa-solid fa-cash-register"></i>New Sale</div>
+      <div class="nav-section">Inventory</div>
+      <div class="nav-item"><i class="fa-solid fa-boxes-stacked"></i>Products</div>
+      <div class="nav-item"><i class="fa-solid fa-truck-ramp-box"></i>Purchase</div>
+      <div class="nav-item"><i class="fa-solid fa-handshake"></i>Wholesalers</div>
+      <div class="nav-section">Finance</div>
+      <div class="nav-item"><i class="fa-solid fa-book"></i>Ledger</div>
+      <div class="nav-item active"><i class="fa-solid fa-money-bill-wave"></i>Expenses</div>
+      <div class="nav-item"><i class="fa-solid fa-chart-column"></i>Reports</div>
+      <div class="nav-section">System</div>
+      <div class="nav-item"><i class="fa-solid fa-gear"></i>Settings</div>
+    </div>
+    <div class="sb-footer">
+      <div class="sb-av">AM</div>
+      <div><div class="sb-name">Atta Muhammad</div><div class="sb-role">Owner</div></div>
+    </div>
+  </div>
+
+  <!-- ================= MAIN ================= -->
+  <div class="main">
+    <div class="topbar">
+      <div class="breadcrumb">Finance &nbsp;›&nbsp; <span class="cur">Expenses</span></div>
+      <div class="text-[11px]" style="color:#95B89A">Saturday, 18 July 2026</div>
+    </div>
+
+    <div class="content">
+      <div class="flex gap-3" style="align-items:flex-start">
+
+        <!-- ================= LEFT: 70% — Expense History Ledger ================= -->
+        <div class="card p-0 overflow-hidden" style="flex:7">
+          <div class="p-3 flex items-center justify-between border-b" style="border-color:#E2EBE0">
+            <div class="section-title">💸 Expense History Ledger</div>
+            <div class="flex items-center gap-1 text-xs bg-slate-100 border rounded p-1" style="border-color:#C6DEC9">
+              <div class="fbtn active">Today</div>
+              <div class="fbtn">This Month</div>
+              <div class="fbtn">All Time</div>
+            </div>
+          </div>
+
+          <table>
+            <thead>
+              <tr>
+                <th style="width:14%">Date</th>
+                <th style="width:20%">Category</th>
+                <th style="width:16%">Amount (₨)</th>
+                <th style="width:50%">Remarks / Details</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td style="color:#6B8F71">18-Jul-2026</td>
+                <td><span class="cat-pill">☕ Chai/Pani</span></td>
+                <td class="amt">₨ 180</td>
+                <td style="color:#4B5A50">Tea for Zamindar Khan's drivers</td>
+              </tr>
+              <tr>
+                <td style="color:#6B8F71">18-Jul-2026</td>
+                <td><span class="cat-pill">🧊 Baraf (Ice)</span></td>
+                <td class="amt">₨ 200</td>
+                <td style="color:#4B5A50">For daily counter water cooler</td>
+              </tr>
+              <tr>
+                <td style="color:#6B8F71">17-Jul-2026</td>
+                <td><span class="cat-pill">💪 Mazdoori</span></td>
+                <td class="amt">₨ 1,200</td>
+                <td style="color:#4B5A50">Unloading 40 bags of Sona Urea</td>
+              </tr>
+              <tr>
+                <td style="color:#6B8F71">17-Jul-2026</td>
+                <td><span class="cat-pill">💸 Chhotu Kharchi</span></td>
+                <td class="amt">₨ 150</td>
+                <td style="color:#4B5A50">Market errand allowance</td>
+              </tr>
+              <tr>
+                <td style="color:#6B8F71">01-Jul-2026</td>
+                <td><span class="cat-pill">🏠 Shop Rent</span></td>
+                <td class="amt">₨ 25,000</td>
+                <td style="color:#4B5A50">July space rent cleared</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="p-3 flex items-center justify-between border-t" style="border-color:#E2EBE0">
+            <span class="text-[11px]" style="color:#95B89A">Showing 5 of 5 entries</span>
+            <span class="text-[12px] font-semibold" style="color:#1B4332">Total: ₨ 26,730</span>
+          </div>
+        </div>
+
+        <!-- ================= RIGHT: 30% — Add New Expense Panel ================= -->
+        <div class="card p-4 bg-slate-50" style="flex:3">
+          <div class="section-title mb-4">➕ Record New Expense</div>
+
+          <div class="mb-3">
+            <label class="field-label">🗓️ Date</label>
+            <input type="text" class="field-input" value="18-Jul-2026" />
+          </div>
+
+          <div class="mb-3">
+            <label class="field-label">Category</label>
+            <select class="field-input" id="categorySelect" onchange="toggleCustomCategory()">
+              <option>Shop Rent</option>
+              <option>Employee Salaries</option>
+              <option selected>Chai/Pani</option>
+              <option>Baraf</option>
+              <option>Chhotu Kharchi</option>
+              <option>Mazdoori</option>
+              <option>🔌 Electricity / Utilities</option>
+              <option>⛽ Generator / Fuel</option>
+              <option>📜 License &amp; Permits</option>
+              <option value="custom">📝 Other / Add Custom Title</option>
+            </select>
+          </div>
+
+          <div id="customCategoryWrap" class="mb-3 hidden">
+            <label class="field-label">Enter Custom Expense Title</label>
+            <input type="text" class="field-input" placeholder="e.g., Generator Tuning, Printer Paper, etc." />
+          </div>
+
+          <div class="mb-3">
+            <label class="field-label">Amount</label>
+            <div class="rs-wrap">
+              <div class="rs-prefix">₨</div>
+              <input type="text" placeholder="e.g. 500" />
+            </div>
+          </div>
+
+          <div class="mb-4">
+            <label class="field-label">Remarks / Details</label>
+            <textarea class="field-input" rows="3" placeholder="Short note, e.g. Tea for driver waiting on delivery"></textarea>
+          </div>
+
+          <button class="w-full bg-emerald-700 text-white hover:bg-emerald-800 rounded-lg py-2.5 text-[13px] font-semibold transition-colors">
+            Save Expense
+          </button>
+
+          <div class="total-strip mt-4">
+            <span class="text-[11px] font-medium" style="color:#2D6A4F">Today's Total Expenses</span>
+            <span class="text-[14px] font-bold" style="color:#1B4332">₨ 1,730</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function toggleCustomCategory() {
+  const select = document.getElementById('categorySelect');
+  const wrap = document.getElementById('customCategoryWrap');
+  if (select.value === 'custom') {
+    wrap.classList.remove('hidden');
+  } else {
+    wrap.classList.add('hidden');
+  }
+}
+</script>
+</body>
+</html>

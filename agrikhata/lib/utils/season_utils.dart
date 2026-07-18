@@ -69,6 +69,28 @@ class SeasonUtils {
     return season.displayName;
   }
 
+  /// Calendar days elapsed since the season's start date (0 on day 1).
+  static int daysElapsedInSeason([DateTime? referenceDate]) {
+    final now = referenceDate ?? DateTime.now();
+    final season = getCurrentSeason(now);
+    final start = DateTime(
+      season.startDate.year,
+      season.startDate.month,
+      season.startDate.day,
+    );
+    final today = DateTime(now.year, now.month, now.day);
+    final elapsed = today.difference(start).inDays;
+    return elapsed < 0 ? 0 : elapsed;
+  }
+
+  /// Coarse stage label for the current day inside the active season.
+  static String seasonStageLabel([DateTime? referenceDate]) {
+    final days = daysElapsedInSeason(referenceDate);
+    if (days <= 45) return 'Early season';
+    if (days <= 110) return 'Mid-season';
+    return 'Late season';
+  }
+
   static Season? parseSeasonDisplayName(String displayName) {
     final trimmed = displayName.trim();
     if (trimmed.isEmpty) return null;

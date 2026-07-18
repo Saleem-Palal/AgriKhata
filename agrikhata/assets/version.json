@@ -1,5 +1,5 @@
 {
-  "latest_version": "1.0.7",
-  "download_url": "https://github.com/Saleem-Palal/AgriKhata/releases/download/v1.0.7/agrikhata.msix",
-  "release_notes": "• Denser New Sale screen for laptop viewports\n• Fixed Cash received text contrast on checkout"
+  "latest_version": "1.0.8",
+  "download_url": "https://github.com/Saleem-Palal/AgriKhata/releases/download/v1.0.8/agrikhata.msix",
+  "release_notes": "• New Dashboard home with business overview\n• Expenses tracking screen"
 }

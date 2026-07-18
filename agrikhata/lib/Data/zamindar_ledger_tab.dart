@@ -1,5 +1,6 @@
 import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Database/database_helper.dart';
+import 'package:agrikhata/screens/new_sale_screen.dart';
 import 'package:agrikhata/utils/pdf_generator.dart';
 import 'package:agrikhata/utils/pdf_share.dart';
 import 'package:flutter/material.dart';
@@ -7,8 +8,13 @@ import 'package:path/path.dart' as p;
 
 class ZamindarLedgerTab extends StatefulWidget {
   final int zamindarId;
+  final void Function(String invoiceNumber)? onEditInvoice;
 
-  const ZamindarLedgerTab({super.key, required this.zamindarId});
+  const ZamindarLedgerTab({
+    super.key,
+    required this.zamindarId,
+    this.onEditInvoice,
+  });
 
   @override
   State<ZamindarLedgerTab> createState() => _ZamindarLedgerTabState();
@@ -456,6 +462,93 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
     );
   }
 
+  Future<void> _handleEditInvoice(String invoiceNumber) async {
+    if (widget.onEditInvoice != null) {
+      widget.onEditInvoice!(invoiceNumber);
+      return;
+    }
+
+    // Fallback when opened outside Shell (e.g. pushed profile).
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (ctx) => NewSaleScreen(
+          editInvoiceNumber: invoiceNumber,
+          onCancelEdit: () => Navigator.of(ctx).pop(),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _handleDeleteInvoice(String invoiceNumber) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Transaction?'),
+        content: const Text(
+          'Are you sure you want to delete this transaction and all associated payments?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFFDC3545),
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    try {
+      await DatabaseHelper.instance.deleteInvoiceEntirely(invoiceNumber);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Invoice $invoiceNumber deleted'),
+            backgroundColor: const Color(0xFF28A745),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to delete invoice: $e'),
+            backgroundColor: const Color(0xFFDC3545),
+          ),
+        );
+      }
+    }
+  }
+
+  Widget _actionIconButton({
+    required IconData icon,
+    required Color iconColor,
+    required Color borderColor,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(7),
+      child: Container(
+        width: 28,
+        height: 28,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(7),
+          border: Border.all(color: borderColor, width: 0.5),
+        ),
+        child: Icon(icon, size: 14, color: iconColor),
+      ),
+    );
+  }
+
   Widget _buildTransactionRow(
     Map<String, dynamic> row, {
     required bool showSettlementButton,
@@ -560,8 +653,24 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
               color: amountColor,
             ),
           ),
-          if (showSettlementButton && isSale) ...[
+          if (isSale) ...[
             const SizedBox(width: 10),
+            _actionIconButton(
+              icon: Icons.edit_outlined,
+              iconColor: const Color(0xFF1B4332),
+              borderColor: const Color(0xFFC6DEC9),
+              onTap: () => _handleEditInvoice(invoiceNumber),
+            ),
+            const SizedBox(width: 6),
+            _actionIconButton(
+              icon: Icons.delete_outline,
+              iconColor: const Color(0xFFDC3545),
+              borderColor: const Color(0xFFF5C6C6),
+              onTap: () => _handleDeleteInvoice(invoiceNumber),
+            ),
+          ],
+          if (showSettlementButton && isSale) ...[
+            const SizedBox(width: 8),
             OutlinedButton(
               onPressed: onSettle,
               style: OutlinedButton.styleFrom(

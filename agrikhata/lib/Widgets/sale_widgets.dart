@@ -267,22 +267,39 @@ class SmartRecommendationsBox extends StatelessWidget {
   final Kisaan? selectedKisaan;
   final List<Recommendation> recommendations;
   final Function(Recommendation) onAddRecommendation;
+  final bool isLoading;
+  final String? stageLabel;
 
   const SmartRecommendationsBox({
     super.key,
     required this.selectedKisaan,
     required this.recommendations,
     required this.onAddRecommendation,
+    this.isLoading = false,
+    this.stageLabel,
   });
 
   @override
   Widget build(BuildContext context) {
-    if (selectedKisaan == null || recommendations.isEmpty) {
+    if (selectedKisaan == null) {
       return Container(
         padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
         child: const Text(
           'Select a Kisaan to see recommendations',
           style: TextStyle(fontSize: 12, color: SaleColors.textMuted),
+        ),
+      );
+    }
+
+    if (isLoading) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 14),
+        child: Center(
+          child: SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
         ),
       );
     }
@@ -318,9 +335,11 @@ class SmartRecommendationsBox extends StatelessWidget {
                   color: SaleColors.recBadgeBg,
                   borderRadius: BorderRadius.circular(20),
                 ),
-                child: const Text(
-                  'Auto-calculated',
-                  style: TextStyle(
+                child: Text(
+                  stageLabel?.isNotEmpty == true
+                      ? stageLabel!
+                      : 'Auto-calculated',
+                  style: const TextStyle(
                     fontSize: 10,
                     color: SaleColors.recBadgeText,
                   ),
@@ -329,7 +348,20 @@ class SmartRecommendationsBox extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 8),
-          ...recommendations.map((rec) => _buildRecommendationRow(rec)),
+          if (recommendations.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 4),
+              child: Text(
+                "✨ All recommended inputs for this Kisaan's acreage are currently up to date for this stage of the season.",
+                style: TextStyle(
+                  fontSize: 12,
+                  height: 1.35,
+                  color: SaleColors.recText,
+                ),
+              ),
+            )
+          else
+            ...recommendations.map((rec) => _buildRecommendationRow(rec)),
         ],
       ),
     );

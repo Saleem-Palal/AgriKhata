@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:agrikhata/Database/database_helper.dart';
 import 'package:agrikhata/Widgets/update_dialog.dart';
 import 'package:agrikhata/utils/app_version.dart';
 import 'package:flutter/material.dart';
@@ -12,6 +13,8 @@ import 'package:path_provider/path_provider.dart';
 class UpdateService {
   static const _manifestUrl =
       'https://raw.githubusercontent.com/Saleem-Palal/AgriKhata/master/version.json';
+
+  static const _packageIdentity = 'com.saleempalal.agrikhata';
 
   Future<void> checkForUpdates(BuildContext context) async {
     try {
@@ -58,18 +61,25 @@ class UpdateService {
         currentVersion: currentVersion,
         changelog: changelog,
         downloadUrl: downloadUrl,
-        onUpdateNow: (url, {onStatus}) =>
-            downloadAndInstall(url, onStatus: onStatus),
+        onUpdateNow: (url, {onStatus, onProgress}) => downloadAndInstall(
+          url,
+          onStatus: onStatus,
+          onProgress: onProgress,
+        ),
       );
-    } catch (e) {
-      debugPrint('UpdateService: check failed: $e');
+    } catch (e, st) {
+      debugPrint('UpdateService: check failed: $e\n$st');
     }
   }
 
   /// Downloads the MSIX locally, then installs it. Never opens a browser URL.
+  ///
+  /// [onProgress] receives `(receivedBytes, totalBytes)`. `totalBytes` is `0`
+  /// when the server omits `Content-Length`.
   Future<void> downloadAndInstall(
     String downloadUrl, {
     void Function(String status)? onStatus,
+    void Function(int receivedBytes, int totalBytes)? onProgress,
   }) async {
     if (!Platform.isWindows) {
       throw UnsupportedError('In-app updates are only supported on Windows.');
@@ -87,7 +97,7 @@ class UpdateService {
       );
     }
 
-    onStatus?.call('Downloading update...');
+    onStatus?.call('Preparing update...');
     final tempDir = await getTemporaryDirectory();
     final msixPath = p.join(tempDir.path, 'agrikhata_update.msix');
     final msixFile = File(msixPath);
@@ -95,7 +105,7 @@ class UpdateService {
       await msixFile.delete();
     }
 
-    await _downloadFile(uri, msixFile);
+    await _downloadFile(uri, msixFile, onProgress: onProgress);
 
     final length = await msixFile.length();
     if (length < 1024 * 100) {
@@ -118,7 +128,7 @@ class UpdateService {
       );
     }
 
-    onStatus?.call('Update installed. The app may restart...');
+    onStatus?.call('Update installed. Restarting...');
   }
 
   /// Prefer a direct asset URL. Never returns a GitHub web page URL.
@@ -141,7 +151,11 @@ class UpdateService {
     return url;
   }
 
-  Future<void> _downloadFile(Uri uri, File destination) async {
+  Future<void> _downloadFile(
+    Uri uri,
+    File destination, {
+    void Function(int receivedBytes, int totalBytes)? onProgress,
+  }) async {
     final client = http.Client();
     try {
       final request = http.Request('GET', uri);
@@ -152,7 +166,6 @@ class UpdateService {
           .send(request)
           .timeout(const Duration(minutes: 5));
 
-      // Follow redirects manually if needed (http.Client usually follows).
       if (streamed.statusCode < 200 || streamed.statusCode >= 300) {
         throw HttpException(
           'Download failed (HTTP ${streamed.statusCode})',
@@ -168,59 +181,145 @@ class UpdateService {
         );
       }
 
+      final totalBytes = streamed.contentLength ?? 0;
+      var receivedBytes = 0;
+      var lastUiEmit = DateTime.fromMillisecondsSinceEpoch(0);
+      var lastEmittedPercent = -1;
+
+      void emitProgress({bool force = false}) {
+        final now = DateTime.now();
+        final percent =
+            totalBytes > 0 ? ((receivedBytes / totalBytes) * 100).round() : -1;
+        final elapsed = now.difference(lastUiEmit);
+        // Throttle UI updates (~10 Hz or on percent change) to keep frames smooth.
+        if (!force &&
+            elapsed < const Duration(milliseconds: 100) &&
+            percent == lastEmittedPercent) {
+          return;
+        }
+        lastUiEmit = now;
+        lastEmittedPercent = percent;
+        onProgress?.call(receivedBytes, totalBytes);
+      }
+
       final sink = destination.openWrite();
       try {
-        await streamed.stream.pipe(sink);
+        await for (final chunk in streamed.stream) {
+          sink.add(chunk);
+          receivedBytes += chunk.length;
+          emitProgress();
+        }
+        await sink.flush();
+        emitProgress(force: true);
       } finally {
         await sink.close();
       }
+
+      debugPrint(
+        'UpdateService: download complete '
+        '($receivedBytes / ${totalBytes > 0 ? totalBytes : "?"} bytes)',
+      );
     } finally {
       client.close();
     }
   }
 
-  /// Installs a local .msix path. Returns true on apparent success.
+  /// Releases SQLite locks, then launches a detached installer so this process
+  /// can exit fully before package files are overwritten.
   Future<bool> _installLocalMsix(String msixPath) async {
-    final safePath = msixPath.replaceAll("'", "''");
+    try {
+      debugPrint('UpdateService: closing database before install...');
+      await DatabaseHelper.instance.close();
+      // Allow WAL/journal handles to finish releasing on Windows.
+      await Future.delayed(const Duration(milliseconds: 500));
 
-    // 1) Preferred: silent/in-place AppX update (closes this app).
-    final addResult = await Process.run('powershell.exe', [
-      '-NoProfile',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-Command',
-      "Add-AppxPackage -Path '$safePath' -ForceUpdateFromAnyVersion -ForceApplicationShutdown",
-    ]);
+      final safePath = msixPath.replaceAll("'", "''");
+      final launched = await _launchDetachedInstaller(safePath);
+      if (launched) {
+        debugPrint(
+          'UpdateService: detached installer started; exiting for clean swap',
+        );
+        // Detach completely so the installer can overwrite package files.
+        await Future.delayed(const Duration(milliseconds: 300));
+        exit(0);
+      }
 
-    if (addResult.exitCode == 0) {
-      debugPrint('UpdateService: Add-AppxPackage succeeded');
-      return true;
+      debugPrint('UpdateService: detached installer failed; trying UI fallback');
+      return await _launchInstallerUiFallback(safePath);
+    } catch (e, st) {
+      debugPrint('UpdateService: install launcher error: $e\n$st');
+      return false;
     }
+  }
 
-    debugPrint(
-      'UpdateService: Add-AppxPackage failed '
-      '(${addResult.exitCode}): ${addResult.stderr}\n${addResult.stdout}',
-    );
+  /// Runs Add-AppxPackage in a fully detached PowerShell process that waits
+  /// for this app to die, installs, then relaunches AgriKhata.
+  Future<bool> _launchDetachedInstaller(String safePath) async {
+    try {
+      // Detached script: wait for this process to exit, install, then relaunch.
+      final script = '''
+\$ErrorActionPreference = 'Stop'
+Start-Sleep -Seconds 3
+Add-AppxPackage -Path '$safePath' -ForceUpdateFromAnyVersion -ForceApplicationShutdown
+Start-Sleep -Seconds 2
+\$pkg = Get-AppxPackage -Name '$_packageIdentity' | Sort-Object -Property Version -Descending | Select-Object -First 1
+if (\$null -ne \$pkg) {
+  \$manifest = Get-AppxPackageManifest -Package \$pkg
+  \$appId = \$manifest.Package.Applications.Application.Id
+  if (-not \$appId) { \$appId = 'App' }
+  Start-Process ("shell:AppsFolder\\" + \$pkg.PackageFamilyName + "!" + \$appId)
+}
+''';
 
-    // 2) Fallback: open the LOCAL installer UI (not a website).
-    final startResult = await Process.run('powershell.exe', [
-      '-NoProfile',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-Command',
-      "Start-Process -FilePath '$safePath'",
-    ]);
+      await Process.start(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-WindowStyle',
+          'Hidden',
+          '-Command',
+          script,
+        ],
+        mode: ProcessStartMode.detached,
+      );
 
-    if (startResult.exitCode == 0) {
-      debugPrint('UpdateService: launched local MSIX installer UI');
+      debugPrint('UpdateService: Add-AppxPackage scheduled (detached)');
       return true;
+    } catch (e, st) {
+      debugPrint('UpdateService: detached Add-AppxPackage failed: $e\n$st');
+      return false;
     }
+  }
 
-    debugPrint(
-      'UpdateService: Start-Process failed '
-      '(${startResult.exitCode}): ${startResult.stderr}\n${startResult.stdout}',
-    );
-    return false;
+  Future<bool> _launchInstallerUiFallback(String safePath) async {
+    try {
+      // Ensure DB stays closed for the UI installer path as well.
+      await DatabaseHelper.instance.close();
+      await Future.delayed(const Duration(milliseconds: 400));
+
+      await Process.start(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-WindowStyle',
+          'Hidden',
+          '-Command',
+          "Start-Sleep -Seconds 1; Start-Process -FilePath '$safePath'",
+        ],
+        mode: ProcessStartMode.detached,
+      );
+
+      debugPrint('UpdateService: launched local MSIX installer UI (detached)');
+      await Future.delayed(const Duration(milliseconds: 300));
+      exit(0);
+    } catch (e, st) {
+      debugPrint('UpdateService: Start-Process fallback failed: $e\n$st');
+      return false;
+    }
   }
 
   List<String> _parseChangelog(Map<String, dynamic> manifest) {

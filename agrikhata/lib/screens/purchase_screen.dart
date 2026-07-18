@@ -1,6 +1,7 @@
 import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Data/agri_header.dart';
 import 'package:agrikhata/Database/database_helper.dart';
+import 'package:agrikhata/screens/products_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
@@ -20,6 +21,9 @@ class _PurchaseLine {
   final TextEditingController rateController = TextEditingController();
   final TextEditingController expiryController = TextEditingController();
   DateTime? expiryDate;
+
+  /// Bumped to remount the product Autocomplete after quick-add selection.
+  int productFieldEpoch = 0;
 
   double get quantity => double.tryParse(qtyController.text.trim()) ?? 0;
   double get rate => double.tryParse(rateController.text.trim()) ?? 0;
@@ -60,6 +64,8 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
   static const _accentRed = Color(0xFFA32D2D);
   static const _border = Color(0xFFE2EBE0);
   static const _inputBorder = Color(0xFFC6DEC9);
+  /// Forest-green outline (Tailwind emerald-800 equivalent).
+  static const _emerald800 = Color(0xFF065F46);
 
   final _transportController = TextEditingController(text: '0');
   final _amountPaidController = TextEditingController();
@@ -231,6 +237,109 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
     setState(() {
       line.expiryDate = picked;
       line.expiryController.text = _formatDate(picked);
+    });
+  }
+
+  void _applyProductToLine(_PurchaseLine line, ProductItem product) {
+    line.product = product;
+    line.productController.text = product.name;
+    line.rateController.text =
+        product.costPrice > 0 ? product.costPrice.toString() : '';
+    line.expiryDate = product.expiryDate;
+    line.expiryController.text = _formatDate(line.expiryDate!);
+    line.productFieldEpoch++;
+  }
+
+  /// Prefer first empty line; otherwise append a new row for the new product.
+  void _selectCreatedProduct(ProductItem product) {
+    final emptyIndex = _lines.indexWhere((l) => l.product == null);
+    if (emptyIndex >= 0) {
+      _applyProductToLine(_lines[emptyIndex], product);
+      return;
+    }
+    final line = _PurchaseLine();
+    _applyProductToLine(line, product);
+    _lines.add(line);
+  }
+
+  Future<void> _showQuickAddProductDialog() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final created = await showDialog<ProductItem>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        var saving = false;
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return Dialog(
+              insetPadding: const EdgeInsets.symmetric(
+                horizontal: 48,
+                vertical: 28,
+              ),
+              clipBehavior: Clip.antiAlias,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: SizedBox(
+                width: 400,
+                height: MediaQuery.sizeOf(context).height * 0.9,
+                child: AddProductPanel(
+                  onCancel: saving
+                      ? () {}
+                      : () => Navigator.of(dialogContext).pop(),
+                  onSaved: (draft) async {
+                    if (saving) return;
+                    setDialogState(() => saving = true);
+                    try {
+                      final id =
+                          await DatabaseHelper.instance.insertProduct(draft);
+                      final product =
+                          await DatabaseHelper.instance.getProduct(id);
+                      if (!dialogContext.mounted) return;
+                      if (product == null) {
+                        setDialogState(() => saving = false);
+                        messenger.showSnackBar(
+                          const SnackBar(
+                            content: Text(
+                              'Product was saved but could not be loaded.',
+                            ),
+                          ),
+                        );
+                        return;
+                      }
+                      Navigator.of(dialogContext).pop(product);
+                    } catch (e) {
+                      if (!dialogContext.mounted) return;
+                      setDialogState(() => saving = false);
+                      messenger.showSnackBar(
+                        SnackBar(content: Text('Failed to save product: $e')),
+                      );
+                    }
+                  },
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    if (created == null || !mounted) return;
+
+    // Refresh catalog + auto-select into an empty/new row only.
+    setState(() {
+      final exists = _products.any((p) => p.id == created.id);
+      if (!exists) {
+        _products = [..._products, created]
+          ..sort(
+            (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+          );
+      } else {
+        _products = _products
+            .map((p) => p.id == created.id ? created : p)
+            .toList();
+      }
+      _selectCreatedProduct(created);
     });
   }
 
@@ -739,6 +848,27 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
                   ),
                 ),
                 const Spacer(),
+                OutlinedButton.icon(
+                  onPressed: _showQuickAddProductDialog,
+                  icon: const Icon(Icons.add, size: 16, color: _emerald800),
+                  label: const Text('Add Product'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: _emerald800,
+                    side: const BorderSide(color: _emerald800, width: 1),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                    textStyle: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
                 TextButton.icon(
                   onPressed: _addLine,
                   icon: const Icon(Icons.add, size: 16),
@@ -792,69 +922,69 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
 
   Widget _buildLineRow(int index) {
     final line = _lines[index];
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: const BoxDecoration(
-        border: Border(bottom: BorderSide(color: _border, width: 0.5)),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(flex: 28, child: _buildProductAutocomplete(line)),
-          const SizedBox(width: 6),
-          Expanded(
-            flex: 12,
-            child: TextField(
-              controller: line.qtyController,
-              keyboardType: const TextInputType.numberWithOptions(
-                decimal: true,
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8.0),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: const BoxDecoration(
+          border: Border(bottom: BorderSide(color: _border, width: 0.5)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Expanded(flex: 28, child: _buildProductAutocomplete(line, index)),
+            const SizedBox(width: 8),
+            Expanded(
+              flex: 12,
+              child: TextField(
+                controller: line.qtyController,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+                ],
+                onChanged: (_) => setState(() {}),
+                style: const TextStyle(fontSize: 12.5, color: _primary),
+                decoration: _lineInputDecoration(hint: 'Qty'),
               ),
-              inputFormatters: [
-                FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
-              ],
-              onChanged: (_) => setState(() {}),
-              style: const TextStyle(fontSize: 12.5, color: _primary),
-              decoration: _inputDecoration(hint: 'Qty'),
             ),
-          ),
-          const SizedBox(width: 6),
-          Expanded(
-            flex: 14,
-            child: TextField(
-              controller: line.rateController,
-              keyboardType: const TextInputType.numberWithOptions(
-                decimal: true,
+            const SizedBox(width: 8),
+            Expanded(
+              flex: 14,
+              child: TextField(
+                controller: line.rateController,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+                ],
+                onChanged: (_) => setState(() {}),
+                style: const TextStyle(fontSize: 12.5, color: _primary),
+                decoration: _lineInputDecoration(hint: 'Rate'),
               ),
-              inputFormatters: [
-                FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
-              ],
-              onChanged: (_) => setState(() {}),
-              style: const TextStyle(fontSize: 12.5, color: _primary),
-              decoration: _inputDecoration(hint: 'Rate'),
             ),
-          ),
-          const SizedBox(width: 6),
-          Expanded(
-            flex: 16,
-            child: InkWell(
-              onTap: () => _pickExpiry(index),
-              child: IgnorePointer(
-                child: TextField(
-                  controller: line.expiryController,
-                  style: const TextStyle(fontSize: 12.5, color: _primary),
-                  decoration: _inputDecoration(
-                    hint: 'Pick date',
-                    suffix: const Icon(Icons.event, size: 14),
+            const SizedBox(width: 8),
+            Expanded(
+              flex: 16,
+              child: InkWell(
+                onTap: () => _pickExpiry(index),
+                child: IgnorePointer(
+                  child: TextField(
+                    controller: line.expiryController,
+                    style: const TextStyle(fontSize: 12.5, color: _primary),
+                    decoration: _lineInputDecoration(
+                      hint: 'Pick date',
+                      suffix: const Icon(Icons.event, size: 14),
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
-          const SizedBox(width: 6),
-          Expanded(
-            flex: 14,
-            child: Padding(
-              padding: const EdgeInsets.only(top: 10),
+            const SizedBox(width: 8),
+            Expanded(
+              flex: 14,
               child: Text(
                 _formatPkr(line.lineTotal),
                 style: const TextStyle(
@@ -864,25 +994,27 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
                 ),
               ),
             ),
-          ),
-          SizedBox(
-            width: 36,
-            child: IconButton(
-              onPressed: _lines.length <= 1 ? null : () => _removeLine(index),
-              icon: const Icon(Icons.delete_outline, size: 18),
-              color: _accentRed,
-              tooltip: 'Remove row',
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            SizedBox(
+              width: 36,
+              child: IconButton(
+                onPressed:
+                    _lines.length <= 1 ? null : () => _removeLine(index),
+                icon: const Icon(Icons.delete_outline, size: 18),
+                color: _accentRed,
+                tooltip: 'Remove row',
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 36),
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
 
-  Widget _buildProductAutocomplete(_PurchaseLine line) {
+  Widget _buildProductAutocomplete(_PurchaseLine line, int index) {
     return Autocomplete<ProductItem>(
+      key: ValueKey('purchase-product-$index-${line.productFieldEpoch}'),
       optionsBuilder: (TextEditingValue tev) {
         final q = tev.text.trim().toLowerCase();
         if (q.isEmpty) return const Iterable<ProductItem>.empty();
@@ -896,7 +1028,8 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
         setState(() {
           line.product = p;
           line.productController.text = p.name;
-          line.rateController.text = p.costPrice.toString();
+          line.rateController.text =
+              p.costPrice > 0 ? p.costPrice.toString() : '';
           line.expiryDate = _defaultPurchaseExpiryDate();
           line.expiryController.text = _formatDate(line.expiryDate!);
         });
@@ -910,7 +1043,7 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
           controller: controller,
           focusNode: focusNode,
           style: const TextStyle(fontSize: 12.5, color: _primary),
-          decoration: _inputDecoration(hint: 'Search product…'),
+          decoration: _lineInputDecoration(hint: 'Search product…'),
           onChanged: (v) {
             line.productController.text = v;
             if (line.product != null && v != line.product!.name) {
@@ -931,8 +1064,8 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
                 padding: EdgeInsets.zero,
                 shrinkWrap: true,
                 itemCount: options.length,
-                itemBuilder: (context, index) {
-                  final p = options.elementAt(index);
+                itemBuilder: (context, optionIndex) {
+                  final p = options.elementAt(optionIndex);
                   return ListTile(
                     dense: true,
                     title: Text(
@@ -1129,6 +1262,13 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
         borderRadius: BorderRadius.circular(8),
         borderSide: const BorderSide(color: AppColors.accentGreen, width: 1),
       ),
+    );
+  }
+
+  /// Roomier padding for line-item fields so rows breathe without crowding.
+  InputDecoration _lineInputDecoration({String? hint, Widget? suffix}) {
+    return _inputDecoration(hint: hint, suffix: suffix).copyWith(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 14),
     );
   }
 }

@@ -23,15 +23,29 @@ class ZamindarKisaansTab extends StatefulWidget {
 }
 
 class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
+  final TextEditingController _searchController = TextEditingController();
   List<Kisaan> _kisaans = [];
   Map<int, double> _kisaanBalances = {};
   ZamindarLandAllocationSummary? _landSummary;
   bool _isLoading = true;
   String? _loadError;
 
+  List<Kisaan> get _filteredKisaans {
+    final query = _searchController.text.trim().toLowerCase();
+    if (query.isEmpty) return _kisaans;
+
+    return _kisaans.where((k) {
+      return k.name.toLowerCase().contains(query) ||
+          k.village.toLowerCase().contains(query) ||
+          k.currentCrop.toLowerCase().contains(query) ||
+          (k.phone?.toLowerCase().contains(query) ?? false);
+    }).toList();
+  }
+
   @override
   void initState() {
     super.initState();
+    _searchController.addListener(() => setState(() {}));
     DatabaseHelper.instance.addListener(_onDatabaseChanged);
     _loadKisaans();
     if (widget.autoOpenAdd) {
@@ -43,6 +57,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
 
   @override
   void dispose() {
+    _searchController.dispose();
     DatabaseHelper.instance.removeListener(_onDatabaseChanged);
     super.dispose();
   }
@@ -114,6 +129,28 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
               editTarget: editTarget,
               onSaved: (kisaan) async {
                 try {
+                  final nameExists = await DatabaseHelper.instance
+                      .kisaanNameExistsForZamindar(
+                        zamindarId: widget.zamindarId,
+                        name: kisaan.name,
+                        excludeKisaanId: editTarget?.id,
+                      );
+
+                  if (nameExists) {
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            'A Kisaan named "${kisaan.name}" already exists under ${widget.zamindarName}. Please use a different name.',
+                          ),
+                          backgroundColor: Colors.red,
+                          duration: const Duration(minutes: 1),
+                        ),
+                      );
+                    }
+                    return;
+                  }
+
                   final summary = await DatabaseHelper.instance
                       .getZamindarLandAllocationSummary(
                         widget.zamindarId,
@@ -977,7 +1014,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
                   children: [
                     Expanded(
                       child: Text(
-                        "${_kisaans.length} Kisaans under ${widget.zamindarName}",
+                        "${_filteredKisaans.length}${_searchController.text.trim().isNotEmpty ? ' of ${_kisaans.length}' : ''} Kisaans under ${widget.zamindarName}",
                         style: const TextStyle(
                           fontSize: 13,
                           fontWeight: FontWeight.w500,
@@ -1013,10 +1050,80 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
                 ),
               ),
               _buildLandAllocationSummary(),
-              ...List.generate(
-                _kisaans.length,
-                (i) =>
-                    _kisaanRow(_kisaans[i], isLast: i == _kisaans.length - 1),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+                child: Container(
+                  height: 38,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: AppColors.sidebarBg, width: 0.5),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(
+                        Icons.search,
+                        size: 16,
+                        color: AppColors.textMuted,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextField(
+                          controller: _searchController,
+                          style: const TextStyle(fontSize: 12),
+                          decoration: const InputDecoration(
+                            isDense: true,
+                            border: InputBorder.none,
+                            hintText: 'Search by name, village, crop, or phone...',
+                            hintStyle: TextStyle(
+                              fontSize: 12,
+                              color: AppColors.sidebarText,
+                            ),
+                          ),
+                        ),
+                      ),
+                      if (_searchController.text.isNotEmpty)
+                        InkWell(
+                          onTap: () => _searchController.clear(),
+                          child: const Icon(
+                            Icons.close,
+                            size: 16,
+                            color: AppColors.textMuted,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              Expanded(
+                child: _kisaans.isEmpty
+                    ? const Center(
+                        child: Text(
+                          'No kisaans yet',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: AppColors.textMuted,
+                          ),
+                        ),
+                      )
+                    : _filteredKisaans.isEmpty
+                        ? const Center(
+                            child: Text(
+                              'No matching kisaans',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: AppColors.textMuted,
+                              ),
+                            ),
+                          )
+                        : ListView.builder(
+                            itemCount: _filteredKisaans.length,
+                            itemBuilder: (context, i) => _kisaanRow(
+                              _filteredKisaans[i],
+                              isLast: i == _filteredKisaans.length - 1,
+                            ),
+                          ),
               ),
             ],
           ),
@@ -1318,6 +1425,59 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
     });
   }
 
+  Widget _buildLandUnitToggle() {
+    const units = ['Acre', 'Athaas'];
+    return Container(
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF0F4EC),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppColors.border, width: 0.5),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: units.map((unit) {
+          final isSelected = _landUnit == unit;
+          return GestureDetector(
+            onTap: () {
+              if (_landUnit == unit) return;
+              setState(() => _landUnit = unit);
+              _formKey.currentState?.validate();
+            },
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              curve: Curves.easeOut,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+              decoration: BoxDecoration(
+                color: isSelected ? Colors.white : Colors.transparent,
+                borderRadius: BorderRadius.circular(6),
+                boxShadow: isSelected
+                    ? [
+                        BoxShadow(
+                          color: AppColors.darkGreen.withValues(alpha: 0.08),
+                          blurRadius: 4,
+                          offset: const Offset(0, 1),
+                        ),
+                      ]
+                    : null,
+              ),
+              child: Text(
+                unit,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                  color: isSelected
+                      ? AppColors.darkGreen
+                      : AppColors.textMuted,
+                ),
+              ),
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
   Widget _buildCropPill(String crop) {
     final isSelected = _selectedCrops.contains(crop);
     return GestureDetector(
@@ -1496,86 +1656,70 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
                     ],
                     Row(
                       children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: AppColors.darkGreen,
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              InkWell(
-                                onTap: () {
-                                  setState(() => _landUnit = "Acre");
-                                  _formKey.currentState?.validate();
-                                },
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 8,
-                                    vertical: 4,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: _landUnit == "Acre"
-                                        ? Colors.white
-                                        : Colors.transparent,
-                                    borderRadius: BorderRadius.circular(3),
-                                  ),
-                                  child: Text(
-                                    "Acre",
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.w600,
-                                      color: _landUnit == "Acre"
-                                          ? AppColors.darkGreen
-                                          : Colors.white,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 4),
-                              InkWell(
-                                onTap: () {
-                                  setState(() => _landUnit = "Athaas");
-                                  _formKey.currentState?.validate();
-                                },
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 8,
-                                    vertical: 4,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: _landUnit == "Athaas"
-                                        ? Colors.white
-                                        : Colors.transparent,
-                                    borderRadius: BorderRadius.circular(3),
-                                  ),
-                                  child: Text(
-                                    "Athaas",
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.w600,
-                                      color: _landUnit == "Athaas"
-                                          ? AppColors.darkGreen
-                                          : Colors.white,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ],
+                        const Text(
+                          "Land",
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: AppColors.textMuted,
+                            fontWeight: FontWeight.w500,
                           ),
                         ),
+                        const Text(
+                          " *",
+                          style: TextStyle(color: Colors.red, fontSize: 10),
+                        ),
+                        const Spacer(),
+                        _buildLandUnitToggle(),
                       ],
                     ),
                     const SizedBox(height: 6),
-                    _buildFormField(
-                      label: "Land ($_landUnit)",
+                    TextFormField(
                       controller: _landController,
-                      required: true,
-                      isNumber: true,
+                      keyboardType: TextInputType.number,
+                      style: const TextStyle(fontSize: 12),
+                      onChanged: (_) => setState(() {}),
+                      decoration: InputDecoration(
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 8,
+                        ),
+                        suffixText: _landUnit,
+                        suffixStyle: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.darkGreen,
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(7),
+                          borderSide: const BorderSide(
+                            color: AppColors.sidebarBg,
+                            width: 0.5,
+                          ),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(7),
+                          borderSide: const BorderSide(
+                            color: AppColors.darkGreen,
+                            width: 1,
+                          ),
+                        ),
+                        errorBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(7),
+                          borderSide: const BorderSide(
+                            color: Colors.red,
+                            width: 1,
+                          ),
+                        ),
+                        focusedErrorBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(7),
+                          borderSide: const BorderSide(
+                            color: Colors.red,
+                            width: 1,
+                          ),
+                        ),
+                        errorStyle: const TextStyle(fontSize: 9),
+                      ),
                       validator: _validateLandAllocation,
                     ),
                     if (_getConversionText().isNotEmpty) ...[
@@ -1584,8 +1728,8 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
                         _getConversionText(),
                         style: const TextStyle(
                           fontSize: 11,
-                          color: AppColors.darkGreen,
-                          fontWeight: FontWeight.w600,
+                          color: AppColors.accentGreen,
+                          fontWeight: FontWeight.w500,
                         ),
                       ),
                     ],

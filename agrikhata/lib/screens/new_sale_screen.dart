@@ -1,10 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../models/sale_models.dart';
-import '../widgets/sale_widgets.dart';
+import '../models/ledger_models.dart';
+import '../Widgets/sale_widgets.dart';
 import '../Database/database_helper.dart' as db;
 import '../utils/season_utils.dart';
+import '../utils/smart_recommendations.dart';
 import '../utils/advance_checkout_overlay.dart';
+import '../utils/pdf_generator.dart';
+import '../utils/pdf_share.dart';
 
 class NewSaleScreen extends StatefulWidget {
   final int? preSelectedZamindarId;
@@ -25,10 +30,15 @@ class NewSaleScreen extends StatefulWidget {
   State<NewSaleScreen> createState() => _NewSaleScreenState();
 }
 
+enum _CheckoutMode { productSale, cashFuelAdvance }
+
+enum _AdvanceKind { cash, diesel, petrol }
+
 class _NewSaleScreenState extends State<NewSaleScreen> {
   // Controllers
   final TextEditingController _zamindarSearchController =
       TextEditingController();
+  final TextEditingController _kisaanSearchController = TextEditingController();
   final TextEditingController _productSearchController =
       TextEditingController();
   final TextEditingController _qtyController = TextEditingController(text: '1');
@@ -41,8 +51,15 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       TextEditingController(text: '0');
   final TextEditingController _walkInCustomerNameController =
       TextEditingController();
-  final TextEditingController _cashReceivedController =
-      TextEditingController(text: '0');
+  final TextEditingController _cashReceivedController = TextEditingController(
+    text: '0',
+  );
+  final TextEditingController _advanceAmountController =
+      TextEditingController();
+  final TextEditingController _advanceLitersController =
+      TextEditingController();
+  final TextEditingController _advanceRemarksController =
+      TextEditingController();
 
   // State
   Zamindar? _selectedZamindar;
@@ -59,12 +76,20 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
   bool _isDateTimeLocked = false;
   bool _isEditMode = false;
   String? _editingInvoiceNumber;
+  _CheckoutMode _checkoutMode = _CheckoutMode.productSale;
+  _AdvanceKind _advanceKind = _AdvanceKind.cash;
 
   // Database data
   List<Zamindar> _zamindars = [];
   List<Product> _products = [];
   bool _isLoading = true;
   bool _isSaving = false;
+
+  // Smart recommendations (async, season-stage + stock aware)
+  List<Recommendation> _smartRecommendations = [];
+  bool _isLoadingRecommendations = false;
+  String? _recommendationStageLabel;
+  int _recommendationsRequestId = 0;
 
   @override
   void initState() {
@@ -129,12 +154,17 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           _selectedZamindar = null;
           _selectedKisaan = null;
           _zamindarSearchController.clear();
+          _smartRecommendations = [];
+          _recommendationStageLabel = null;
         } else if (refreshedZamindar != null) {
           _selectedZamindar = refreshedZamindar;
           _selectedKisaan = refreshedKisaan;
           _zamindarSearchController.text = refreshedZamindar.name;
         }
       });
+      if (_selectedKisaan != null) {
+        await _loadSmartRecommendations();
+      }
     } catch (e) {
       debugPrint('Error syncing sale screen reference data: $e');
     }
@@ -237,6 +267,10 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           _editingInvoiceNumber = null;
         });
       }
+
+      if (_selectedKisaan != null) {
+        await _loadSmartRecommendations();
+      }
     } catch (e) {
       debugPrint('Error loading data from database: $e');
       setState(() => _isLoading = false);
@@ -326,6 +360,10 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         }
       });
 
+      if (_selectedKisaan != null) {
+        await _loadSmartRecommendations();
+      }
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -355,6 +393,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       kisaanCount: dbZamindar.activeKisaans,
       isOverLimit: dbZamindar.isOverLimit,
       paymentTerms: List<String>.from(dbZamindar.paymentTerms),
+      whatsappNumber: dbZamindar.whatsappNumber,
       kisaans: kisaans,
     );
   }
@@ -393,121 +432,87 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     );
   }
 
-  List<Recommendation> _getRecommendations() {
-    if (_selectedKisaan == null || _products.isEmpty) return [];
+  ProductWithStock _toStockAwareProduct(db.ProductItem dbProduct) {
+    final base = _convertProduct(dbProduct);
+    return ProductWithStock(
+      id: base.id,
+      name: base.name,
+      type: base.type,
+      basePrice: base.basePrice,
+      unit: base.unit,
+      availableStock: dbProduct.availableStock,
+    );
+  }
 
-    final recommendations = <Recommendation>[];
-    final crop = _selectedKisaan!.crop.toLowerCase();
+  Map<String, int> _cartQuantitiesByProductId() {
+    final map = <String, int>{};
+    for (final item in _cartItems) {
+      map[item.product.id] = (map[item.product.id] ?? 0) + item.quantity;
+    }
+    return map;
+  }
 
-    // Helper to find product by name pattern
-    Product? findProduct(String pattern) {
-      return _products
-          .where((p) => p.name.toLowerCase().contains(pattern.toLowerCase()))
-          .firstOrNull;
+  void _clearSmartRecommendations() {
+    _recommendationsRequestId++;
+    _smartRecommendations = [];
+    _isLoadingRecommendations = false;
+    _recommendationStageLabel = null;
+  }
+
+  /// Season-stage, purchase-deduped, in-stock Smart Recommendations.
+  Future<void> _loadSmartRecommendations() async {
+    final kisaan = _selectedKisaan;
+    final zamindar = _selectedZamindar;
+    if (kisaan == null || zamindar == null) {
+      if (!mounted) return;
+      setState(_clearSmartRecommendations);
+      return;
     }
 
-    // Generate recommendations based on crop type
-    if (crop.contains('rice')) {
-      final urea = findProduct('urea');
-      if (urea != null) {
-        recommendations.add(
-          Recommendation(
-            product: urea,
-            quantity: 20,
-            displayQuantity: '20 ${urea.unit}',
-          ),
-        );
-      }
-      final dap = findProduct('dap');
-      if (dap != null) {
-        recommendations.add(
-          Recommendation(
-            product: dap,
-            quantity: 10,
-            displayQuantity: '10 ${dap.unit}',
-          ),
-        );
-      }
-      final pesticide = _products
-          .where((p) => p.type == ProductType.pesticide)
-          .firstOrNull;
-      if (pesticide != null) {
-        recommendations.add(
-          Recommendation(
-            product: pesticide,
-            quantity: 2000,
-            displayQuantity: '2,000 ${pesticide.unit}',
-          ),
-        );
-      }
-      final seed = _products
-          .where((p) => p.type == ProductType.seed)
-          .firstOrNull;
-      if (seed != null) {
-        recommendations.add(
-          Recommendation(
-            product: seed,
-            quantity: 25,
-            displayQuantity: '25 ${seed.unit}',
-          ),
-        );
-      }
-    } else if (crop.contains('wheat')) {
-      final urea = findProduct('urea');
-      if (urea != null) {
-        recommendations.add(
-          Recommendation(
-            product: urea,
-            quantity: 15,
-            displayQuantity: '15 ${urea.unit}',
-          ),
-        );
-      }
-      final dap = findProduct('dap');
-      if (dap != null) {
-        recommendations.add(
-          Recommendation(
-            product: dap,
-            quantity: 8,
-            displayQuantity: '8 ${dap.unit}',
-          ),
-        );
-      }
-    } else if (crop.contains('cotton')) {
-      final urea = findProduct('urea');
-      if (urea != null) {
-        recommendations.add(
-          Recommendation(
-            product: urea,
-            quantity: 18,
-            displayQuantity: '18 ${urea.unit}',
-          ),
-        );
-      }
-      final npk = findProduct('npk');
-      if (npk != null) {
-        recommendations.add(
-          Recommendation(
-            product: npk,
-            quantity: 12,
-            displayQuantity: '12 ${npk.unit}',
-          ),
-        );
-      }
-    } else if (crop.contains('sugarcane')) {
-      final dap = findProduct('dap');
-      if (dap != null) {
-        recommendations.add(
-          Recommendation(
-            product: dap,
-            quantity: 20,
-            displayQuantity: '20 ${dap.unit}',
-          ),
-        );
-      }
-    }
+    final requestId = ++_recommendationsRequestId;
+    setState(() {
+      _isLoadingRecommendations = true;
+      _recommendationStageLabel = SeasonUtils.seasonStageLabel();
+    });
 
-    return recommendations.take(4).toList();
+    try {
+      final season = SeasonUtils.getSeasonString(DateTime.now());
+      final results = await Future.wait([
+        db.DatabaseHelper.instance.getProductsInStock(),
+        db.DatabaseHelper.instance.getKisaanSeasonPurchaseLineItems(
+          zamindarName: zamindar.name,
+          kisaanName: kisaan.name,
+          season: season,
+        ),
+      ]);
+
+      if (!mounted || requestId != _recommendationsRequestId) return;
+
+      final inStockDb = results[0] as List<db.ProductItem>;
+      final purchased = results[1] as List<Map<String, dynamic>>;
+      final inStockProducts = inStockDb.map(_toStockAwareProduct).toList();
+
+      final built = SmartRecommendationEngine.build(
+        kisaan: kisaan,
+        inStockProducts: inStockProducts,
+        purchasedLineItems: purchased,
+        cartQuantitiesByProductId: _cartQuantitiesByProductId(),
+      );
+
+      if (!mounted || requestId != _recommendationsRequestId) return;
+      setState(() {
+        _smartRecommendations = built.map((r) => r.toRecommendation()).toList();
+        _isLoadingRecommendations = false;
+        _recommendationStageLabel = SeasonUtils.seasonStageLabel();
+      });
+    } catch (e) {
+      debugPrint('Error loading smart recommendations: $e');
+      if (!mounted || requestId != _recommendationsRequestId) return;
+      setState(() {
+        _smartRecommendations = [];
+        _isLoadingRecommendations = false;
+      });
+    }
   }
 
   Future<void> _selectTransactionDate() async {
@@ -723,11 +728,11 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
   }
 
   Future<void> _addRecommendation(Recommendation rec) async {
+    final qty = rec.quantity.round();
+    if (qty <= 0) return;
+
     // Check stock before adding to cart
-    final hasStock = await _checkProductStock(
-      rec.product,
-      rec.quantity.toInt(),
-    );
+    final hasStock = await _checkProductStock(rec.product, qty);
     if (!hasStock) return; // Don't add to cart if out of stock or insufficient
 
     setState(() {
@@ -735,18 +740,24 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         CartItem(
           id: 'c${DateTime.now().millisecondsSinceEpoch}',
           product: rec.product,
-          quantity: rec.quantity.toInt(),
+          quantity: qty,
           seasonalIncrement: 0,
           discount: 0,
         ),
       );
     });
+
+    // Refresh remaining allowances after cart append.
+    await _loadSmartRecommendations();
   }
 
   void _removeCartItem(String id) {
     setState(() {
       _cartItems.removeWhere((item) => item.id == id);
     });
+    if (_selectedKisaan != null) {
+      _loadSmartRecommendations();
+    }
   }
 
   void _updateCartItemQuantity(String id, int change) {
@@ -757,6 +768,9 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         item.quantity = newQty;
       }
     });
+    if (_selectedKisaan != null) {
+      _loadSmartRecommendations();
+    }
   }
 
   void _updateCartItemDiscount(String id, double discount) {
@@ -780,61 +794,80 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       _selectedSalePaymentTerm = null;
       _cashReceivedController.text = '0';
       _zamindarSearchController.clear();
+      _kisaanSearchController.clear();
+      _clearSmartRecommendations();
     });
   }
 
-  /// Handles the Discard button action: clears edit state, fetches next invoice number,
-  /// and notifies parent Shell to clear its stale edit invoice variable
-  Future<void> _handleDiscard() async {
-    try {
-      // 1. Notify parent Shell to clear its stale edit invoice variable
-      widget.onCancelEdit?.call();
+  List<Kisaan> _filteredKisaans() {
+    final kisaans = _selectedZamindar?.kisaans ?? const <Kisaan>[];
+    final query = _kisaanSearchController.text.trim().toLowerCase();
+    if (query.isEmpty) return kisaans;
 
-      // 2. Fetch the true next available invoice number from the database
+    return kisaans.where((kisaan) {
+      return kisaan.name.toLowerCase().contains(query) ||
+          kisaan.village.toLowerCase().contains(query) ||
+          kisaan.crop.toLowerCase().contains(query);
+    }).toList();
+  }
+
+  /// Clears edit/preselect state in the parent Shell, fetches the next invoice
+  /// number, and resets every form field so the screen is ready for a new sale.
+  Future<void> _resetFormForNewSale({bool notifyParent = true}) async {
+    try {
+      if (notifyParent) {
+        // Clears Shell's editInvoiceNumber / preselects. Key change may dispose
+        // this State and create a fresh NewSaleScreen — check mounted after.
+        widget.onCancelEdit?.call();
+      }
+
       final nextInvoice = await db.DatabaseHelper.instance
           .getNextInvoiceNumber();
 
-      debugPrint('🔄 DISCARD: Fetched next invoice = $nextInvoice');
+      debugPrint('🔄 RESET FORM: next invoice = $nextInvoice');
 
-      // 3. Reset all internal state and force UI to display fresh invoice number
-      if (mounted) {
-        setState(() {
-          // Clear edit mode state
-          _isEditMode = false;
-          _editingInvoiceNumber = null;
+      if (!mounted) return;
 
-          // Update invoice number to next available
-          _invoiceNumber = nextInvoice;
-          debugPrint('🔄 DISCARD: Set _invoiceNumber = $_invoiceNumber');
+      setState(() {
+        _isEditMode = false;
+        _editingInvoiceNumber = null;
+        _invoiceNumber = nextInvoice;
 
-          // Clear cart and form fields
-          _cartItems.clear();
-          _selectedZamindar = null;
-          _selectedKisaan = null;
-          _selectedProduct = null;
-          _overallDiscount = 0;
-          _overallDiscountController.text = '0';
-          _zamindarSearchController.clear();
-          _productSearchController.clear();
-          _qtyController.text = '1';
-          _priceController.text = '0';
-          _seasonalIncrementController.text = '0';
+        _cartItems.clear();
+        _selectedZamindar = null;
+        _selectedKisaan = null;
+        _selectedProduct = null;
+        _clearSmartRecommendations();
+        _overallDiscount = 0;
+        _overallDiscountController.text = '0';
+        _zamindarSearchController.clear();
+        _kisaanSearchController.clear();
+        _productSearchController.clear();
+        _qtyController.text = '1';
+        _priceController.text = '0';
+        _seasonalIncrementController.text = '0';
 
-          // Reset date time lock
-          _isDateTimeLocked = false;
-          _selectedDateTime = DateTime.now();
+        _isDateTimeLocked = false;
+        _selectedDateTime = DateTime.now();
 
-          // Reset walk-in customer state
-          _isWalkInCustomer = false;
-          _walkInCustomerNameController.clear();
-        });
-      }
+        _isWalkInCustomer = false;
+        _walkInCustomerNameController.clear();
+
+        _paymentMethod = PaymentMethod.credit;
+        _selectedSalePaymentTerm = null;
+        _cashReceivedController.text = '0';
+        _checkoutMode = _CheckoutMode.productSale;
+        _advanceKind = _AdvanceKind.cash;
+        _advanceAmountController.clear();
+        _advanceLitersController.clear();
+        _advanceRemarksController.clear();
+      });
     } catch (e) {
-      debugPrint('Error handling discard: $e');
+      debugPrint('Error resetting sale form: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Failed to refresh invoice number: $e'),
+            content: Text('Failed to refresh form: $e'),
             backgroundColor: Colors.red,
           ),
         );
@@ -842,7 +875,214 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     }
   }
 
-  Future<void> _saveAndPrint() async {
+  bool get _isAdvanceMode => _checkoutMode == _CheckoutMode.cashFuelAdvance;
+
+  bool get _isFuelAdvance =>
+      _advanceKind == _AdvanceKind.diesel ||
+      _advanceKind == _AdvanceKind.petrol;
+
+  String get _advanceTransactionType {
+    switch (_advanceKind) {
+      case _AdvanceKind.cash:
+        return db.SaleTransactionType.cashAdvance;
+      case _AdvanceKind.diesel:
+        return db.SaleTransactionType.dieselAdvance;
+      case _AdvanceKind.petrol:
+        return db.SaleTransactionType.petrolAdvance;
+    }
+  }
+
+  String get _advanceDisplayLabel {
+    switch (_advanceKind) {
+      case _AdvanceKind.cash:
+        return 'Cash Advance';
+      case _AdvanceKind.diesel:
+        return 'Diesel Advance';
+      case _AdvanceKind.petrol:
+        return 'Petrol Advance';
+    }
+  }
+
+  double get _advanceAmountValue {
+    return double.tryParse(
+          _advanceAmountController.text.replaceAll(RegExp(r'[^0-9.]'), ''),
+        ) ??
+        0;
+  }
+
+  double? get _advanceLitersValue {
+    final parsed = double.tryParse(
+      _advanceLitersController.text.replaceAll(RegExp(r'[^0-9.]'), ''),
+    );
+    return parsed;
+  }
+
+  void _enterAdvanceMode() {
+    setState(() {
+      _checkoutMode = _CheckoutMode.cashFuelAdvance;
+      _isWalkInCustomer = false;
+      _walkInCustomerNameController.clear();
+      _paymentMethod = PaymentMethod.credit;
+      _selectedSalePaymentTerm = 'After Harvest';
+      _cashReceivedController.text = '0';
+      _overallDiscount = 0;
+      _overallDiscountController.text = '0';
+      _cartItems.clear();
+      _selectedProduct = null;
+      _productSearchController.clear();
+      _clearSmartRecommendations();
+    });
+  }
+
+  void _enterProductSaleMode() {
+    setState(() {
+      _checkoutMode = _CheckoutMode.productSale;
+      if (_selectedZamindar != null &&
+          _selectedZamindar!.paymentTerms.length == 1) {
+        _selectedSalePaymentTerm = _selectedZamindar!.paymentTerms.first;
+      } else if (_selectedSalePaymentTerm == 'After Harvest' &&
+          !(_selectedZamindar?.paymentTerms.contains('After Harvest') ??
+              false)) {
+        _selectedSalePaymentTerm = null;
+      }
+    });
+  }
+
+  /// Handles the Discard button action.
+  Future<void> _handleDiscard() async {
+    await _resetFormForNewSale();
+  }
+
+  /// Strips formatting and normalizes Pakistani mobile numbers for wa.me.
+  static String? _normalizeWhatsAppNumber(String? raw) {
+    if (raw == null) return null;
+    var digits = raw.replaceAll(RegExp(r'\D'), '');
+    if (digits.isEmpty) return null;
+    if (digits.startsWith('00')) {
+      digits = digits.substring(2);
+    }
+    if (digits.startsWith('0') && digits.length == 11) {
+      digits = '92${digits.substring(1)}';
+    } else if (digits.length == 10 && digits.startsWith('3')) {
+      digits = '92$digits';
+    }
+    if (digits.length < 10) return null;
+    return digits;
+  }
+
+  LedgerEntry _buildInvoiceLedgerEntry({
+    required String invoiceNumber,
+    required String zamindarName,
+    required String? kisaanName,
+    required double totalPayable,
+    required double paidAmount,
+    required String seasonString,
+    required bool isWalkIn,
+  }) {
+    final items = _cartItems.map((cartItem) {
+      final seasonalInc = _paymentMethod == PaymentMethod.credit
+          ? cartItem.seasonalIncrement
+          : 0.0;
+      return LineItem(
+        productName: cartItem.product.name,
+        quantity: cartItem.quantity.toDouble(),
+        unit: cartItem.product.unit,
+        unitPrice: cartItem.product.basePrice,
+        seasonalIncrement: seasonalInc,
+        discount: cartItem.discount,
+      );
+    }).toList();
+
+    final PaymentStatus status;
+    if (paidAmount <= 0) {
+      status = PaymentStatus.unpaid;
+    } else if (paidAmount + 0.001 >= totalPayable) {
+      status = PaymentStatus.paid;
+    } else {
+      status = PaymentStatus.partial;
+    }
+
+    return LedgerEntry(
+      id: 0,
+      invoiceNumber: invoiceNumber,
+      date: _selectedDateTime,
+      stakeholderName: zamindarName,
+      kisaanName: kisaanName,
+      items: items,
+      total: totalPayable,
+      paid: paidAmount,
+      status: status,
+      season: seasonString,
+      isWalkInCustomer: isWalkIn,
+    );
+  }
+
+  Future<void> _shareInvoiceWhatsAppPdf({
+    required LedgerEntry entry,
+    required bool isEdited,
+    String? whatsappNumber,
+  }) async {
+    final file = await PdfGenerator.saveInvoiceToFile(
+      entry,
+      isEdited: isEdited,
+    );
+
+    final message =
+        'Invoice ${entry.invoiceNumber} — ${entry.stakeholderName}\n'
+        'Total: Rs ${entry.total.toStringAsFixed(0)}\n'
+        'Paid: Rs ${entry.paid.toStringAsFixed(0)}\n'
+        'Outstanding: Rs ${entry.outstanding.toStringAsFixed(0)}\n'
+        'AgriKhata';
+
+    await PdfShare.sharePdfFile(
+      file: file,
+      fileName: 'invoice_${entry.invoiceNumber}.pdf',
+      text: message,
+      subject: 'AgriKhata Invoice ${entry.invoiceNumber}',
+    );
+
+    final phone = _normalizeWhatsAppNumber(whatsappNumber);
+    if (phone != null) {
+      final uri = Uri.parse(
+        'https://wa.me/$phone?text=${Uri.encodeComponent(message)}',
+      );
+      final launched = await launchUrl(
+        uri,
+        mode: LaunchMode.externalApplication,
+      );
+      if (!launched && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'PDF ready. Could not open WhatsApp for $phone — '
+              'pick WhatsApp in the share sheet.',
+            ),
+            backgroundColor: Colors.orange.shade800,
+          ),
+        );
+      }
+    } else if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'PDF ready to share. No WhatsApp number on file for this customer.',
+          ),
+          backgroundColor: Colors.orange,
+        ),
+      );
+    }
+  }
+
+  Future<void> _saveAndPrint() => _completeSale();
+
+  Future<void> _saveAndWhatsAppPdf() => _completeSale(shareWhatsAppPdf: true);
+
+  Future<void> _completeSale({bool shareWhatsAppPdf = false}) async {
+    if (_isAdvanceMode) {
+      await _completeKisaanAdvance(shareWhatsAppPdf: shareWhatsAppPdf);
+      return;
+    }
+
     // Validation: Check if Walk-In Customer or Zamindar is selected
     if (!_isWalkInCustomer && _selectedZamindar == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1068,81 +1308,77 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       }
 
       // ========================================================
-      // STEP 4: Show Success & Reset UI
+      // STEP 4: WhatsApp PDF (optional), then Success & Reset UI
       // ========================================================
 
-      if (mounted) {
-        final actionText = _isEditMode ? 'updated' : 'saved';
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Sale $actionText successfully! Total: Rs ${totalPayable.toStringAsFixed(0)}',
-            ),
-            backgroundColor: SaleColors.darkGreen,
-            duration: Duration(seconds: 3),
-          ),
-        );
+      if (!mounted) return;
 
-        // If in edit mode, clear state and reload
-        if (_isEditMode) {
-          setState(() {
-            _isEditMode = false;
-            _editingInvoiceNumber = null;
-          });
+      final wasEditMode = _isEditMode;
+      final whatsappNumber = _isWalkInCustomer
+          ? null
+          : _selectedZamindar?.whatsappNumber;
 
-          // Reload data after clearing edit mode
-          try {
-            await _loadDataFromDatabase();
-          } catch (e) {
-            debugPrint('Error reloading data after edit: $e');
+      if (shareWhatsAppPdf) {
+        try {
+          final entry = _buildInvoiceLedgerEntry(
+            invoiceNumber: invoiceNumber,
+            zamindarName: zamindarName,
+            kisaanName: kisaanName,
+            totalPayable: totalPayable,
+            paidAmount: paidAmount,
+            seasonString: seasonString,
+            isWalkIn: _isWalkInCustomer,
+          );
+          await _shareInvoiceWhatsAppPdf(
+            entry: entry,
+            isEdited: wasEditMode,
+            whatsappNumber: whatsappNumber,
+          );
+        } catch (e) {
+          debugPrint('WhatsApp PDF share failed: $e');
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Sale saved, but PDF/WhatsApp share failed: $e'),
+                backgroundColor: Colors.orange.shade800,
+                duration: const Duration(seconds: 5),
+              ),
+            );
           }
-
-          // Clear the form for next sale
-          setState(() {
-            _cartItems.clear();
-            _selectedZamindar = null;
-            _selectedKisaan = null;
-            _selectedProduct = null;
-            _overallDiscount = 0;
-            _overallDiscountController.text = '0';
-            _zamindarSearchController.clear();
-            _productSearchController.clear();
-            _qtyController.text = '1';
-            _priceController.text = '0';
-            _seasonalIncrementController.text = '0';
-            _isWalkInCustomer = false;
-            _walkInCustomerNameController.clear();
-            _selectedDateTime = DateTime.now();
-            _isDateTimeLocked = false;
-          });
-
-          return;
         }
       }
 
-      // For new sales, reload data and clear form
-      await _loadDataFromDatabase();
+      if (!mounted) return;
 
-      setState(() {
-        // Invoice number is automatically refreshed by _loadDataFromDatabase()
-        _cartItems.clear();
-        _selectedZamindar = null;
-        _selectedKisaan = null;
-        _selectedProduct = null;
-        _overallDiscount = 0;
-        _overallDiscountController.text = '0';
-        _zamindarSearchController.clear();
-        _productSearchController.clear();
-        _qtyController.text = '1';
-        _priceController.text = '0';
-        _seasonalIncrementController.text = '0';
-        _isWalkInCustomer = false;
-        _walkInCustomerNameController.clear();
-        _paymentMethod = PaymentMethod.credit;
-        if (!_isDateTimeLocked) {
-          _selectedDateTime = DateTime.now();
-        }
-      });
+      final actionText = wasEditMode ? 'updated' : 'saved';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            shareWhatsAppPdf
+                ? 'Sale $actionText & invoice PDF ready. Total: Rs ${totalPayable.toStringAsFixed(0)}'
+                : 'Sale $actionText successfully! Total: Rs ${totalPayable.toStringAsFixed(0)}',
+          ),
+          backgroundColor: SaleColors.darkGreen,
+          duration: Duration(seconds: 3),
+        ),
+      );
+
+      // Unlock UI before reset/sync (_syncReferenceData skips while saving).
+      setState(() => _isSaving = false);
+
+      // Must clear Shell editInvoiceNumber — otherwise reload re-enters edit
+      // mode and the old invoice number sticks on screen.
+      await _resetFormForNewSale();
+
+      // If parent key-recreated this screen, we're done (fresh init loads data).
+      if (!mounted) return;
+
+      // Refresh stock / reference lists without reloading edit state.
+      try {
+        await _syncReferenceData();
+      } catch (e) {
+        debugPrint('Error syncing reference data after save: $e');
+      }
 
       // TODO: Add thermal printer / receipt generation logic here
     } catch (e, stackTrace) {
@@ -1161,12 +1397,226 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     } finally {
       // CRITICAL: Always stop the loading indicator in the finally block
       // This prevents the infinite progress indicator deadlock
-      if (mounted) {
+      if (mounted && _isSaving) {
         setState(() {
           _isSaving = false;
         });
       }
     }
+  }
+
+  Future<void> _completeKisaanAdvance({bool shareWhatsAppPdf = false}) async {
+    if (_isEditMode) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Cannot record an advance while editing an invoice'),
+          backgroundColor: Colors.red,
+          duration: Duration(minutes: 1),
+        ),
+      );
+      return;
+    }
+
+    if (_isWalkInCustomer || _selectedZamindar == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Select a Zamindar (and Kisaan) before saving a Cash / Fuel Advance',
+          ),
+          backgroundColor: Colors.red,
+          duration: Duration(minutes: 1),
+        ),
+      );
+      return;
+    }
+
+    final zamindarId = int.tryParse(_selectedZamindar!.id);
+    if (zamindarId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Invalid Zamindar selection'),
+          backgroundColor: Colors.red,
+          duration: Duration(minutes: 1),
+        ),
+      );
+      return;
+    }
+
+    final amount = _advanceAmountValue;
+    if (amount <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Enter a valid Total Value (Rs.) greater than zero'),
+          backgroundColor: Colors.red,
+          duration: Duration(minutes: 1),
+        ),
+      );
+      return;
+    }
+
+    final liters = _advanceLitersValue;
+    if (_isFuelAdvance && (liters == null || liters <= 0)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Enter Quantity (Liters) for this fuel advance'),
+          backgroundColor: Colors.red,
+          duration: Duration(minutes: 1),
+        ),
+      );
+      return;
+    }
+
+    setState(() => _isSaving = true);
+
+    try {
+      final invoiceNumber = await db.DatabaseHelper.instance
+          .getNextInvoiceNumber();
+      final zamindarName = _selectedZamindar!.name;
+      final kisaanName = _selectedKisaan?.name ?? 'Self';
+      final kisaanId = _selectedKisaan != null
+          ? int.tryParse(_selectedKisaan!.id)
+          : null;
+      final seasonString = SeasonUtils.getSeasonString(_selectedDateTime);
+      final transactionType = _advanceTransactionType;
+      final remarks = _advanceRemarksController.text.trim();
+
+      debugPrint(
+        'ADVANCE DEBUG: Invoice=$invoiceNumber type=$transactionType '
+        'amount=$amount liters=$liters zamindarId=$zamindarId kisaanId=$kisaanId',
+      );
+
+      await db.DatabaseHelper.instance.insertKisaanAdvance(
+        invoiceNumber: invoiceNumber,
+        dateTime: _selectedDateTime,
+        zamindarId: zamindarId,
+        zamindarName: zamindarName,
+        kisaanId: kisaanId,
+        kisaanName: kisaanName,
+        transactionType: transactionType,
+        amount: amount,
+        fuelQuantityLiters: _isFuelAdvance ? liters : null,
+        remarks: remarks.isEmpty ? null : remarks,
+        season: seasonString,
+      );
+
+      if (!mounted) return;
+
+      final whatsappNumber = _selectedZamindar?.whatsappNumber;
+      if (shareWhatsAppPdf) {
+        try {
+          final entry = _buildAdvanceLedgerEntry(
+            invoiceNumber: invoiceNumber,
+            zamindarName: zamindarName,
+            kisaanName: kisaanName,
+            totalPayable: amount,
+            seasonString: seasonString,
+            liters: _isFuelAdvance ? liters : null,
+            remarks: remarks,
+          );
+          await _shareInvoiceWhatsAppPdf(
+            entry: entry,
+            isEdited: false,
+            whatsappNumber: whatsappNumber,
+          );
+        } catch (e) {
+          debugPrint('WhatsApp PDF share failed: $e');
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  'Advance saved, but PDF/WhatsApp share failed: $e',
+                ),
+                backgroundColor: Colors.orange.shade800,
+                duration: const Duration(seconds: 5),
+              ),
+            );
+          }
+        }
+      }
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            shareWhatsAppPdf
+                ? '$_advanceDisplayLabel saved & invoice PDF ready. '
+                      'Total: Rs ${amount.toStringAsFixed(0)}'
+                : '$_advanceDisplayLabel saved on khata. '
+                      'Total: Rs ${amount.toStringAsFixed(0)}',
+          ),
+          backgroundColor: SaleColors.darkGreen,
+          duration: const Duration(seconds: 3),
+        ),
+      );
+
+      setState(() => _isSaving = false);
+      await _resetFormForNewSale();
+      if (!mounted) return;
+
+      try {
+        await _syncReferenceData();
+      } catch (e) {
+        debugPrint('Error syncing reference data after advance save: $e');
+      }
+    } catch (e, stackTrace) {
+      debugPrint('❌ CRITICAL ERROR saving advance: $e');
+      debugPrint('Stack trace: $stackTrace');
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to save advance: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(minutes: 1),
+          ),
+        );
+      }
+    } finally {
+      if (mounted && _isSaving) {
+        setState(() => _isSaving = false);
+      }
+    }
+  }
+
+  LedgerEntry _buildAdvanceLedgerEntry({
+    required String invoiceNumber,
+    required String zamindarName,
+    required String? kisaanName,
+    required double totalPayable,
+    required String seasonString,
+    double? liters,
+    required String remarks,
+  }) {
+    final label = liters != null
+        ? '$_advanceDisplayLabel (${liters.toStringAsFixed(liters == liters.roundToDouble() ? 0 : 2)} L)'
+        : _advanceDisplayLabel;
+    final description = remarks.isNotEmpty ? '$label — $remarks' : label;
+
+    return LedgerEntry(
+      id: 0,
+      invoiceNumber: invoiceNumber,
+      date: _selectedDateTime,
+      stakeholderName: zamindarName,
+      kisaanName: kisaanName ?? 'Self',
+      items: [
+        LineItem(
+          productName: description,
+          quantity: 1,
+          unit: liters != null ? 'L' : 'advance',
+          unitPrice: totalPayable,
+          seasonalIncrement: 0,
+          discount: 0,
+        ),
+      ],
+      total: totalPayable,
+      paid: 0,
+      status: PaymentStatus.unpaid,
+      season: seasonString,
+      isWalkInCustomer: false,
+      description: description,
+      purchaseTerms: 'After Harvest',
+    );
   }
 
   SaleSummary _getSummary() {
@@ -1180,6 +1630,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
   @override
   void dispose() {
     _zamindarSearchController.dispose();
+    _kisaanSearchController.dispose();
     _productSearchController.dispose();
     _qtyController.dispose();
     _priceController.dispose();
@@ -1187,6 +1638,9 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     _overallDiscountController.dispose();
     _walkInCustomerNameController.dispose();
     _cashReceivedController.dispose();
+    _advanceAmountController.dispose();
+    _advanceLitersController.dispose();
+    _advanceRemarksController.dispose();
     // Remove database listener to prevent memory leaks
     db.DatabaseHelper.instance.removeListener(_onDatabaseChanged);
     super.dispose();
@@ -1534,15 +1988,19 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           children: [
             _buildTransactionDateCard(),
             const SizedBox(height: 10),
-            _buildWalkInToggleCard(),
-            const SizedBox(height: 10),
+            if (!_isAdvanceMode) ...[
+              _buildWalkInToggleCard(),
+              const SizedBox(height: 10),
+            ],
             if (!_isWalkInCustomer) ...[
               _buildSelectZamindarCard(),
               const SizedBox(height: 10),
               if (_selectedZamindar != null) ...[
                 _buildSelectKisaanCard(),
-                const SizedBox(height: 10),
-                _buildSmartRecommendationsCard(),
+                if (!_isAdvanceMode) ...[
+                  const SizedBox(height: 10),
+                  _buildSmartRecommendationsCard(),
+                ],
               ],
             ] else ...[
               _buildWalkInCustomerNameCard(),
@@ -1559,12 +2017,333 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       child: SingleChildScrollView(
         child: Column(
           children: [
-            _buildAddProductCard(),
+            _buildCheckoutModeToggle(),
             const SizedBox(height: 10),
-            _buildCartCard(),
-            const SizedBox(height: 10),
-            _buildSummaryCard(),
+            if (_isAdvanceMode) ...[
+              _buildCashFuelAdvanceCard(),
+              const SizedBox(height: 10),
+              _buildSummaryCard(),
+            ] else ...[
+              _buildAddProductCard(),
+              const SizedBox(height: 10),
+              _buildCartCard(),
+              const SizedBox(height: 10),
+              _buildSummaryCard(),
+            ],
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCheckoutModeToggle() {
+    final advanceDisabled = _isEditMode || _isWalkInCustomer;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: SaleColors.cardBg,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: SaleColors.borderLight, width: 0.5),
+      ),
+      padding: const EdgeInsets.all(8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: _buildModeChip(
+                  label: '🛒 Product Sale',
+                  selected: !_isAdvanceMode,
+                  onTap: () {
+                    if (_isAdvanceMode) _enterProductSaleMode();
+                  },
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _buildModeChip(
+                  label: '💸 Cash / Fuel Advance',
+                  selected: _isAdvanceMode,
+                  enabled: !advanceDisabled,
+                  onTap: () {
+                    if (!_isAdvanceMode && !advanceDisabled) {
+                      _enterAdvanceMode();
+                    }
+                  },
+                ),
+              ),
+            ],
+          ),
+          if (advanceDisabled) ...[
+            const SizedBox(height: 6),
+            Text(
+              _isEditMode
+                  ? 'Advance mode is unavailable while editing an invoice.'
+                  : 'Disable Walk-In Customer to record a Kisaan advance.',
+              style: const TextStyle(fontSize: 11, color: SaleColors.textMuted),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildModeChip({
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+    bool enabled = true,
+  }) {
+    return Opacity(
+      opacity: enabled ? 1 : 0.45,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: enabled ? onTap : null,
+          borderRadius: BorderRadius.circular(10),
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+            decoration: BoxDecoration(
+              color: selected ? SaleColors.lightGreenBg : SaleColors.canvasBg,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: selected ? SaleColors.accentGreen : SaleColors.borderMid,
+                width: selected ? 1 : 0.5,
+              ),
+            ),
+            child: Text(
+              label,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                color: SaleColors.textDark,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCashFuelAdvanceCard() {
+    return Container(
+      decoration: BoxDecoration(
+        color: SaleColors.cardBg,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: SaleColors.borderLight, width: 0.5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const StepHeader(stepNumber: 3, title: 'Cash / Fuel Advance'),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 4, 12, 14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Advance Type',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
+                    color: SaleColors.textMuted,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                InputDecorator(
+                  decoration: _advanceInputDecoration(),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<_AdvanceKind>(
+                      value: _advanceKind,
+                      isExpanded: true,
+                      isDense: true,
+                      items: const [
+                        DropdownMenuItem(
+                          value: _AdvanceKind.cash,
+                          child: Text('💵 Cash Advance'),
+                        ),
+                        DropdownMenuItem(
+                          value: _AdvanceKind.diesel,
+                          child: Text('⛽ Diesel Advance'),
+                        ),
+                        DropdownMenuItem(
+                          value: _AdvanceKind.petrol,
+                          child: Text('🏍️ Petrol Advance'),
+                        ),
+                      ],
+                      onChanged: (value) {
+                        if (value == null) return;
+                        setState(() {
+                          _advanceKind = value;
+                          if (value == _AdvanceKind.cash) {
+                            _advanceLitersController.clear();
+                          }
+                        });
+                      },
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'Total Value (Rs.)',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
+                    color: SaleColors.textMuted,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                TextFormField(
+                  controller: _advanceAmountController,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color: SaleColors.textDark,
+                  ),
+                  onChanged: (_) => setState(() {}),
+                  decoration: _advanceInputDecoration(
+                    hintText: '0',
+                    prefixText: 'Rs ',
+                    prominentFocus: true,
+                  ),
+                ),
+                AnimatedSize(
+                  duration: const Duration(milliseconds: 220),
+                  curve: Curves.easeOutCubic,
+                  alignment: Alignment.topCenter,
+                  child: _isFuelAdvance
+                      ? Padding(
+                          padding: const EdgeInsets.only(top: 12),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Quantity (Liters)',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w500,
+                                  color: SaleColors.textMuted,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              TextFormField(
+                                controller: _advanceLitersController,
+                                keyboardType:
+                                    const TextInputType.numberWithOptions(
+                                      decimal: true,
+                                    ),
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  color: SaleColors.textDark,
+                                ),
+                                onChanged: (_) => setState(() {}),
+                                decoration: _advanceInputDecoration(
+                                  hintText: 'e.g. 20',
+                                  suffixText: 'L',
+                                ),
+                              ),
+                            ],
+                          ),
+                        )
+                      : const SizedBox.shrink(),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'Remarks / Purpose',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
+                    color: SaleColors.textMuted,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                TextFormField(
+                  controller: _advanceRemarksController,
+                  maxLines: 2,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: SaleColors.textDark,
+                  ),
+                  decoration: _advanceInputDecoration(
+                    hintText:
+                        'e.g. For tractor harvesting, Emergency household cash',
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFEAF3DE),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: SaleColors.borderMid, width: 0.5),
+                  ),
+                  child: const Text(
+                    'Debt settles on the Zamindar khata after harvest. '
+                    'Cash advances reduce Cash in Hand; fuel does not.',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: SaleColors.midGreen,
+                      height: 1.35,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  InputDecoration _advanceInputDecoration({
+    String? hintText,
+    String? prefixText,
+    String? suffixText,
+    bool prominentFocus = false,
+  }) {
+    return InputDecoration(
+      isDense: true,
+      filled: true,
+      fillColor: SaleColors.cardBg,
+      hintText: hintText,
+      hintStyle: const TextStyle(fontSize: 13, color: SaleColors.textLight),
+      prefixText: prefixText,
+      prefixStyle: const TextStyle(
+        fontSize: 14,
+        fontWeight: FontWeight.w600,
+        color: SaleColors.textDark,
+      ),
+      suffixText: suffixText,
+      suffixStyle: const TextStyle(
+        fontSize: 12,
+        fontWeight: FontWeight.w500,
+        color: SaleColors.textMuted,
+      ),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(9),
+        borderSide: const BorderSide(color: SaleColors.borderMid, width: 0.5),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(9),
+        borderSide: const BorderSide(color: SaleColors.borderMid, width: 0.5),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(9),
+        borderSide: BorderSide(
+          color: SaleColors.accentGreen,
+          width: prominentFocus ? 2 : 1.5,
         ),
       ),
     );
@@ -1631,10 +2410,16 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                   if (value) {
                     // Force cash payment for walk-in
                     _paymentMethod = PaymentMethod.cash;
+                    _checkoutMode = _CheckoutMode.productSale;
                     // Clear zamindar selection
                     _selectedZamindar = null;
                     _selectedKisaan = null;
                     _zamindarSearchController.clear();
+                    _kisaanSearchController.clear();
+                    _clearSmartRecommendations();
+                    _advanceAmountController.clear();
+                    _advanceLitersController.clear();
+                    _advanceRemarksController.clear();
                   } else {
                     // Clear walk-in customer name
                     _walkInCustomerNameController.clear();
@@ -1875,6 +2660,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           onSelected: (Zamindar selection) {
             setState(() {
               _selectedZamindar = selection;
+              _kisaanSearchController.clear();
               _selectedSalePaymentTerm = selection.paymentTerms.length == 1
                   ? selection.paymentTerms.first
                   : null;
@@ -1884,10 +2670,16 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                   (k) => k.name == 'Self',
                   orElse: () => selection.kisaans.first,
                 );
+              } else {
+                _selectedKisaan = null;
+                _clearSmartRecommendations();
               }
             });
             // Check credit limit after selection
             _checkZamindarCreditLimit(selection);
+            if (_selectedKisaan != null) {
+              _loadSmartRecommendations();
+            }
           },
           optionsViewBuilder: (context, onSelected, options) {
             return Align(
@@ -2028,6 +2820,9 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
   }
 
   Widget _buildSelectKisaanCard() {
+    final filteredKisaans = _filteredKisaans();
+    final hasAnyKisaans = _selectedZamindar!.kisaans.isNotEmpty;
+
     return Container(
       decoration: BoxDecoration(
         color: SaleColors.cardBg,
@@ -2054,7 +2849,71 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                if (_selectedZamindar!.kisaans.isEmpty)
+                TextFormField(
+                  controller: _kisaanSearchController,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: SaleColors.textDark,
+                  ),
+                  onChanged: (_) => setState(() {}),
+                  decoration: InputDecoration(
+                    hintText: 'Search by name, village, or crop...',
+                    hintStyle: const TextStyle(
+                      fontSize: 13,
+                      color: SaleColors.textLight,
+                    ),
+                    prefixIcon: const Icon(
+                      Icons.search,
+                      size: 18,
+                      color: SaleColors.textMuted,
+                    ),
+                    suffixIcon: _kisaanSearchController.text.isNotEmpty
+                        ? IconButton(
+                            tooltip: 'Clear search',
+                            icon: const Icon(
+                              Icons.close,
+                              size: 16,
+                              color: SaleColors.textMuted,
+                            ),
+                            onPressed: () {
+                              setState(() {
+                                _kisaanSearchController.clear();
+                              });
+                            },
+                          )
+                        : null,
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 8,
+                    ),
+                    isDense: true,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(9),
+                      borderSide: const BorderSide(
+                        color: SaleColors.borderMid,
+                        width: 0.5,
+                      ),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(9),
+                      borderSide: const BorderSide(
+                        color: SaleColors.borderMid,
+                        width: 0.5,
+                      ),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(9),
+                      borderSide: const BorderSide(
+                        color: SaleColors.accentGreen,
+                        width: 1,
+                      ),
+                    ),
+                    filled: true,
+                    fillColor: SaleColors.cardBg,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                if (!hasAnyKisaans)
                   const Padding(
                     padding: EdgeInsets.all(12),
                     child: Text(
@@ -2065,30 +2924,45 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                       ),
                     ),
                   )
+                else if (filteredKisaans.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.all(12),
+                    child: Text(
+                      'No kisaans match your search',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: SaleColors.textMuted,
+                      ),
+                    ),
+                  )
                 else
-                  GridView.builder(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    gridDelegate:
-                        const SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 2,
-                          crossAxisSpacing: 8,
-                          mainAxisSpacing: 8,
-                          childAspectRatio: 1.85,
-                        ),
-                    itemCount: _selectedZamindar!.kisaans.length,
-                    itemBuilder: (context, index) {
-                      final kisaan = _selectedZamindar!.kisaans[index];
-                      return KisaanCard(
-                        kisaan: kisaan,
-                        isSelected: _selectedKisaan?.id == kisaan.id,
-                        onTap: () {
-                          setState(() {
-                            _selectedKisaan = kisaan;
-                          });
-                        },
-                      );
-                    },
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 220),
+                    child: GridView.builder(
+                      shrinkWrap: true,
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      gridDelegate:
+                          const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 2,
+                            crossAxisSpacing: 8,
+                            mainAxisSpacing: 8,
+                            childAspectRatio: 1.85,
+                          ),
+                      itemCount: filteredKisaans.length,
+                      itemBuilder: (context, index) {
+                        final kisaan = filteredKisaans[index];
+                        return KisaanCard(
+                          kisaan: kisaan,
+                          isSelected: _selectedKisaan?.id == kisaan.id,
+                          onTap: () {
+                            setState(() {
+                              _selectedKisaan = kisaan;
+                            });
+                            _loadSmartRecommendations();
+                          },
+                        );
+                      },
+                    ),
                   ),
               ],
             ),
@@ -2149,8 +3023,10 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
             padding: const EdgeInsets.all(12),
             child: SmartRecommendationsBox(
               selectedKisaan: _selectedKisaan,
-              recommendations: _getRecommendations(),
+              recommendations: _smartRecommendations,
               onAddRecommendation: _addRecommendation,
+              isLoading: _isLoadingRecommendations,
+              stageLabel: _recommendationStageLabel,
             ),
           ),
         ],
@@ -2671,7 +3547,11 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
 
   Widget _buildSummaryCard() {
     final summary = _getSummary();
-    final showSeasonalIncrement = _paymentMethod == PaymentMethod.credit;
+    final showSeasonalIncrement =
+        !_isAdvanceMode && _paymentMethod == PaymentMethod.credit;
+    final totalPayable = _isAdvanceMode
+        ? _advanceAmountValue
+        : summary.totalPayable;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -2683,14 +3563,42 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          _buildSummaryRow('Subtotal', summary.subtotal),
-          _buildSummaryRow('Item Discounts', summary.itemDiscounts),
-          if (showSeasonalIncrement)
-            _buildSummaryRow(
-              'Seasonal Increment Total',
-              summary.totalSeasonalIncrements,
-            ),
-          _buildOverallDiscountRow(),
+          if (_isAdvanceMode) ...[
+            _buildSummaryRow(_advanceDisplayLabel, totalPayable),
+            if (_isFuelAdvance && (_advanceLitersValue ?? 0) > 0)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'Quantity',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: SaleColors.textLight,
+                      ),
+                    ),
+                    Text(
+                      '${_advanceLitersValue!.toStringAsFixed((_advanceLitersValue! == _advanceLitersValue!.roundToDouble()) ? 0 : 2)} L',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ] else ...[
+            _buildSummaryRow('Subtotal', summary.subtotal),
+            _buildSummaryRow('Item Discounts', summary.itemDiscounts),
+            if (showSeasonalIncrement)
+              _buildSummaryRow(
+                'Seasonal Increment Total',
+                summary.totalSeasonalIncrements,
+              ),
+            _buildOverallDiscountRow(),
+          ],
           Container(
             height: 0.5,
             margin: const EdgeInsets.symmetric(vertical: 7),
@@ -2708,7 +3616,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                 ),
               ),
               Text(
-                CurrencyFormatter.format(summary.totalPayable),
+                CurrencyFormatter.format(totalPayable),
                 style: const TextStyle(
                   fontSize: 19,
                   fontWeight: FontWeight.w500,
@@ -2718,28 +3626,32 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
             ],
           ),
           const SizedBox(height: 10),
-          PaymentMethodToggle(
-            selectedMethod: _paymentMethod,
-            onChanged: !_isWalkInCustomer
-                ? (method) {
-                    setState(() {
-                      _paymentMethod = method;
-                      if (method == PaymentMethod.cash) {
-                        _selectedSalePaymentTerm = null;
-                        _cashReceivedController.text = '0';
-                      } else if (_selectedZamindar != null &&
-                          _selectedZamindar!.paymentTerms.length == 1) {
-                        _selectedSalePaymentTerm =
-                            _selectedZamindar!.paymentTerms.first;
-                      }
-                    });
-                  }
-                : (method) {},
-          ),
-          if (_paymentMethod == PaymentMethod.credit &&
-              !_isWalkInCustomer) ...[
-            const SizedBox(height: 10),
-            _buildCreditSplitSection(summary.totalPayable),
+          if (_isAdvanceMode)
+            _buildLockedAdvancePaymentTerms(totalPayable)
+          else ...[
+            PaymentMethodToggle(
+              selectedMethod: _paymentMethod,
+              onChanged: !_isWalkInCustomer
+                  ? (method) {
+                      setState(() {
+                        _paymentMethod = method;
+                        if (method == PaymentMethod.cash) {
+                          _selectedSalePaymentTerm = null;
+                          _cashReceivedController.text = '0';
+                        } else if (_selectedZamindar != null &&
+                            _selectedZamindar!.paymentTerms.length == 1) {
+                          _selectedSalePaymentTerm =
+                              _selectedZamindar!.paymentTerms.first;
+                        }
+                      });
+                    }
+                  : (method) {},
+            ),
+            if (_paymentMethod == PaymentMethod.credit &&
+                !_isWalkInCustomer) ...[
+              const SizedBox(height: 10),
+              _buildCreditSplitSection(summary.totalPayable),
+            ],
           ],
           const SizedBox(height: 10),
           Material(
@@ -2790,7 +3702,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           Material(
             color: Colors.transparent,
             child: InkWell(
-              onTap: () {},
+              onTap: _isSaving ? null : _saveAndWhatsAppPdf,
               borderRadius: BorderRadius.circular(9),
               child: Container(
                 width: double.infinity,
@@ -2803,15 +3715,42 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                   ),
                   borderRadius: BorderRadius.circular(9),
                 ),
-                child: Text(
-                  _isWalkInCustomer
-                      ? 'WhatsApp PDF to ${_walkInCustomerNameController.text.isNotEmpty ? _walkInCustomerNameController.text : "Customer"}'
-                      : 'WhatsApp PDF to ${_selectedZamindar?.name ?? "Zamindar"}',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: SaleColors.textLight,
-                  ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    if (_isSaving)
+                      const SizedBox(
+                        width: 12,
+                        height: 12,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            SaleColors.textLight,
+                          ),
+                        ),
+                      )
+                    else
+                      const Icon(
+                        Icons.picture_as_pdf_outlined,
+                        size: 14,
+                        color: SaleColors.textLight,
+                      ),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        _isSaving
+                            ? 'Saving & sharing...'
+                            : _isWalkInCustomer
+                            ? 'WhatsApp PDF to ${_walkInCustomerNameController.text.isNotEmpty ? _walkInCustomerNameController.text : "Customer"}'
+                            : 'WhatsApp PDF to ${_selectedZamindar?.name ?? "Zamindar"}',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: SaleColors.textLight,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -2841,6 +3780,113 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildLockedAdvancePaymentTerms(double totalPayable) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.08),
+            borderRadius: BorderRadius.circular(9),
+            border: Border.all(
+              color: SaleColors.lightGreen.withOpacity(0.55),
+              width: 1,
+            ),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 22,
+                height: 22,
+                decoration: BoxDecoration(
+                  color: SaleColors.lightGreen,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: const Icon(
+                  Icons.lock_outline,
+                  size: 13,
+                  color: SaleColors.darkGreen,
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Credit (Udhaar)',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.white,
+                      ),
+                    ),
+                    SizedBox(height: 2),
+                    Text(
+                      'Locked for Cash / Fuel Advances',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: SaleColors.textLight,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text(
+              'Credit (Udhaar)',
+              style: TextStyle(fontSize: 11, color: SaleColors.textLight),
+            ),
+            Text(
+              CurrencyFormatter.format(totalPayable),
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: SaleColors.lightGreen,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Payment term',
+          style: TextStyle(fontSize: 11, color: SaleColors.textLight),
+        ),
+        const SizedBox(height: 4),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: ChoiceChip(
+            label: const Text('After Harvest'),
+            selected: true,
+            onSelected: (_) {},
+            labelStyle: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w500,
+              color: SaleColors.darkGreen,
+            ),
+            selectedColor: SaleColors.lightGreen,
+            backgroundColor: Colors.white.withOpacity(0.08),
+            side: const BorderSide(color: SaleColors.lightGreen, width: 0.5),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 2),
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            visualDensity: VisualDensity.compact,
+          ),
+        ),
+      ],
     );
   }
 
