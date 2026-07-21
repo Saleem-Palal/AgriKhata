@@ -34,9 +34,14 @@ class AppColors {
 
   // Sidebar
   static const sidebarBg = Color(0xFF1B4332);
+  static const sidebarBgEnd = Color(0xFF173B2B);
   static const sidebarActive = Color(0xFF2D6A4F);
+  static const sidebarAccentBar = Color(0xFF95D5B2);
   static const sidebarText = Color(0xFFA7C4A0);
+  static const sidebarNavIdle = Color(0xFFB7CFB9);
   static const sidebarSection = Color(0xFF6B9E7A);
+  static const sidebarGlow = Color(0xFF40916C);
+  static const sidebarVersion = Color(0xFF5C8468);
 
   // Dot Colors
 

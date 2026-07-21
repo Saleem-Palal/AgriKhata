@@ -488,6 +488,455 @@ class LedgerTable extends StatelessWidget {
   }
 }
 
+/// Row model for Zamindar profile ledger tables (overview + ledger tab).
+class ZamindarLedgerRow {
+  final Map<String, dynamic> source;
+  final bool isDebit;
+  final String category;
+  final String invoiceDisplay;
+  final DateTime dateTime;
+  final String kisaanName;
+  final String itemsText;
+  final double total;
+  final double paid;
+  final PaymentStatus? paymentStatus;
+  final String? statusLabel;
+
+  const ZamindarLedgerRow({
+    required this.source,
+    required this.isDebit,
+    required this.category,
+    required this.invoiceDisplay,
+    required this.dateTime,
+    required this.kisaanName,
+    required this.itemsText,
+    required this.total,
+    required this.paid,
+    this.paymentStatus,
+    this.statusLabel,
+  });
+
+  double get outstanding => (total - paid).clamp(0.0, double.infinity);
+
+  static List<ZamindarLedgerRow> fromTransactions({
+    required List<Map<String, dynamic>> transactions,
+    required Map<String, String> itemSummaries,
+    required Map<String, Map<String, double>> collections,
+  }) {
+    return transactions.map((row) {
+      final type = row['type'] as String? ?? '';
+      final category = (row['category'] as String? ?? '').toUpperCase();
+      final isDebit = type == 'DEBIT';
+      final amount = (row['amount'] as num?)?.toDouble() ?? 0.0;
+      final description = row['description'] as String? ?? '';
+      final kisaanName = (row['kisaan_name'] as String?)?.trim() ?? '';
+      final invoiceNumber = (row['invoice_number'] as String?)?.trim();
+      final hasInvoice = invoiceNumber != null && invoiceNumber.isNotEmpty;
+      final dateRaw = row['date_time'] as String?;
+      final dateTime =
+          dateRaw != null ? (DateTime.tryParse(dateRaw) ?? DateTime.now()) : DateTime.now();
+
+      final itemsFromInvoice =
+          hasInvoice ? (itemSummaries[invoiceNumber] ?? '') : '';
+      final collection =
+          hasInvoice ? collections[invoiceNumber] : null;
+      final isSale = category == 'SALE' && isDebit;
+
+      String itemsText;
+      if (itemsFromInvoice.isNotEmpty) {
+        itemsText = itemsFromInvoice;
+      } else if (description.isNotEmpty) {
+        itemsText = description;
+      } else {
+        itemsText = '—';
+      }
+
+      double total;
+      double paid;
+      PaymentStatus? paymentStatus;
+      String? statusLabel;
+
+      if (isSale && collection != null) {
+        total = collection['total'] ?? amount;
+        paid = collection['paid'] ?? 0.0;
+        if (paid >= total && total > 0) {
+          paymentStatus = PaymentStatus.paid;
+        } else if (paid > 0) {
+          paymentStatus = PaymentStatus.partial;
+        } else {
+          paymentStatus = PaymentStatus.unpaid;
+        }
+      } else if (isSale) {
+        total = amount;
+        paid = 0.0;
+        paymentStatus = PaymentStatus.unpaid;
+      } else {
+        total = amount;
+        paid = isDebit ? 0.0 : amount;
+        statusLabel = _statusLabelForCategory(category);
+      }
+
+      return ZamindarLedgerRow(
+        source: row,
+        isDebit: isDebit,
+        category: category,
+        invoiceDisplay: hasInvoice ? invoiceNumber : '—',
+        dateTime: dateTime,
+        kisaanName: kisaanName.isEmpty ? '—' : kisaanName,
+        itemsText: itemsText,
+        total: total,
+        paid: paid,
+        paymentStatus: paymentStatus,
+        statusLabel: statusLabel,
+      );
+    }).toList();
+  }
+
+  static String _statusLabelForCategory(String category) {
+    switch (category) {
+      case 'PAYMENT':
+      case 'CASH_PAYMENT':
+      case 'DEBT_SETTLEMENT':
+        return 'Payment';
+      case 'WALLET_DEDUCTION':
+        return 'Wallet';
+      case 'ADVANCE':
+      case 'ADVANCE_PAYMENT':
+        return 'Advance';
+      default:
+        return category.isEmpty ? '—' : category;
+    }
+  }
+}
+
+/// Sales-style ledger table for Zamindar profile screens.
+/// Keeps debit/credit type dots; optional trailing [actionsBuilder] per row.
+class ZamindarLedgerTable extends StatelessWidget {
+  final List<ZamindarLedgerRow> rows;
+  final bool shrinkWrap;
+  /// When true, skips the outer bordered container (for use inside a parent card).
+  final bool embedded;
+  final Widget Function(BuildContext context, ZamindarLedgerRow row)?
+      actionsBuilder;
+  final double actionsWidth;
+
+  const ZamindarLedgerTable({
+    super.key,
+    required this.rows,
+    this.shrinkWrap = false,
+    this.embedded = false,
+    this.actionsBuilder,
+    this.actionsWidth = 200,
+  });
+
+  bool get _showActions => actionsBuilder != null;
+
+  @override
+  Widget build(BuildContext context) {
+    if (rows.isEmpty) {
+      final empty = const Padding(
+        padding: EdgeInsets.all(24),
+        child: Center(
+          child: Text(
+            'No transactions found',
+            style: TextStyle(fontSize: 12, color: Color(0xFF95B89A)),
+          ),
+        ),
+      );
+      if (embedded) return empty;
+      return Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0xFFE2EBE0), width: 0.5),
+        ),
+        child: empty,
+      );
+    }
+
+    final table = Column(
+      mainAxisSize: shrinkWrap ? MainAxisSize.min : MainAxisSize.max,
+      children: [
+        _buildHeader(),
+        if (shrinkWrap)
+          for (var i = 0; i < rows.length; i++)
+            _buildRow(context, rows[i], i == rows.length - 1)
+        else
+          Expanded(
+            child: ListView.builder(
+              itemCount: rows.length,
+              itemBuilder: (context, index) {
+                return _buildRow(
+                  context,
+                  rows[index],
+                  index == rows.length - 1,
+                );
+              },
+            ),
+          ),
+      ],
+    );
+
+    if (embedded) return table;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE2EBE0), width: 0.5),
+      ),
+      child: table,
+    );
+  }
+
+  Widget _buildHeader() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F9F4),
+        border: const Border(
+          bottom: BorderSide(color: Color(0xFFE2EBE0), width: 0.5),
+        ),
+        borderRadius: embedded
+            ? BorderRadius.zero
+            : const BorderRadius.only(
+                topLeft: Radius.circular(12),
+                topRight: Radius.circular(12),
+              ),
+      ),
+      child: Row(
+        children: [
+          const SizedBox(width: 17),
+          const SizedBox(
+            width: 120,
+            child: Text('INVOICE', style: _headerStyle),
+          ),
+          const SizedBox(
+            width: 140,
+            child: Text('KISAAN', style: _headerStyle),
+          ),
+          const Expanded(
+            child: Text('ITEMS', style: _headerStyle),
+          ),
+          const SizedBox(
+            width: 90,
+            child: Text(
+              'TOTAL',
+              textAlign: TextAlign.right,
+              style: _headerStyle,
+            ),
+          ),
+          const SizedBox(
+            width: 90,
+            child: Text(
+              'PAID',
+              textAlign: TextAlign.right,
+              style: _headerStyle,
+            ),
+          ),
+          const SizedBox(
+            width: 140,
+            child: Text(
+              'STATUS',
+              textAlign: TextAlign.right,
+              style: _headerStyle,
+            ),
+          ),
+          if (_showActions) SizedBox(width: actionsWidth),
+        ],
+      ),
+    );
+  }
+
+  static const _headerStyle = TextStyle(
+    fontSize: 10,
+    fontWeight: FontWeight.w500,
+    color: Color(0xFF6B8F71),
+    letterSpacing: 0.3,
+  );
+
+  Widget _buildRow(BuildContext context, ZamindarLedgerRow row, bool isLast) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+      decoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(
+            color: isLast ? Colors.transparent : const Color(0xFFE2EBE0),
+            width: 0.5,
+          ),
+        ),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 7,
+            height: 7,
+            margin: const EdgeInsets.only(top: 5, right: 10),
+            decoration: BoxDecoration(
+              color: row.isDebit
+                  ? const Color(0xFFC0DD97)
+                  : const Color(0xFF85B7EB),
+              shape: BoxShape.circle,
+            ),
+          ),
+          SizedBox(
+            width: 120,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  row.invoiceDisplay,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: Color(0xFF1B4332),
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '${_dateFormat.format(row.dateTime)} · ${_timeFormat.format(row.dateTime)}',
+                  style: const TextStyle(
+                    fontSize: 10,
+                    color: Color(0xFF95B89A),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          SizedBox(
+            width: 140,
+            child: Text(
+              row.kisaanName,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: Color(0xFF1B4332),
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          Expanded(
+            child: Text(
+              row.itemsText,
+              style: const TextStyle(
+                fontSize: 11,
+                color: Color(0xFF6B8F71),
+                height: 1.4,
+              ),
+              overflow: TextOverflow.ellipsis,
+              maxLines: 2,
+            ),
+          ),
+          SizedBox(
+            width: 90,
+            child: Text(
+              '₨ ${_currencyFormat.format(row.total)}',
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: Color(0xFF1B4332),
+              ),
+            ),
+          ),
+          SizedBox(
+            width: 90,
+            child: Text(
+              '₨ ${_currencyFormat.format(row.paid)}',
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                fontSize: 12,
+                color: Color(0xFF2D6A4F),
+              ),
+            ),
+          ),
+          SizedBox(
+            width: 140,
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: row.paymentStatus != null
+                  ? _buildPaymentStatusBadge(
+                      row.paymentStatus!,
+                      row.outstanding,
+                    )
+                  : _buildCategoryStatusBadge(row.statusLabel ?? '—'),
+            ),
+          ),
+          if (_showActions)
+            SizedBox(
+              width: actionsWidth,
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: actionsBuilder!(context, row),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPaymentStatusBadge(PaymentStatus status, double outstanding) {
+    Color backgroundColor;
+    Color textColor;
+    String text;
+
+    switch (status) {
+      case PaymentStatus.paid:
+        backgroundColor = const Color(0xFFD8F3DC);
+        textColor = const Color(0xFF2D6A4F);
+        text = 'Paid';
+        break;
+      case PaymentStatus.partial:
+        backgroundColor = const Color(0xFFFAEEDA);
+        textColor = const Color(0xFF633806);
+        text = 'Partial · ₨ ${_currencyFormat.format(outstanding)} due';
+        break;
+      case PaymentStatus.unpaid:
+        backgroundColor = const Color(0xFFFCEBEB);
+        textColor = const Color(0xFF791F1F);
+        text = 'Unpaid Credit';
+        break;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 9.5,
+          fontWeight: FontWeight.w500,
+          color: textColor,
+        ),
+        overflow: TextOverflow.ellipsis,
+      ),
+    );
+  }
+
+  Widget _buildCategoryStatusBadge(String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+      decoration: BoxDecoration(
+        color: const Color(0xFFEEF4F0),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(
+          fontSize: 9.5,
+          fontWeight: FontWeight.w500,
+          color: Color(0xFF4A6B50),
+        ),
+        overflow: TextOverflow.ellipsis,
+      ),
+    );
+  }
+}
+
 class InvoiceDetailDialog extends StatefulWidget {
   final LedgerEntry entry;
 

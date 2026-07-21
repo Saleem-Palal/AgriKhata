@@ -74,7 +74,7 @@ class DatabaseHelper with ChangeNotifier {
     return databaseFactory.openDatabase(
       path,
       options: OpenDatabaseOptions(
-        version: 25,
+        version: 27,
         onConfigure: (db) async {
           await db.execute('PRAGMA foreign_keys = ON');
         },
@@ -96,6 +96,7 @@ class DatabaseHelper with ChangeNotifier {
           await db.execute(_createWholesalerPaymentsTable());
           await db.execute(_createExpensesTable());
           await _createIndexes(db);
+          await _createLedgerSyncTriggers(db);
         },
         onOpen: (db) async {
           // Reinforce FK enforcement on every connection (Desktop FFI).
@@ -104,6 +105,7 @@ class DatabaseHelper with ChangeNotifier {
           await _ensureWholesalerPaymentsSchema(db);
           await _ensureExpensesSchema(db);
           await _ensureSalesAdvanceSchema(db);
+          await _createLedgerSyncTriggers(db);
         },
         onUpgrade: (db, oldVersion, newVersion) async {
           if (oldVersion < 3) {
@@ -474,6 +476,31 @@ class DatabaseHelper with ChangeNotifier {
               rethrow;
             }
           }
+          if (oldVersion < 26) {
+            debugPrint(
+              'Migrating to version 26: FK integrity, INTEGER money, '
+              'ledger triggers, drop denormalized names',
+            );
+            try {
+              await _migrateSchemaIntegrityV26(db);
+              debugPrint('Version 26 migration completed');
+            } catch (e) {
+              debugPrint('Error migrating to version 26: $e');
+              rethrow;
+            }
+          }
+          if (oldVersion < 27) {
+            debugPrint(
+              'Migrating to version 27: full sales/purchase domain sync triggers',
+            );
+            try {
+              await _createLedgerSyncTriggers(db);
+              debugPrint('Version 27 migration completed');
+            } catch (e) {
+              debugPrint('Error migrating to version 27: $e');
+              rethrow;
+            }
+          }
         },
       ),
     );
@@ -524,6 +551,519 @@ class DatabaseHelper with ChangeNotifier {
 
     await _backfillLedgerFromSales(db);
     await _recalculateAllZamindarBalances(db);
+  }
+
+  /// v26 Schema Integrity Refactor:
+  /// TEMP-stage live transactional data → rebuild INTEGER/FK tables →
+  /// name→id mapping with ROUND money → fresh ledger triggers → balance sweep.
+  ///
+  /// [PRAGMA foreign_keys] is toggled outside the SQL transaction (SQLite
+  /// ignores FK pragma changes while a transaction is open).
+  Future<void> _migrateSchemaIntegrityV26(Database db) async {
+    const stageSales = '_mig26_sales';
+    const stageSaleItems = '_mig26_sale_items';
+    const stagePayments = '_mig26_payments';
+    const stageLedger = '_mig26_ledger';
+    const stagePurchases = '_mig26_purchase_invoices';
+    const stagePurchaseItems = '_mig26_purchase_items';
+    const stageWhLedger = '_mig26_wholesaler_ledger';
+    const stageWhPayments = '_mig26_wholesaler_payments';
+
+    String roundInt(String expr) =>
+        'CAST(ROUND(COALESCE($expr, 0)) AS INTEGER)';
+
+    String colOrDefault(Set<String> cols, String tableAlias, String column,
+        String sqlDefault) {
+      if (!cols.contains(column)) return sqlDefault;
+      return '$tableAlias.$column';
+    }
+
+    String moneyOrZero(Set<String> cols, String tableAlias, String column) {
+      if (!cols.contains(column)) return '0';
+      return roundInt('$tableAlias.$column');
+    }
+
+    // Drop any leftover domain triggers before table surgery.
+    for (final name in const [
+      'after_sale_insert',
+      'after_sale_delete',
+      'after_sale_update',
+      'after_payment_insert',
+      'after_payment_delete',
+      'after_payment_update',
+      'after_purchase_insert',
+      'after_purchase_update',
+      'after_purchase_delete',
+      'after_wholesaler_payment_insert',
+      'after_wholesaler_payment_delete',
+    ]) {
+      await db.execute('DROP TRIGGER IF EXISTS $name');
+    }
+
+    await db.execute('PRAGMA foreign_keys = OFF');
+    try {
+      await db.transaction((txn) async {
+        // ---------------------------------------------------------------
+        // 1) TEMPORARILY BACK UP LIVE TRANSACTION DATA
+        // ---------------------------------------------------------------
+        Future<void> stageTable(String stage, String source) async {
+          await txn.execute('DROP TABLE IF EXISTS $stage');
+          if (await _tableExists(txn, source)) {
+            await txn.execute(
+              'CREATE TEMP TABLE $stage AS SELECT * FROM $source',
+            );
+            final countRow =
+                await txn.rawQuery('SELECT COUNT(*) AS c FROM $stage');
+            final count = (countRow.first['c'] as num?)?.toInt() ?? 0;
+            debugPrint('v26 staged $source → $stage ($count rows)');
+          } else {
+            // Empty shell so later INSERTs are no-ops instead of hard failures.
+            await txn.execute('CREATE TEMP TABLE $stage (id INTEGER)');
+            debugPrint('v26: $source missing — empty stage $stage');
+          }
+        }
+
+        await stageTable(stageSales, SalesTable.name);
+        await stageTable(stageSaleItems, SaleItemsTable.name);
+        await stageTable(stagePayments, PaymentsTable.name);
+        await stageTable(stageLedger, LedgerTransactionTable.name);
+        await stageTable(stagePurchases, PurchaseInvoicesTable.name);
+        await stageTable(stagePurchaseItems, PurchaseItemsTable.name);
+        await stageTable(stageWhLedger, WholesalerLedgerTable.name);
+        await stageTable(stageWhPayments, WholesalerPaymentsTable.name);
+
+        final salesCols = await _tableColumnNames(txn, stageSales);
+        final paymentCols = await _tableColumnNames(txn, stagePayments);
+        final saleItemCols = await _tableColumnNames(txn, stageSaleItems);
+        final purchaseCols = await _tableColumnNames(txn, stagePurchases);
+        final purchaseItemCols =
+            await _tableColumnNames(txn, stagePurchaseItems);
+        final whLedgerCols = await _tableColumnNames(txn, stageWhLedger);
+        final whPaymentCols = await _tableColumnNames(txn, stageWhPayments);
+
+        // ---------------------------------------------------------------
+        // 2) DROP OLD TABLES + REBUILD VERSION 26 LAYOUT
+        // ---------------------------------------------------------------
+        // Child → parent order (FK pragma is OFF, but keep dependencies sane).
+        await txn.execute('DROP TABLE IF EXISTS ${SaleItemsTable.name}');
+        await txn.execute('DROP TABLE IF EXISTS ${LedgerTransactionTable.name}');
+        await txn.execute('DROP TABLE IF EXISTS ${PaymentsTable.name}');
+        await txn.execute('DROP TABLE IF EXISTS ${SalesTable.name}');
+        await txn.execute('DROP TABLE IF EXISTS ${PurchaseItemsTable.name}');
+        await txn.execute('DROP TABLE IF EXISTS ${PurchaseInvoicesTable.name}');
+        await txn.execute('DROP TABLE IF EXISTS ${WholesalerLedgerTable.name}');
+        await txn.execute('DROP TABLE IF EXISTS ${WholesalerPaymentsTable.name}');
+
+        await txn.execute(_createSalesTable());
+        await txn.execute(_createSaleItemsTable());
+        await txn.execute(_createPaymentsTable());
+        await txn.execute(_createLedgerTransactionsTable());
+        await txn.execute(_createPurchaseInvoicesTable());
+        await txn.execute(_createPurchaseItemsTable());
+        await txn.execute(_createWholesalerLedgerTable());
+        await txn.execute(_createWholesalerPaymentsTable());
+
+        // ---------------------------------------------------------------
+        // 3) SAFE DATA MAPPING & ROUNDING CONVERSION
+        // ---------------------------------------------------------------
+
+        // --- sales: name strings → zamindar_id / kisaan_id, REAL → INTEGER ---
+        if (salesCols.contains(SalesTable.invoiceNumber)) {
+          final resolvedZamindarId = () {
+            final hasId = salesCols.contains(SalesTable.zamindarId);
+            final hasName = salesCols.contains(SalesTable.zamindarName);
+            if (hasId && hasName) {
+              return '''
+                COALESCE(
+                  s.${SalesTable.zamindarId},
+                  (SELECT z.${ZamindarTable.id} FROM ${ZamindarTable.name} z
+                   WHERE z.${ZamindarTable.nameColumn} = TRIM(s.${SalesTable.zamindarName})
+                   LIMIT 1)
+                )''';
+            }
+            if (hasId) return 's.${SalesTable.zamindarId}';
+            if (hasName) {
+              return '''
+                (SELECT z.${ZamindarTable.id} FROM ${ZamindarTable.name} z
+                 WHERE z.${ZamindarTable.nameColumn} = TRIM(s.${SalesTable.zamindarName})
+                 LIMIT 1)''';
+            }
+            return 'NULL';
+          }();
+
+          final resolvedKisaanId = () {
+            final hasId = salesCols.contains(SalesTable.kisaanId);
+            final hasName = salesCols.contains(SalesTable.kisaanName);
+            final zamindarForKisaan = resolvedZamindarId;
+            if (hasId && hasName) {
+              return '''
+                COALESCE(
+                  s.${SalesTable.kisaanId},
+                  (SELECT k.${KisaanTable.id} FROM ${KisaanTable.name} k
+                   WHERE k.${KisaanTable.nameColumn} = TRIM(s.${SalesTable.kisaanName})
+                     AND k.${KisaanTable.zamindarId} = $zamindarForKisaan
+                   LIMIT 1)
+                )''';
+            }
+            if (hasId) return 's.${SalesTable.kisaanId}';
+            if (hasName) {
+              return '''
+                (SELECT k.${KisaanTable.id} FROM ${KisaanTable.name} k
+                 WHERE k.${KisaanTable.nameColumn} = TRIM(s.${SalesTable.kisaanName})
+                   AND k.${KisaanTable.zamindarId} = $zamindarForKisaan
+                 LIMIT 1)''';
+            }
+            return 'NULL';
+          }();
+
+          await txn.execute('''
+            INSERT INTO ${SalesTable.name} (
+              ${SalesTable.invoiceNumber}, ${SalesTable.dateTime},
+              ${SalesTable.subtotal}, ${SalesTable.itemDiscountsTotal},
+              ${SalesTable.seasonalIncrementTotal}, ${SalesTable.overallDiscount},
+              ${SalesTable.totalPayable}, ${SalesTable.paidAmount},
+              ${SalesTable.paymentMethod}, ${SalesTable.season},
+              ${SalesTable.paymentTerm}, ${SalesTable.transactionType},
+              ${SalesTable.creditAmount}, ${SalesTable.fuelQuantity},
+              ${SalesTable.remarks}, ${SalesTable.zamindarId}, ${SalesTable.kisaanId}
+            )
+            SELECT
+              s.${SalesTable.invoiceNumber},
+              s.${SalesTable.dateTime},
+              ${moneyOrZero(salesCols, 's', SalesTable.subtotal)},
+              ${moneyOrZero(salesCols, 's', SalesTable.itemDiscountsTotal)},
+              ${moneyOrZero(salesCols, 's', SalesTable.seasonalIncrementTotal)},
+              ${moneyOrZero(salesCols, 's', SalesTable.overallDiscount)},
+              ${moneyOrZero(salesCols, 's', SalesTable.totalPayable)},
+              ${moneyOrZero(salesCols, 's', SalesTable.paidAmount)},
+              ${colOrDefault(salesCols, 's', SalesTable.paymentMethod, "'Cash'")},
+              ${colOrDefault(salesCols, 's', SalesTable.season, "'Unknown'")},
+              ${colOrDefault(salesCols, 's', SalesTable.paymentTerm, 'NULL')},
+              COALESCE(
+                ${colOrDefault(salesCols, 's', SalesTable.transactionType, 'NULL')},
+                '${SaleTransactionType.productSale}'
+              ),
+              ${moneyOrZero(salesCols, 's', SalesTable.creditAmount)},
+              ${colOrDefault(salesCols, 's', SalesTable.fuelQuantity, 'NULL')},
+              ${colOrDefault(salesCols, 's', SalesTable.remarks, 'NULL')},
+              $resolvedZamindarId,
+              $resolvedKisaanId
+            FROM $stageSales s
+            WHERE s.${SalesTable.invoiceNumber} IS NOT NULL
+              AND TRIM(s.${SalesTable.invoiceNumber}) != ''
+          ''');
+        }
+
+        // --- sale_items ---
+        if (saleItemCols.contains(SaleItemsTable.invoiceNumber)) {
+          await txn.execute('''
+            INSERT INTO ${SaleItemsTable.name} (
+              ${SaleItemsTable.id}, ${SaleItemsTable.invoiceNumber},
+              ${SaleItemsTable.productName}, ${SaleItemsTable.productType},
+              ${SaleItemsTable.quantity}, ${SaleItemsTable.unitPrice},
+              ${SaleItemsTable.seasonalIncrement}, ${SaleItemsTable.itemDiscount},
+              ${SaleItemsTable.subtotal}
+            )
+            SELECT
+              ${colOrDefault(saleItemCols, 'si', SaleItemsTable.id, 'NULL')},
+              si.${SaleItemsTable.invoiceNumber},
+              ${colOrDefault(saleItemCols, 'si', SaleItemsTable.productName, "''")},
+              ${colOrDefault(saleItemCols, 'si', SaleItemsTable.productType, "'Fertilizer'")},
+              CAST(ROUND(COALESCE(
+                ${colOrDefault(saleItemCols, 'si', SaleItemsTable.quantity, '0')}, 0
+              )) AS INTEGER),
+              ${moneyOrZero(saleItemCols, 'si', SaleItemsTable.unitPrice)},
+              ${moneyOrZero(saleItemCols, 'si', SaleItemsTable.seasonalIncrement)},
+              ${moneyOrZero(saleItemCols, 'si', SaleItemsTable.itemDiscount)},
+              ${moneyOrZero(saleItemCols, 'si', SaleItemsTable.subtotal)}
+            FROM $stageSaleItems si
+            WHERE si.${SaleItemsTable.invoiceNumber} IN (
+              SELECT ${SalesTable.invoiceNumber} FROM ${SalesTable.name}
+            )
+          ''');
+        }
+
+        // --- payments: name strings → ids, amount_paid REAL → INTEGER ---
+        if (paymentCols.contains(PaymentsTable.paymentId)) {
+          final payZamindarId = () {
+            final hasId = paymentCols.contains(PaymentsTable.zamindarId);
+            final hasName = paymentCols.contains(PaymentsTable.zamindarName);
+            final fromName = hasName
+                ? '''
+                  (SELECT z.${ZamindarTable.id} FROM ${ZamindarTable.name} z
+                   WHERE z.${ZamindarTable.nameColumn} = TRIM(p.${PaymentsTable.zamindarName})
+                   LIMIT 1)'''
+                : 'NULL';
+            final fromSale = '''
+              (SELECT s.${SalesTable.zamindarId} FROM ${SalesTable.name} s
+               WHERE s.${SalesTable.invoiceNumber} = p.${PaymentsTable.invoiceNumber}
+               LIMIT 1)''';
+            if (hasId) {
+              return 'COALESCE(p.${PaymentsTable.zamindarId}, $fromName, $fromSale)';
+            }
+            return 'COALESCE($fromName, $fromSale)';
+          }();
+
+          final payKisaanId = () {
+            final hasId = paymentCols.contains(PaymentsTable.kisaanId);
+            final hasName = paymentCols.contains(PaymentsTable.kisaanName);
+            final fromName = hasName
+                ? '''
+                  (SELECT k.${KisaanTable.id} FROM ${KisaanTable.name} k
+                   WHERE k.${KisaanTable.nameColumn} = TRIM(p.${PaymentsTable.kisaanName})
+                     AND k.${KisaanTable.zamindarId} = $payZamindarId
+                   LIMIT 1)'''
+                : 'NULL';
+            final fromSale = '''
+              (SELECT s.${SalesTable.kisaanId} FROM ${SalesTable.name} s
+               WHERE s.${SalesTable.invoiceNumber} = p.${PaymentsTable.invoiceNumber}
+               LIMIT 1)''';
+            if (hasId) {
+              return 'COALESCE(p.${PaymentsTable.kisaanId}, $fromName, $fromSale)';
+            }
+            return 'COALESCE($fromName, $fromSale)';
+          }();
+
+          await txn.execute('''
+            INSERT INTO ${PaymentsTable.name} (
+              ${PaymentsTable.paymentId}, ${PaymentsTable.invoiceNumber},
+              ${PaymentsTable.dateTime}, ${PaymentsTable.zamindarId},
+              ${PaymentsTable.kisaanId}, ${PaymentsTable.amountPaid},
+              ${PaymentsTable.paymentMethod}, ${PaymentsTable.season}
+            )
+            SELECT
+              p.${PaymentsTable.paymentId},
+              p.${PaymentsTable.invoiceNumber},
+              p.${PaymentsTable.dateTime},
+              $payZamindarId,
+              $payKisaanId,
+              ${moneyOrZero(paymentCols, 'p', PaymentsTable.amountPaid)},
+              ${colOrDefault(paymentCols, 'p', PaymentsTable.paymentMethod, "'Cash'")},
+              ${colOrDefault(paymentCols, 'p', PaymentsTable.season, "'Unknown'")}
+            FROM $stagePayments p
+            WHERE p.${PaymentsTable.paymentId} IS NOT NULL
+              AND TRIM(p.${PaymentsTable.paymentId}) != ''
+              AND (
+                p.${PaymentsTable.invoiceNumber} IS NULL
+                OR TRIM(p.${PaymentsTable.invoiceNumber}) = ''
+                OR p.${PaymentsTable.invoiceNumber} IN (
+                  SELECT ${SalesTable.invoiceNumber} FROM ${SalesTable.name}
+                )
+              )
+          ''');
+        }
+
+        // Ledger is staged for safety but rebuilt empty here; the post-txn
+        // trigger sweep regenerates the stream under v26 rules.
+        // (stageLedger retained until end of transaction for crash forensics.)
+
+        // --- purchase_invoices ---
+        if (purchaseCols.contains(PurchaseInvoicesTable.invoiceNumber)) {
+          await txn.execute('''
+            INSERT INTO ${PurchaseInvoicesTable.name} (
+              ${PurchaseInvoicesTable.invoiceNumber},
+              ${PurchaseInvoicesTable.wholesalerId},
+              ${PurchaseInvoicesTable.dateTime},
+              ${PurchaseInvoicesTable.subtotal},
+              ${PurchaseInvoicesTable.transportCharges},
+              ${PurchaseInvoicesTable.grandTotal},
+              ${PurchaseInvoicesTable.paymentType},
+              ${PurchaseInvoicesTable.amountPaid},
+              ${PurchaseInvoicesTable.outstanding},
+              ${PurchaseInvoicesTable.description}
+            )
+            SELECT
+              pi.${PurchaseInvoicesTable.invoiceNumber},
+              pi.${PurchaseInvoicesTable.wholesalerId},
+              pi.${PurchaseInvoicesTable.dateTime},
+              ${moneyOrZero(purchaseCols, 'pi', PurchaseInvoicesTable.subtotal)},
+              ${moneyOrZero(purchaseCols, 'pi', PurchaseInvoicesTable.transportCharges)},
+              ${moneyOrZero(purchaseCols, 'pi', PurchaseInvoicesTable.grandTotal)},
+              ${colOrDefault(purchaseCols, 'pi', PurchaseInvoicesTable.paymentType, "'Cash'")},
+              ${moneyOrZero(purchaseCols, 'pi', PurchaseInvoicesTable.amountPaid)},
+              ${moneyOrZero(purchaseCols, 'pi', PurchaseInvoicesTable.outstanding)},
+              ${colOrDefault(purchaseCols, 'pi', PurchaseInvoicesTable.description, 'NULL')}
+            FROM $stagePurchases pi
+            WHERE pi.${PurchaseInvoicesTable.invoiceNumber} IS NOT NULL
+              AND TRIM(pi.${PurchaseInvoicesTable.invoiceNumber}) != ''
+          ''');
+        }
+
+        // --- purchase_items ---
+        if (purchaseItemCols.contains(PurchaseItemsTable.invoiceNumber)) {
+          await txn.execute('''
+            INSERT INTO ${PurchaseItemsTable.name} (
+              ${PurchaseItemsTable.id}, ${PurchaseItemsTable.invoiceNumber},
+              ${PurchaseItemsTable.productId}, ${PurchaseItemsTable.productName},
+              ${PurchaseItemsTable.quantity}, ${PurchaseItemsTable.purchaseRate},
+              ${PurchaseItemsTable.expiryDate}, ${PurchaseItemsTable.lineTotal}
+            )
+            SELECT
+              ${colOrDefault(purchaseItemCols, 'pii', PurchaseItemsTable.id, 'NULL')},
+              pii.${PurchaseItemsTable.invoiceNumber},
+              ${colOrDefault(purchaseItemCols, 'pii', PurchaseItemsTable.productId, 'NULL')},
+              ${colOrDefault(purchaseItemCols, 'pii', PurchaseItemsTable.productName, "''")},
+              CAST(ROUND(COALESCE(
+                ${colOrDefault(purchaseItemCols, 'pii', PurchaseItemsTable.quantity, '0')}, 0
+              )) AS INTEGER),
+              ${moneyOrZero(purchaseItemCols, 'pii', PurchaseItemsTable.purchaseRate)},
+              ${colOrDefault(purchaseItemCols, 'pii', PurchaseItemsTable.expiryDate, 'NULL')},
+              ${moneyOrZero(purchaseItemCols, 'pii', PurchaseItemsTable.lineTotal)}
+            FROM $stagePurchaseItems pii
+            WHERE pii.${PurchaseItemsTable.invoiceNumber} IN (
+              SELECT ${PurchaseInvoicesTable.invoiceNumber}
+              FROM ${PurchaseInvoicesTable.name}
+            )
+          ''');
+        }
+
+        // --- wholesaler_ledger (drop denormalized running_balance) ---
+        if (whLedgerCols.contains(WholesalerLedgerTable.wholesalerId)) {
+          await txn.execute('''
+            INSERT INTO ${WholesalerLedgerTable.name} (
+              ${WholesalerLedgerTable.id},
+              ${WholesalerLedgerTable.wholesalerId},
+              ${WholesalerLedgerTable.transactionType},
+              ${WholesalerLedgerTable.referenceId},
+              ${WholesalerLedgerTable.date},
+              ${WholesalerLedgerTable.debit},
+              ${WholesalerLedgerTable.credit},
+              ${WholesalerLedgerTable.description}
+            )
+            SELECT
+              ${colOrDefault(whLedgerCols, 'wl', WholesalerLedgerTable.id, 'NULL')},
+              wl.${WholesalerLedgerTable.wholesalerId},
+              ${colOrDefault(whLedgerCols, 'wl', WholesalerLedgerTable.transactionType, "'Purchase'")},
+              ${colOrDefault(whLedgerCols, 'wl', WholesalerLedgerTable.referenceId, 'NULL')},
+              ${colOrDefault(whLedgerCols, 'wl', WholesalerLedgerTable.date, "datetime('now')")},
+              ${moneyOrZero(whLedgerCols, 'wl', WholesalerLedgerTable.debit)},
+              ${moneyOrZero(whLedgerCols, 'wl', WholesalerLedgerTable.credit)},
+              ${colOrDefault(whLedgerCols, 'wl', WholesalerLedgerTable.description, 'NULL')}
+            FROM $stageWhLedger wl
+          ''');
+        }
+
+        // --- wholesaler_payments ---
+        if (whPaymentCols.contains(WholesalerPaymentsTable.wholesalerId)) {
+          await txn.execute('''
+            INSERT INTO ${WholesalerPaymentsTable.name} (
+              ${WholesalerPaymentsTable.id},
+              ${WholesalerPaymentsTable.wholesalerId},
+              ${WholesalerPaymentsTable.amount},
+              ${WholesalerPaymentsTable.paymentMethod},
+              ${WholesalerPaymentsTable.paymentSource},
+              ${WholesalerPaymentsTable.referenceNo},
+              ${WholesalerPaymentsTable.date},
+              ${WholesalerPaymentsTable.notes}
+            )
+            SELECT
+              ${colOrDefault(whPaymentCols, 'wp', WholesalerPaymentsTable.id, 'NULL')},
+              wp.${WholesalerPaymentsTable.wholesalerId},
+              ${moneyOrZero(whPaymentCols, 'wp', WholesalerPaymentsTable.amount)},
+              ${colOrDefault(whPaymentCols, 'wp', WholesalerPaymentsTable.paymentMethod, "'Cash'")},
+              ${colOrDefault(whPaymentCols, 'wp', WholesalerPaymentsTable.paymentSource, "'${WholesalerPaymentSource.manualKhataPayment}'")},
+              ${colOrDefault(whPaymentCols, 'wp', WholesalerPaymentsTable.referenceNo, 'NULL')},
+              ${colOrDefault(whPaymentCols, 'wp', WholesalerPaymentsTable.date, "datetime('now')")},
+              ${colOrDefault(whPaymentCols, 'wp', WholesalerPaymentsTable.notes, 'NULL')}
+            FROM $stageWhPayments wp
+          ''');
+        }
+
+        // Drop staging tables (TEMP; also auto-cleared on connection close).
+        for (final stage in [
+          stageSales,
+          stageSaleItems,
+          stagePayments,
+          stageLedger,
+          stagePurchases,
+          stagePurchaseItems,
+          stageWhLedger,
+          stageWhPayments,
+        ]) {
+          await txn.execute('DROP TABLE IF EXISTS $stage');
+        }
+      });
+
+      await _createIndexes(db);
+
+      // ---------------------------------------------------------------
+      // 4) RE-INJECT NATIVE TRIGGERS & RECALCULATE LEDGER / BALANCES
+      // ---------------------------------------------------------------
+      await _createLedgerSyncTriggers(db);
+      await _rebuildLedgerStreamAfterV26(db);
+      await _recalculateAllZamindarBalances(db);
+    } finally {
+      await db.execute('PRAGMA foreign_keys = ON');
+    }
+  }
+
+  /// Touch-updates every sale/payment so v26 triggers rewrite the ledger
+  /// stream (DEBIT from sales, CREDIT from payments) under the new rules.
+  Future<void> _rebuildLedgerStreamAfterV26(Database db) async {
+    await db.delete(LedgerTransactionTable.name);
+
+    final sales = await db.query(SalesTable.name);
+    for (final sale in sales) {
+      if (sale[SalesTable.zamindarId] == null) continue;
+      final invoice = sale[SalesTable.invoiceNumber] as String?;
+      if (invoice == null || invoice.isEmpty) continue;
+
+      // Fires after_sale_update → SALE debit + invoice-linked payment credits.
+      await db.update(
+        SalesTable.name,
+        {SalesTable.dateTime: sale[SalesTable.dateTime]},
+        where: '${SalesTable.invoiceNumber} = ?',
+        whereArgs: [invoice],
+      );
+    }
+
+    // Advance collections (NULL invoice) are not covered by sale updates.
+    final payments = await db.query(PaymentsTable.name);
+    for (final payment in payments) {
+      final paymentId = payment[PaymentsTable.paymentId] as String?;
+      if (paymentId == null || paymentId.isEmpty) continue;
+
+      final existing = await db.query(
+        LedgerTransactionTable.name,
+        columns: [LedgerTransactionTable.id],
+        where: '${LedgerTransactionTable.paymentId} = ?',
+        whereArgs: [paymentId],
+        limit: 1,
+      );
+      if (existing.isNotEmpty) continue;
+
+      // Fires after_payment_update when zamindar can be resolved.
+      await db.update(
+        PaymentsTable.name,
+        {PaymentsTable.dateTime: payment[PaymentsTable.dateTime]},
+        where: '${PaymentsTable.paymentId} = ?',
+        whereArgs: [paymentId],
+      );
+    }
+
+    debugPrint(
+      'v26 ledger rebuild complete '
+      '(${sales.length} sales, ${payments.length} payments swept)',
+    );
+  }
+
+  Future<bool> _tableExists(DatabaseExecutor db, String table) async {
+    final rows = await db.rawQuery(
+      "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ? LIMIT 1",
+      [table],
+    );
+    return rows.isNotEmpty;
+  }
+
+  Future<Set<String>> _tableColumnNames(
+    DatabaseExecutor db,
+    String table,
+  ) async {
+    final info = await db.rawQuery('PRAGMA table_info($table)');
+    return {
+      for (final row in info)
+        if (row['name'] is String) row['name'] as String,
+    };
   }
 
   /// Single source of truth for how much has been collected on sale alias `s`.
@@ -718,7 +1258,7 @@ END
     );
     await addColumn(
       'ALTER TABLE ${SalesTable.name} '
-      'ADD COLUMN ${SalesTable.creditAmount} REAL NOT NULL DEFAULT 0',
+      'ADD COLUMN ${SalesTable.creditAmount} INTEGER NOT NULL DEFAULT 0',
       SalesTable.creditAmount,
     );
     await addColumn(
@@ -848,28 +1388,14 @@ END
           (row[PurchaseInvoicesTable.outstanding] as num?)?.toDouble() ??
           (grandTotal - paid);
 
-      // Reconstruct running balance snapshot from current vendor balance
-      // (best-effort for historical rows).
-      final balRows = await db.query(
-        WholesalerTable.name,
-        columns: [WholesalerTable.balance],
-        where: '${WholesalerTable.id} = ?',
-        whereArgs: [wholesalerId],
-        limit: 1,
-      );
-      final currentBal = balRows.isEmpty
-          ? outstanding
-          : (balRows.first[WholesalerTable.balance] as num?)?.toDouble() ??
-                outstanding;
-
       await db.insert(WholesalerLedgerTable.name, {
         WholesalerLedgerTable.wholesalerId: wholesalerId,
         WholesalerLedgerTable.transactionType: WholesalerLedgerTxnType.purchase,
         WholesalerLedgerTable.referenceId: invoiceNumber,
         WholesalerLedgerTable.date: dateRaw,
-        WholesalerLedgerTable.debit: grandTotal > 0 ? grandTotal : outstanding,
+        WholesalerLedgerTable.debit:
+            (grandTotal > 0 ? grandTotal : outstanding).round(),
         WholesalerLedgerTable.credit: 0,
-        WholesalerLedgerTable.runningBalance: currentBal,
       });
 
       if (paid > 0) {
@@ -880,8 +1406,7 @@ END
           WholesalerLedgerTable.referenceId: '$invoiceNumber-PAID',
           WholesalerLedgerTable.date: dateRaw,
           WholesalerLedgerTable.debit: 0,
-          WholesalerLedgerTable.credit: paid,
-          WholesalerLedgerTable.runningBalance: currentBal,
+          WholesalerLedgerTable.credit: paid.round(),
         });
       }
     }
@@ -955,144 +1480,30 @@ END
   }
 
   Future<void> _backfillLedgerFromSales(Database db) async {
+    // Touch-update missing SALE ledger rows so after_sale_update fires.
     final salesMaps = await db.query(SalesTable.name);
     for (final sale in salesMaps) {
       final invoiceNumber = sale[SalesTable.invoiceNumber] as String;
       final existing = await db.query(
         LedgerTransactionTable.name,
         where:
-            '${LedgerTransactionTable.invoiceNumber} = ? AND ${LedgerTransactionTable.category} = ?',
-        whereArgs: [invoiceNumber, 'SALE'],
+            '${LedgerTransactionTable.invoiceNumber} = ? AND '
+            'UPPER(${LedgerTransactionTable.category}) IN '
+            "('SALE', 'CASH_ADVANCE', 'DIESEL_ADVANCE', 'PETROL_ADVANCE')",
+        whereArgs: [invoiceNumber],
         limit: 1,
       );
       if (existing.isNotEmpty) continue;
+      if (sale[SalesTable.zamindarId] == null) continue;
 
-      final zamindarName = sale[SalesTable.zamindarName] as String;
-      final kisaanName = sale[SalesTable.kisaanName] as String?;
-      final paidAmount =
-          (sale[SalesTable.paidAmount] as num?)?.toDouble() ?? 0.0;
-      final paymentMethod = sale[SalesTable.paymentMethod] as String;
-      final season = sale[SalesTable.season] as String;
-      final dateTimeStr = sale[SalesTable.dateTime] as String;
-      final totalPayable =
-          (sale[SalesTable.totalPayable] as num?)?.toDouble() ?? 0.0;
-
-      final itemsMaps = await db.query(
-        SaleItemsTable.name,
-        where: '${SaleItemsTable.invoiceNumber} = ?',
+      await db.update(
+        SalesTable.name,
+        {
+          SalesTable.dateTime: sale[SalesTable.dateTime],
+        },
+        where: '${SalesTable.invoiceNumber} = ?',
         whereArgs: [invoiceNumber],
       );
-      final description = itemsMaps
-          .map(
-            (item) =>
-                '${item[SaleItemsTable.productName]} x${item[SaleItemsTable.quantity]}',
-          )
-          .join(' · ');
-
-      await db.transaction((txn) async {
-        await _insertLedgerEntriesForSale(
-          txn,
-          invoiceNumber: invoiceNumber,
-          zamindarName: zamindarName,
-          kisaanName: kisaanName,
-          description: description.isEmpty
-              ? 'Sale $invoiceNumber'
-              : description,
-          totalPayable: totalPayable,
-          paidAmount: paidAmount,
-          paymentMethod: paymentMethod,
-          season: season,
-          dateTime: _parseDateTime(dateTimeStr),
-        );
-      });
-    }
-  }
-
-  Future<void> _insertLedgerEntriesForSale(
-    DatabaseExecutor txn, {
-    required String invoiceNumber,
-    required String zamindarName,
-    String? kisaanName,
-    required String description,
-    required double totalPayable,
-    required double paidAmount,
-    required String paymentMethod,
-    required String season,
-    required DateTime dateTime,
-    double advanceDrawdown = 0,
-    String? walletPaymentId,
-    String? cashPaymentId,
-  }) async {
-    final zamindarRows = await txn.query(
-      ZamindarTable.name,
-      columns: [ZamindarTable.id],
-      where: '${ZamindarTable.nameColumn} = ?',
-      whereArgs: [zamindarName],
-      limit: 1,
-    );
-    if (zamindarRows.isEmpty) return;
-
-    final zamindarId = zamindarRows.first[ZamindarTable.id] as int;
-    int? kisaanId;
-    if (kisaanName != null && kisaanName.isNotEmpty) {
-      final kisaanRows = await txn.query(
-        KisaanTable.name,
-        columns: [KisaanTable.id],
-        where:
-            '${KisaanTable.zamindarId} = ? AND ${KisaanTable.nameColumn} = ?',
-        whereArgs: [zamindarId, kisaanName],
-        limit: 1,
-      );
-      if (kisaanRows.isNotEmpty) {
-        kisaanId = kisaanRows.first[KisaanTable.id] as int;
-      }
-    }
-
-    final netAmount = totalPayable.round();
-    await txn.insert(LedgerTransactionTable.name, {
-      LedgerTransactionTable.zamindarId: zamindarId,
-      LedgerTransactionTable.kisaanId: kisaanId,
-      LedgerTransactionTable.invoiceNumber: invoiceNumber,
-      LedgerTransactionTable.type: LedgerTransactionType.debit,
-      LedgerTransactionTable.category: 'SALE',
-      LedgerTransactionTable.description: description,
-      LedgerTransactionTable.amount: netAmount,
-      LedgerTransactionTable.dateTime: _formatDateTime(dateTime),
-      LedgerTransactionTable.season: season,
-    });
-
-    if (advanceDrawdown > 0) {
-      await txn.insert(LedgerTransactionTable.name, {
-        LedgerTransactionTable.zamindarId: zamindarId,
-        LedgerTransactionTable.kisaanId: kisaanId,
-        LedgerTransactionTable.invoiceNumber: invoiceNumber,
-        LedgerTransactionTable.paymentId: walletPaymentId,
-        LedgerTransactionTable.type: LedgerTransactionType.credit,
-        LedgerTransactionTable.category: 'WALLET_DEDUCTION',
-        LedgerTransactionTable.description: 'Advance wallet deduction',
-        LedgerTransactionTable.amount: advanceDrawdown.round(),
-        LedgerTransactionTable.dateTime: _formatDateTime(dateTime),
-        LedgerTransactionTable.season: season,
-      });
-    }
-
-    if (paidAmount > 0) {
-      await txn.insert(LedgerTransactionTable.name, {
-        LedgerTransactionTable.zamindarId: zamindarId,
-        LedgerTransactionTable.kisaanId: kisaanId,
-        LedgerTransactionTable.invoiceNumber: invoiceNumber,
-        LedgerTransactionTable.paymentId: cashPaymentId,
-        LedgerTransactionTable.type: LedgerTransactionType.credit,
-        LedgerTransactionTable.category: paymentMethod == 'Cash'
-            ? 'CASH_PAYMENT'
-            : 'PAYMENT',
-        LedgerTransactionTable.description: paymentMethod == 'Cash'
-            ? 'Cash payment for sale'
-            : 'Payment for $invoiceNumber',
-        LedgerTransactionTable.amount: paidAmount.round(),
-        LedgerTransactionTable.dateTime: _formatDateTime(dateTime),
-        LedgerTransactionTable.season: season,
-      });
     }
   }
 
@@ -1264,6 +1675,503 @@ END
       CREATE INDEX IF NOT EXISTS idx_expenses_expense_date
       ON ${ExpenseTable.name}(${ExpenseTable.expenseDate})
     ''');
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_products_search
+      ON ${ProductTable.name}(${ProductTable.nameColumn}, ${ProductTable.brand})
+    ''');
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_zamindars_search
+      ON ${ZamindarTable.name}(${ZamindarTable.nameColumn})
+    ''');
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_sales_zamindar_id
+      ON ${SalesTable.name}(${SalesTable.zamindarId})
+    ''');
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_payments_zamindar_id
+      ON ${PaymentsTable.name}(${PaymentsTable.zamindarId})
+    ''');
+  }
+
+  /// Native SQLite triggers keep sales/payments/purchases ledgers in sync.
+  /// Sale polarity: SALE = DEBIT, payment = CREDIT (app convention).
+  Future<void> _createLedgerSyncTriggers(Database db) async {
+    const dropTriggers = <String>[
+      'after_sale_insert',
+      'after_sale_delete',
+      'after_sale_update',
+      'after_payment_insert',
+      'after_payment_delete',
+      'after_payment_update',
+      'after_purchase_insert',
+      'after_purchase_update',
+      'after_purchase_delete',
+      'after_wholesaler_payment_insert',
+      'after_wholesaler_payment_delete',
+    ];
+    for (final name in dropTriggers) {
+      await db.execute('DROP TRIGGER IF EXISTS $name');
+    }
+
+    // Shared CASE expressions for payment → ledger mapping.
+    const paymentCategoryCase = '''
+      CASE
+        WHEN NEW.${PaymentsTable.invoiceNumber} IS NULL
+          THEN 'ADVANCE_PAYMENT'
+        WHEN NEW.${PaymentsTable.paymentMethod} = 'Advance Wallet Deduction'
+          THEN 'WALLET_DEDUCTION'
+        WHEN NEW.${PaymentsTable.paymentMethod} = 'Cash' THEN 'CASH_PAYMENT'
+        ELSE 'PAYMENT'
+      END
+    ''';
+    const paymentDescriptionCase = '''
+      CASE
+        WHEN NEW.${PaymentsTable.invoiceNumber} IS NULL
+          THEN 'Advance payment received'
+        WHEN NEW.${PaymentsTable.paymentMethod} = 'Advance Wallet Deduction'
+          THEN 'Advance wallet deduction'
+        ELSE 'Payment received via ' || NEW.${PaymentsTable.paymentMethod}
+      END
+    ''';
+    const saleCategoryCase = '''
+      CASE
+        WHEN NEW.${SalesTable.transactionType} IN (
+          '${SaleTransactionType.cashAdvance}',
+          '${SaleTransactionType.dieselAdvance}',
+          '${SaleTransactionType.petrolAdvance}'
+        ) THEN NEW.${SalesTable.transactionType}
+        ELSE 'SALE'
+      END
+    ''';
+    const saleDescriptionCase = '''
+      CASE
+        WHEN NEW.${SalesTable.transactionType} = '${SaleTransactionType.cashAdvance}'
+          THEN 'Cash Advance: ' || COALESCE(NEW.${SalesTable.remarks}, '')
+        WHEN NEW.${SalesTable.transactionType} = '${SaleTransactionType.dieselAdvance}'
+          THEN 'Diesel Advance (' || NEW.${SalesTable.fuelQuantity} || 'L)'
+        WHEN NEW.${SalesTable.transactionType} = '${SaleTransactionType.petrolAdvance}'
+          THEN 'Petrol Advance (' || NEW.${SalesTable.fuelQuantity} || 'L)'
+        ELSE 'Product Sale Invoice'
+      END
+    ''';
+
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS after_sale_insert
+      AFTER INSERT ON ${SalesTable.name}
+      WHEN NEW.${SalesTable.zamindarId} IS NOT NULL
+      BEGIN
+        INSERT INTO ${LedgerTransactionTable.name} (
+          ${LedgerTransactionTable.zamindarId},
+          ${LedgerTransactionTable.kisaanId},
+          ${LedgerTransactionTable.invoiceNumber},
+          ${LedgerTransactionTable.paymentId},
+          ${LedgerTransactionTable.type},
+          ${LedgerTransactionTable.category},
+          ${LedgerTransactionTable.description},
+          ${LedgerTransactionTable.amount},
+          ${LedgerTransactionTable.dateTime},
+          ${LedgerTransactionTable.season}
+        ) VALUES (
+          NEW.${SalesTable.zamindarId},
+          NEW.${SalesTable.kisaanId},
+          NEW.${SalesTable.invoiceNumber},
+          NULL,
+          '${LedgerTransactionType.debit}',
+          $saleCategoryCase,
+          $saleDescriptionCase,
+          NEW.${SalesTable.totalPayable},
+          NEW.${SalesTable.dateTime},
+          NEW.${SalesTable.season}
+        );
+      END;
+    ''');
+
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS after_sale_delete
+      AFTER DELETE ON ${SalesTable.name}
+      BEGIN
+        DELETE FROM ${LedgerTransactionTable.name}
+        WHERE ${LedgerTransactionTable.invoiceNumber}
+          = OLD.${SalesTable.invoiceNumber};
+      END;
+    ''');
+
+    // Wipe ALL invoice ledger rows (DEBIT + CREDIT), reinsert SALE debit,
+    // then rebuild CREDIT rows from any payments that still reference the invoice
+    // (preserves settlements kept during edit).
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS after_sale_update
+      AFTER UPDATE ON ${SalesTable.name}
+      WHEN NEW.${SalesTable.zamindarId} IS NOT NULL
+      BEGIN
+        DELETE FROM ${LedgerTransactionTable.name}
+        WHERE ${LedgerTransactionTable.invoiceNumber}
+          = OLD.${SalesTable.invoiceNumber};
+
+        INSERT INTO ${LedgerTransactionTable.name} (
+          ${LedgerTransactionTable.zamindarId},
+          ${LedgerTransactionTable.kisaanId},
+          ${LedgerTransactionTable.invoiceNumber},
+          ${LedgerTransactionTable.paymentId},
+          ${LedgerTransactionTable.type},
+          ${LedgerTransactionTable.category},
+          ${LedgerTransactionTable.description},
+          ${LedgerTransactionTable.amount},
+          ${LedgerTransactionTable.dateTime},
+          ${LedgerTransactionTable.season}
+        ) VALUES (
+          NEW.${SalesTable.zamindarId},
+          NEW.${SalesTable.kisaanId},
+          NEW.${SalesTable.invoiceNumber},
+          NULL,
+          '${LedgerTransactionType.debit}',
+          $saleCategoryCase,
+          $saleDescriptionCase,
+          NEW.${SalesTable.totalPayable},
+          NEW.${SalesTable.dateTime},
+          NEW.${SalesTable.season}
+        );
+
+        INSERT INTO ${LedgerTransactionTable.name} (
+          ${LedgerTransactionTable.zamindarId},
+          ${LedgerTransactionTable.kisaanId},
+          ${LedgerTransactionTable.invoiceNumber},
+          ${LedgerTransactionTable.paymentId},
+          ${LedgerTransactionTable.type},
+          ${LedgerTransactionTable.category},
+          ${LedgerTransactionTable.description},
+          ${LedgerTransactionTable.amount},
+          ${LedgerTransactionTable.dateTime},
+          ${LedgerTransactionTable.season}
+        )
+        SELECT
+          COALESCE(
+            p.${PaymentsTable.zamindarId},
+            NEW.${SalesTable.zamindarId}
+          ),
+          COALESCE(
+            p.${PaymentsTable.kisaanId},
+            NEW.${SalesTable.kisaanId}
+          ),
+          p.${PaymentsTable.invoiceNumber},
+          p.${PaymentsTable.paymentId},
+          '${LedgerTransactionType.credit}',
+          CASE
+            WHEN p.${PaymentsTable.paymentMethod} = 'Advance Wallet Deduction'
+              THEN 'WALLET_DEDUCTION'
+            WHEN p.${PaymentsTable.paymentMethod} = 'Cash' THEN 'CASH_PAYMENT'
+            ELSE 'PAYMENT'
+          END,
+          CASE
+            WHEN p.${PaymentsTable.paymentMethod} = 'Advance Wallet Deduction'
+              THEN 'Advance wallet deduction'
+            ELSE 'Payment received via ' || p.${PaymentsTable.paymentMethod}
+          END,
+          p.${PaymentsTable.amountPaid},
+          p.${PaymentsTable.dateTime},
+          p.${PaymentsTable.season}
+        FROM ${PaymentsTable.name} p
+        WHERE p.${PaymentsTable.invoiceNumber} = NEW.${SalesTable.invoiceNumber};
+      END;
+    ''');
+
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS after_payment_insert
+      AFTER INSERT ON ${PaymentsTable.name}
+      WHEN COALESCE(
+        NEW.${PaymentsTable.zamindarId},
+        (SELECT ${SalesTable.zamindarId} FROM ${SalesTable.name}
+         WHERE ${SalesTable.invoiceNumber} = NEW.${PaymentsTable.invoiceNumber})
+      ) IS NOT NULL
+      BEGIN
+        INSERT INTO ${LedgerTransactionTable.name} (
+          ${LedgerTransactionTable.zamindarId},
+          ${LedgerTransactionTable.kisaanId},
+          ${LedgerTransactionTable.invoiceNumber},
+          ${LedgerTransactionTable.paymentId},
+          ${LedgerTransactionTable.type},
+          ${LedgerTransactionTable.category},
+          ${LedgerTransactionTable.description},
+          ${LedgerTransactionTable.amount},
+          ${LedgerTransactionTable.dateTime},
+          ${LedgerTransactionTable.season}
+        ) VALUES (
+          COALESCE(
+            NEW.${PaymentsTable.zamindarId},
+            (SELECT ${SalesTable.zamindarId} FROM ${SalesTable.name}
+             WHERE ${SalesTable.invoiceNumber}
+               = NEW.${PaymentsTable.invoiceNumber})
+          ),
+          COALESCE(
+            NEW.${PaymentsTable.kisaanId},
+            (SELECT ${SalesTable.kisaanId} FROM ${SalesTable.name}
+             WHERE ${SalesTable.invoiceNumber}
+               = NEW.${PaymentsTable.invoiceNumber})
+          ),
+          NEW.${PaymentsTable.invoiceNumber},
+          NEW.${PaymentsTable.paymentId},
+          '${LedgerTransactionType.credit}',
+          $paymentCategoryCase,
+          $paymentDescriptionCase,
+          NEW.${PaymentsTable.amountPaid},
+          NEW.${PaymentsTable.dateTime},
+          NEW.${PaymentsTable.season}
+        );
+      END;
+    ''');
+
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS after_payment_delete
+      AFTER DELETE ON ${PaymentsTable.name}
+      BEGIN
+        DELETE FROM ${LedgerTransactionTable.name}
+        WHERE ${LedgerTransactionTable.paymentId}
+          = OLD.${PaymentsTable.paymentId};
+      END;
+    ''');
+
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS after_payment_update
+      AFTER UPDATE ON ${PaymentsTable.name}
+      WHEN COALESCE(
+        NEW.${PaymentsTable.zamindarId},
+        (SELECT ${SalesTable.zamindarId} FROM ${SalesTable.name}
+         WHERE ${SalesTable.invoiceNumber} = NEW.${PaymentsTable.invoiceNumber})
+      ) IS NOT NULL
+      BEGIN
+        DELETE FROM ${LedgerTransactionTable.name}
+        WHERE ${LedgerTransactionTable.paymentId}
+          = OLD.${PaymentsTable.paymentId};
+
+        INSERT INTO ${LedgerTransactionTable.name} (
+          ${LedgerTransactionTable.zamindarId},
+          ${LedgerTransactionTable.kisaanId},
+          ${LedgerTransactionTable.invoiceNumber},
+          ${LedgerTransactionTable.paymentId},
+          ${LedgerTransactionTable.type},
+          ${LedgerTransactionTable.category},
+          ${LedgerTransactionTable.description},
+          ${LedgerTransactionTable.amount},
+          ${LedgerTransactionTable.dateTime},
+          ${LedgerTransactionTable.season}
+        ) VALUES (
+          COALESCE(
+            NEW.${PaymentsTable.zamindarId},
+            (SELECT ${SalesTable.zamindarId} FROM ${SalesTable.name}
+             WHERE ${SalesTable.invoiceNumber}
+               = NEW.${PaymentsTable.invoiceNumber})
+          ),
+          COALESCE(
+            NEW.${PaymentsTable.kisaanId},
+            (SELECT ${SalesTable.kisaanId} FROM ${SalesTable.name}
+             WHERE ${SalesTable.invoiceNumber}
+               = NEW.${PaymentsTable.invoiceNumber})
+          ),
+          NEW.${PaymentsTable.invoiceNumber},
+          NEW.${PaymentsTable.paymentId},
+          '${LedgerTransactionType.credit}',
+          $paymentCategoryCase,
+          $paymentDescriptionCase,
+          NEW.${PaymentsTable.amountPaid},
+          NEW.${PaymentsTable.dateTime},
+          NEW.${PaymentsTable.season}
+        );
+      END;
+    ''');
+
+    // --- Purchase → wholesaler_ledger + vendor balance ---
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS after_purchase_insert
+      AFTER INSERT ON ${PurchaseInvoicesTable.name}
+      BEGIN
+        UPDATE ${WholesalerTable.name}
+        SET ${WholesalerTable.balance} =
+          ${WholesalerTable.balance} + NEW.${PurchaseInvoicesTable.outstanding}
+        WHERE ${WholesalerTable.id} = NEW.${PurchaseInvoicesTable.wholesalerId};
+
+        INSERT INTO ${WholesalerLedgerTable.name} (
+          ${WholesalerLedgerTable.wholesalerId},
+          ${WholesalerLedgerTable.transactionType},
+          ${WholesalerLedgerTable.referenceId},
+          ${WholesalerLedgerTable.date},
+          ${WholesalerLedgerTable.debit},
+          ${WholesalerLedgerTable.credit},
+          ${WholesalerLedgerTable.description}
+        ) VALUES (
+          NEW.${PurchaseInvoicesTable.wholesalerId},
+          '${WholesalerLedgerTxnType.purchase}',
+          NEW.${PurchaseInvoicesTable.invoiceNumber},
+          NEW.${PurchaseInvoicesTable.dateTime},
+          NEW.${PurchaseInvoicesTable.grandTotal},
+          0,
+          COALESCE(
+            NULLIF(TRIM(NEW.${PurchaseInvoicesTable.description}), ''),
+            'Purchase ' || NEW.${PurchaseInvoicesTable.invoiceNumber}
+          )
+        );
+
+        INSERT INTO ${WholesalerLedgerTable.name} (
+          ${WholesalerLedgerTable.wholesalerId},
+          ${WholesalerLedgerTable.transactionType},
+          ${WholesalerLedgerTable.referenceId},
+          ${WholesalerLedgerTable.date},
+          ${WholesalerLedgerTable.debit},
+          ${WholesalerLedgerTable.credit},
+          ${WholesalerLedgerTable.description}
+        )
+        SELECT
+          NEW.${PurchaseInvoicesTable.wholesalerId},
+          '${WholesalerLedgerTxnType.payment}',
+          NEW.${PurchaseInvoicesTable.invoiceNumber} || '-PAID',
+          NEW.${PurchaseInvoicesTable.dateTime},
+          0,
+          NEW.${PurchaseInvoicesTable.amountPaid},
+          'Purchase payment outlay'
+        WHERE NEW.${PurchaseInvoicesTable.amountPaid} > 0;
+      END;
+    ''');
+
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS after_purchase_update
+      AFTER UPDATE ON ${PurchaseInvoicesTable.name}
+      BEGIN
+        UPDATE ${WholesalerTable.name}
+        SET ${WholesalerTable.balance} = CASE
+          WHEN ${WholesalerTable.balance}
+                 - OLD.${PurchaseInvoicesTable.outstanding} < 0
+            THEN 0
+          ELSE ${WholesalerTable.balance}
+                 - OLD.${PurchaseInvoicesTable.outstanding}
+        END
+        WHERE ${WholesalerTable.id} = OLD.${PurchaseInvoicesTable.wholesalerId};
+
+        UPDATE ${WholesalerTable.name}
+        SET ${WholesalerTable.balance} =
+          ${WholesalerTable.balance} + NEW.${PurchaseInvoicesTable.outstanding}
+        WHERE ${WholesalerTable.id} = NEW.${PurchaseInvoicesTable.wholesalerId};
+
+        DELETE FROM ${WholesalerLedgerTable.name}
+        WHERE ${WholesalerLedgerTable.wholesalerId}
+              = OLD.${PurchaseInvoicesTable.wholesalerId}
+          AND (
+            ${WholesalerLedgerTable.referenceId}
+              = OLD.${PurchaseInvoicesTable.invoiceNumber}
+            OR ${WholesalerLedgerTable.referenceId}
+              = OLD.${PurchaseInvoicesTable.invoiceNumber} || '-PAID'
+          );
+
+        INSERT INTO ${WholesalerLedgerTable.name} (
+          ${WholesalerLedgerTable.wholesalerId},
+          ${WholesalerLedgerTable.transactionType},
+          ${WholesalerLedgerTable.referenceId},
+          ${WholesalerLedgerTable.date},
+          ${WholesalerLedgerTable.debit},
+          ${WholesalerLedgerTable.credit},
+          ${WholesalerLedgerTable.description}
+        ) VALUES (
+          NEW.${PurchaseInvoicesTable.wholesalerId},
+          '${WholesalerLedgerTxnType.purchase}',
+          NEW.${PurchaseInvoicesTable.invoiceNumber},
+          NEW.${PurchaseInvoicesTable.dateTime},
+          NEW.${PurchaseInvoicesTable.grandTotal},
+          0,
+          COALESCE(
+            NULLIF(TRIM(NEW.${PurchaseInvoicesTable.description}), ''),
+            'Purchase ' || NEW.${PurchaseInvoicesTable.invoiceNumber}
+          )
+        );
+
+        INSERT INTO ${WholesalerLedgerTable.name} (
+          ${WholesalerLedgerTable.wholesalerId},
+          ${WholesalerLedgerTable.transactionType},
+          ${WholesalerLedgerTable.referenceId},
+          ${WholesalerLedgerTable.date},
+          ${WholesalerLedgerTable.debit},
+          ${WholesalerLedgerTable.credit},
+          ${WholesalerLedgerTable.description}
+        )
+        SELECT
+          NEW.${PurchaseInvoicesTable.wholesalerId},
+          '${WholesalerLedgerTxnType.payment}',
+          NEW.${PurchaseInvoicesTable.invoiceNumber} || '-PAID',
+          NEW.${PurchaseInvoicesTable.dateTime},
+          0,
+          NEW.${PurchaseInvoicesTable.amountPaid},
+          'Purchase payment outlay'
+        WHERE NEW.${PurchaseInvoicesTable.amountPaid} > 0;
+      END;
+    ''');
+
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS after_purchase_delete
+      AFTER DELETE ON ${PurchaseInvoicesTable.name}
+      BEGIN
+        UPDATE ${WholesalerTable.name}
+        SET ${WholesalerTable.balance} = CASE
+          WHEN ${WholesalerTable.balance}
+                 - OLD.${PurchaseInvoicesTable.outstanding} < 0
+            THEN 0
+          ELSE ${WholesalerTable.balance}
+                 - OLD.${PurchaseInvoicesTable.outstanding}
+        END
+        WHERE ${WholesalerTable.id} = OLD.${PurchaseInvoicesTable.wholesalerId};
+
+        DELETE FROM ${WholesalerLedgerTable.name}
+        WHERE ${WholesalerLedgerTable.wholesalerId}
+              = OLD.${PurchaseInvoicesTable.wholesalerId}
+          AND (
+            ${WholesalerLedgerTable.referenceId}
+              = OLD.${PurchaseInvoicesTable.invoiceNumber}
+            OR ${WholesalerLedgerTable.referenceId}
+              = OLD.${PurchaseInvoicesTable.invoiceNumber} || '-PAID'
+          );
+      END;
+    ''');
+
+    // Manual khata payments (not cash purchase outlays — those come from purchase triggers).
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS after_wholesaler_payment_insert
+      AFTER INSERT ON ${WholesalerPaymentsTable.name}
+      WHEN NEW.${WholesalerPaymentsTable.paymentSource}
+        = '${WholesalerPaymentSource.manualKhataPayment}'
+      BEGIN
+        INSERT INTO ${WholesalerLedgerTable.name} (
+          ${WholesalerLedgerTable.wholesalerId},
+          ${WholesalerLedgerTable.transactionType},
+          ${WholesalerLedgerTable.referenceId},
+          ${WholesalerLedgerTable.date},
+          ${WholesalerLedgerTable.debit},
+          ${WholesalerLedgerTable.credit},
+          ${WholesalerLedgerTable.description}
+        ) VALUES (
+          NEW.${WholesalerPaymentsTable.wholesalerId},
+          '${WholesalerLedgerTxnType.payment}',
+          NEW.${WholesalerPaymentsTable.referenceNo},
+          NEW.${WholesalerPaymentsTable.date},
+          0,
+          NEW.${WholesalerPaymentsTable.amount},
+          COALESCE(NEW.${WholesalerPaymentsTable.notes}, '')
+        );
+      END;
+    ''');
+
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS after_wholesaler_payment_delete
+      AFTER DELETE ON ${WholesalerPaymentsTable.name}
+      WHEN OLD.${WholesalerPaymentsTable.paymentSource}
+        = '${WholesalerPaymentSource.manualKhataPayment}'
+      BEGIN
+        DELETE FROM ${WholesalerLedgerTable.name}
+        WHERE ${WholesalerLedgerTable.wholesalerId}
+              = OLD.${WholesalerPaymentsTable.wholesalerId}
+          AND ${WholesalerLedgerTable.referenceId}
+              = OLD.${WholesalerPaymentsTable.referenceNo};
+      END;
+    ''');
   }
 
   String _createKisaansTable() =>
@@ -1320,7 +2228,7 @@ END
       FOREIGN KEY (${LedgerTransactionTable.invoiceNumber}) REFERENCES ${SalesTable.name}(${SalesTable.invoiceNumber})
         ON UPDATE CASCADE ON DELETE CASCADE,
       FOREIGN KEY (${LedgerTransactionTable.paymentId}) REFERENCES ${PaymentsTable.name}(${PaymentsTable.paymentId})
-        ON DELETE SET NULL
+        ON DELETE CASCADE
     )
   ''';
 
@@ -1329,24 +2237,26 @@ END
     CREATE TABLE IF NOT EXISTS ${SalesTable.name} (
       ${SalesTable.invoiceNumber} TEXT PRIMARY KEY,
       ${SalesTable.dateTime} TEXT NOT NULL,
-      ${SalesTable.zamindarName} TEXT NOT NULL,
-      ${SalesTable.kisaanName} TEXT,
-      ${SalesTable.subtotal} REAL NOT NULL,
-      ${SalesTable.itemDiscountsTotal} REAL NOT NULL DEFAULT 0,
-      ${SalesTable.seasonalIncrementTotal} REAL NOT NULL DEFAULT 0,
-      ${SalesTable.overallDiscount} REAL NOT NULL DEFAULT 0,
-      ${SalesTable.totalPayable} REAL NOT NULL,
-      ${SalesTable.paidAmount} REAL NOT NULL DEFAULT 0,
+      ${SalesTable.subtotal} INTEGER NOT NULL,
+      ${SalesTable.itemDiscountsTotal} INTEGER NOT NULL DEFAULT 0,
+      ${SalesTable.seasonalIncrementTotal} INTEGER NOT NULL DEFAULT 0,
+      ${SalesTable.overallDiscount} INTEGER NOT NULL DEFAULT 0,
+      ${SalesTable.totalPayable} INTEGER NOT NULL,
+      ${SalesTable.paidAmount} INTEGER NOT NULL DEFAULT 0,
       ${SalesTable.paymentMethod} TEXT NOT NULL,
       ${SalesTable.season} TEXT NOT NULL,
       ${SalesTable.paymentTerm} TEXT,
       ${SalesTable.transactionType} TEXT NOT NULL
         DEFAULT '${SaleTransactionType.productSale}',
-      ${SalesTable.creditAmount} REAL NOT NULL DEFAULT 0,
+      ${SalesTable.creditAmount} INTEGER NOT NULL DEFAULT 0,
       ${SalesTable.fuelQuantity} REAL,
       ${SalesTable.remarks} TEXT,
       ${SalesTable.zamindarId} INTEGER,
-      ${SalesTable.kisaanId} INTEGER
+      ${SalesTable.kisaanId} INTEGER,
+      FOREIGN KEY (${SalesTable.zamindarId}) REFERENCES ${ZamindarTable.name}(${ZamindarTable.id})
+        ON DELETE RESTRICT,
+      FOREIGN KEY (${SalesTable.kisaanId}) REFERENCES ${KisaanTable.name}(${KisaanTable.id})
+        ON DELETE SET NULL
     )
   ''';
 
@@ -1358,10 +2268,10 @@ END
       ${SaleItemsTable.productName} TEXT NOT NULL,
       ${SaleItemsTable.productType} TEXT NOT NULL,
       ${SaleItemsTable.quantity} INTEGER NOT NULL,
-      ${SaleItemsTable.unitPrice} REAL NOT NULL,
-      ${SaleItemsTable.seasonalIncrement} REAL NOT NULL DEFAULT 0,
-      ${SaleItemsTable.itemDiscount} REAL NOT NULL DEFAULT 0,
-      ${SaleItemsTable.subtotal} REAL NOT NULL,
+      ${SaleItemsTable.unitPrice} INTEGER NOT NULL,
+      ${SaleItemsTable.seasonalIncrement} INTEGER NOT NULL DEFAULT 0,
+      ${SaleItemsTable.itemDiscount} INTEGER NOT NULL DEFAULT 0,
+      ${SaleItemsTable.subtotal} INTEGER NOT NULL,
       FOREIGN KEY (${SaleItemsTable.invoiceNumber}) REFERENCES ${SalesTable.name}(${SalesTable.invoiceNumber})
         ON DELETE CASCADE
     )
@@ -1373,13 +2283,17 @@ END
       ${PaymentsTable.paymentId} TEXT PRIMARY KEY,
       ${PaymentsTable.invoiceNumber} TEXT,
       ${PaymentsTable.dateTime} TEXT NOT NULL,
-      ${PaymentsTable.zamindarName} TEXT NOT NULL,
-      ${PaymentsTable.kisaanName} TEXT,
-      ${PaymentsTable.amountPaid} REAL NOT NULL,
+      ${PaymentsTable.zamindarId} INTEGER,
+      ${PaymentsTable.kisaanId} INTEGER,
+      ${PaymentsTable.amountPaid} INTEGER NOT NULL,
       ${PaymentsTable.paymentMethod} TEXT NOT NULL,
       ${PaymentsTable.season} TEXT NOT NULL,
       FOREIGN KEY (${PaymentsTable.invoiceNumber}) REFERENCES ${SalesTable.name}(${SalesTable.invoiceNumber})
-        ON UPDATE CASCADE ON DELETE CASCADE
+        ON UPDATE CASCADE ON DELETE CASCADE,
+      FOREIGN KEY (${PaymentsTable.zamindarId}) REFERENCES ${ZamindarTable.name}(${ZamindarTable.id})
+        ON DELETE RESTRICT,
+      FOREIGN KEY (${PaymentsTable.kisaanId}) REFERENCES ${KisaanTable.name}(${KisaanTable.id})
+        ON DELETE SET NULL
     )
   ''';
 
@@ -1416,14 +2330,13 @@ END
     CREATE TABLE IF NOT EXISTS ${PurchaseInvoicesTable.name} (
       ${PurchaseInvoicesTable.invoiceNumber} TEXT PRIMARY KEY,
       ${PurchaseInvoicesTable.wholesalerId} INTEGER NOT NULL,
-      ${PurchaseInvoicesTable.wholesalerName} TEXT NOT NULL,
       ${PurchaseInvoicesTable.dateTime} TEXT NOT NULL,
-      ${PurchaseInvoicesTable.subtotal} REAL NOT NULL,
-      ${PurchaseInvoicesTable.transportCharges} REAL NOT NULL DEFAULT 0,
-      ${PurchaseInvoicesTable.grandTotal} REAL NOT NULL,
+      ${PurchaseInvoicesTable.subtotal} INTEGER NOT NULL,
+      ${PurchaseInvoicesTable.transportCharges} INTEGER NOT NULL DEFAULT 0,
+      ${PurchaseInvoicesTable.grandTotal} INTEGER NOT NULL,
       ${PurchaseInvoicesTable.paymentType} TEXT NOT NULL,
-      ${PurchaseInvoicesTable.amountPaid} REAL NOT NULL DEFAULT 0,
-      ${PurchaseInvoicesTable.outstanding} REAL NOT NULL DEFAULT 0,
+      ${PurchaseInvoicesTable.amountPaid} INTEGER NOT NULL DEFAULT 0,
+      ${PurchaseInvoicesTable.outstanding} INTEGER NOT NULL DEFAULT 0,
       ${PurchaseInvoicesTable.description} TEXT,
       FOREIGN KEY (${PurchaseInvoicesTable.wholesalerId})
         REFERENCES ${WholesalerTable.name}(${WholesalerTable.id})
@@ -1438,9 +2351,9 @@ END
       ${PurchaseItemsTable.productId} INTEGER,
       ${PurchaseItemsTable.productName} TEXT NOT NULL,
       ${PurchaseItemsTable.quantity} INTEGER NOT NULL,
-      ${PurchaseItemsTable.purchaseRate} REAL NOT NULL,
+      ${PurchaseItemsTable.purchaseRate} INTEGER NOT NULL,
       ${PurchaseItemsTable.expiryDate} TEXT,
-      ${PurchaseItemsTable.lineTotal} REAL NOT NULL,
+      ${PurchaseItemsTable.lineTotal} INTEGER NOT NULL,
       FOREIGN KEY (${PurchaseItemsTable.invoiceNumber})
         REFERENCES ${PurchaseInvoicesTable.name}(${PurchaseInvoicesTable.invoiceNumber})
         ON DELETE CASCADE
@@ -1455,9 +2368,8 @@ END
       ${WholesalerLedgerTable.transactionType} TEXT NOT NULL,
       ${WholesalerLedgerTable.referenceId} TEXT,
       ${WholesalerLedgerTable.date} TEXT NOT NULL,
-      ${WholesalerLedgerTable.debit} REAL NOT NULL DEFAULT 0,
-      ${WholesalerLedgerTable.credit} REAL NOT NULL DEFAULT 0,
-      ${WholesalerLedgerTable.runningBalance} REAL NOT NULL DEFAULT 0,
+      ${WholesalerLedgerTable.debit} INTEGER NOT NULL DEFAULT 0,
+      ${WholesalerLedgerTable.credit} INTEGER NOT NULL DEFAULT 0,
       ${WholesalerLedgerTable.description} TEXT,
       FOREIGN KEY (${WholesalerLedgerTable.wholesalerId})
         REFERENCES ${WholesalerTable.name}(${WholesalerTable.id})
@@ -1470,7 +2382,7 @@ END
     CREATE TABLE IF NOT EXISTS ${WholesalerPaymentsTable.name} (
       ${WholesalerPaymentsTable.id} INTEGER PRIMARY KEY AUTOINCREMENT,
       ${WholesalerPaymentsTable.wholesalerId} INTEGER NOT NULL,
-      ${WholesalerPaymentsTable.amount} REAL NOT NULL,
+      ${WholesalerPaymentsTable.amount} INTEGER NOT NULL,
       ${WholesalerPaymentsTable.paymentMethod} TEXT NOT NULL,
       ${WholesalerPaymentsTable.paymentSource} TEXT NOT NULL,
       ${WholesalerPaymentsTable.referenceNo} TEXT,
@@ -1504,12 +2416,12 @@ END
       SELECT
         p.${ProductTable.id} AS product_id,
         si.${SaleItemsTable.quantity} AS qty,
-        s.${SalesTable.zamindarName} AS zamindar_name,
+        z.${ZamindarTable.nameColumn} AS zamindar_name,
         s.${SalesTable.invoiceNumber} AS invoice_number,
         s.${SalesTable.dateTime} AS date_time,
         CASE
           WHEN z.${ZamindarTable.id} IS NULL THEN 'Walk-in Customer'
-          ELSE s.${SalesTable.zamindarName}
+          ELSE z.${ZamindarTable.nameColumn}
         END AS party_label
       FROM ${SaleItemsTable.name} si
       INNER JOIN ${SalesTable.name} s
@@ -1517,7 +2429,7 @@ END
       INNER JOIN ${ProductTable.name} p
         ON p.${ProductTable.nameColumn} = si.${SaleItemsTable.productName}
       LEFT JOIN ${ZamindarTable.name} z
-        ON z.${ZamindarTable.nameColumn} = s.${SalesTable.zamindarName}
+        ON z.${ZamindarTable.id} = s.${SalesTable.zamindarId}
       ORDER BY s.${SalesTable.dateTime} ASC
     ''');
 
@@ -1618,20 +2530,17 @@ END
       );
       if (zamindarRows.isEmpty) continue;
 
-      final zamindarName =
-          zamindarRows.first[ZamindarTable.nameColumn] as String;
-
       final paymentId = await generateNextPaymentId(db, isAdvance: true);
       final dateTime = row[LedgerTransactionTable.dateTime] as String;
-      final amount = (row[LedgerTransactionTable.amount] as num).toDouble();
+      final amount = (row[LedgerTransactionTable.amount] as num).round();
       final season = row[LedgerTransactionTable.season] as String;
 
       await db.insert(PaymentsTable.name, {
         PaymentsTable.paymentId: paymentId,
         PaymentsTable.invoiceNumber: null,
         PaymentsTable.dateTime: dateTime,
-        PaymentsTable.zamindarName: zamindarName,
-        PaymentsTable.kisaanName: null,
+        PaymentsTable.zamindarId: zamindarId,
+        PaymentsTable.kisaanId: null,
         PaymentsTable.amountPaid: amount,
         PaymentsTable.paymentMethod: 'Cash',
         PaymentsTable.season: season,
@@ -1850,32 +2759,16 @@ END
     if (zamindar == null) return 0;
 
     final result = await db.transaction((txn) async {
-      final zamindarName = zamindar.name;
-
-      final invoiceRows = await txn.query(
-        SalesTable.name,
-        columns: [SalesTable.invoiceNumber],
-        where: '${SalesTable.zamindarName} = ?',
-        whereArgs: [zamindarName],
-      );
-      for (final row in invoiceRows) {
-        final invoiceNumber = row[SalesTable.invoiceNumber] as String;
-        await txn.delete(
-          SaleItemsTable.name,
-          where: '${SaleItemsTable.invoiceNumber} = ?',
-          whereArgs: [invoiceNumber],
-        );
-      }
-
+      // Delete dependent sales/payments first (zamindar FKs are RESTRICT).
       await txn.delete(
         SalesTable.name,
-        where: '${SalesTable.zamindarName} = ?',
-        whereArgs: [zamindarName],
+        where: '${SalesTable.zamindarId} = ?',
+        whereArgs: [id],
       );
       await txn.delete(
         PaymentsTable.name,
-        where: '${PaymentsTable.zamindarName} = ?',
-        whereArgs: [zamindarName],
+        where: '${PaymentsTable.zamindarId} = ?',
+        whereArgs: [id],
       );
       await txn.delete(
         LedgerTransactionTable.name,
@@ -2033,8 +2926,8 @@ END
     final invoiceRows = await txn.query(
       SalesTable.name,
       columns: [SalesTable.invoiceNumber],
-      where: '${SalesTable.kisaanName} = ? AND ${SalesTable.zamindarName} = ?',
-      whereArgs: [kisaanName, zamindarName],
+      where: '${SalesTable.kisaanId} = ?',
+      whereArgs: [kisaanId],
     );
     for (final row in invoiceRows) {
       final invoiceNumber = row[SalesTable.invoiceNumber] as String;
@@ -2047,14 +2940,13 @@ END
 
     await txn.delete(
       SalesTable.name,
-      where: '${SalesTable.kisaanName} = ? AND ${SalesTable.zamindarName} = ?',
-      whereArgs: [kisaanName, zamindarName],
+      where: '${SalesTable.kisaanId} = ?',
+      whereArgs: [kisaanId],
     );
     await txn.delete(
       PaymentsTable.name,
-      where:
-          '${PaymentsTable.kisaanName} = ? AND ${PaymentsTable.zamindarName} = ?',
-      whereArgs: [kisaanName, zamindarName],
+      where: '${PaymentsTable.kisaanId} = ?',
+      whereArgs: [kisaanId],
     );
     await txn.delete(
       LedgerTransactionTable.name,
@@ -2136,8 +3028,12 @@ END
       FROM ${SaleItemsTable.name} si
       INNER JOIN ${SalesTable.name} s
         ON s.${SalesTable.invoiceNumber} = si.${SaleItemsTable.invoiceNumber}
-      WHERE s.${SalesTable.zamindarName} = ?
-        AND s.${SalesTable.kisaanName} = ?
+      LEFT JOIN ${ZamindarTable.name} z
+        ON z.${ZamindarTable.id} = s.${SalesTable.zamindarId}
+      LEFT JOIN ${KisaanTable.name} k
+        ON k.${KisaanTable.id} = s.${SalesTable.kisaanId}
+      WHERE z.${ZamindarTable.nameColumn} = ?
+        AND k.${KisaanTable.nameColumn} = ?
         AND s.${SalesTable.season} = ?
       GROUP BY si.${SaleItemsTable.productName}, si.${SaleItemsTable.productType}
       ''',
@@ -2453,6 +3349,40 @@ END
     };
   }
 
+  /// Batch total payable + collected amounts keyed by invoice number.
+  Future<Map<String, Map<String, double>>> getInvoiceCollectionSummaries(
+    Iterable<String> invoiceNumbers,
+  ) async {
+    final unique = invoiceNumbers
+        .map((n) => n.trim())
+        .where((n) => n.isNotEmpty)
+        .toSet()
+        .toList();
+    if (unique.isEmpty) return {};
+
+    final db = await database;
+    final placeholders = List.filled(unique.length, '?').join(',');
+    final rows = await db.rawQuery(
+      '''
+      SELECT
+        s.${SalesTable.invoiceNumber} AS invoice_number,
+        s.${SalesTable.totalPayable} AS total,
+        ($_sqlSaleCollectedExpr) AS paid
+      FROM ${SalesTable.name} s
+      WHERE s.${SalesTable.invoiceNumber} IN ($placeholders)
+      ''',
+      unique,
+    );
+
+    return {
+      for (final row in rows)
+        (row['invoice_number'] as String): {
+          'total': (row['total'] as num?)?.toDouble() ?? 0.0,
+          'paid': (row['paid'] as num?)?.toDouble() ?? 0.0,
+        },
+    };
+  }
+
   Future<List<LedgerTransaction>> getLedgerTransactionsForZamindar(
     int zamindarId,
   ) async {
@@ -2642,26 +3572,15 @@ END
     DatabaseExecutor db,
     String zamindarName,
   ) async {
-    final rows = await db.rawQuery(
-      '''
-      SELECT
-        COALESCE(SUM(s.${SalesTable.totalPayable}), 0) AS total_sales,
-        COALESCE(SUM($_sqlSaleCollectedExpr), 0) AS total_payments,
-        COALESCE(SUM($_sqlSaleRemainingExpr), 0) AS outstanding
-      FROM ${SalesTable.name} s
-      WHERE s.${SalesTable.zamindarName} = ?
-      ''',
-      [zamindarName],
-    );
-
-    final totalSales = (rows.first['total_sales'] as num?)?.round() ?? 0;
-    final totalPayments = (rows.first['total_payments'] as num?)?.round() ?? 0;
-    final outstanding = (rows.first['outstanding'] as num?)?.round() ?? 0;
-    return {
-      'totalSales': totalSales,
-      'totalPayments': totalPayments,
-      'outstandingBalance': outstanding < 0 ? 0 : outstanding,
-    };
+    final id = await _resolveZamindarIdByName(db, zamindarName);
+    if (id == null) {
+      return {
+        'totalSales': 0,
+        'totalPayments': 0,
+        'outstandingBalance': 0,
+      };
+    }
+    return _aggregateSalesBalancesForZamindarId(db, id);
   }
 
   /// Recomputes `zamindars.current_balance` from invoices − collections.
@@ -2678,21 +3597,7 @@ END
     DatabaseExecutor db,
     int zamindarId,
   ) async {
-    final zamindarRows = await db.query(
-      ZamindarTable.name,
-      columns: [ZamindarTable.nameColumn],
-      where: '${ZamindarTable.id} = ?',
-      whereArgs: [zamindarId],
-      limit: 1,
-    );
-    if (zamindarRows.isEmpty) return 0;
-
-    final zamindarName =
-        zamindarRows.first[ZamindarTable.nameColumn] as String? ?? '';
-    final totals = await _aggregateSalesBalancesForZamindarName(
-      db,
-      zamindarName,
-    );
+    final totals = await _aggregateSalesBalancesForZamindarId(db, zamindarId);
     final outstanding = totals['outstandingBalance']!;
 
     await db.update(
@@ -2702,6 +3607,32 @@ END
       whereArgs: [zamindarId],
     );
     return outstanding;
+  }
+
+  Future<Map<String, int>> _aggregateSalesBalancesForZamindarId(
+    DatabaseExecutor db,
+    int zamindarId,
+  ) async {
+    final rows = await db.rawQuery(
+      '''
+      SELECT
+        COALESCE(SUM(s.${SalesTable.totalPayable}), 0) AS total_sales,
+        COALESCE(SUM($_sqlSaleCollectedExpr), 0) AS total_payments,
+        COALESCE(SUM($_sqlSaleRemainingExpr), 0) AS outstanding
+      FROM ${SalesTable.name} s
+      WHERE s.${SalesTable.zamindarId} = ?
+      ''',
+      [zamindarId],
+    );
+
+    final totalSales = (rows.first['total_sales'] as num?)?.round() ?? 0;
+    final totalPayments = (rows.first['total_payments'] as num?)?.round() ?? 0;
+    final outstanding = (rows.first['outstanding'] as num?)?.round() ?? 0;
+    return {
+      'totalSales': totalSales,
+      'totalPayments': totalPayments,
+      'outstandingBalance': outstanding < 0 ? 0 : outstanding,
+    };
   }
 
   Future<void> _recalculateAllZamindarBalances(DatabaseExecutor db) async {
@@ -2942,16 +3873,17 @@ END
     await db.transaction((txn) async {
       id = await txn.insert(WholesalerTable.name, wholesaler.toMap());
       if (wholesaler.balance > 0) {
-        await txn.insert(WholesalerLedgerTable.name, {
-          WholesalerLedgerTable.wholesalerId: id,
-          WholesalerLedgerTable.transactionType:
-              WholesalerLedgerTxnType.purchase,
-          WholesalerLedgerTable.referenceId: 'OPENING',
-          WholesalerLedgerTable.date: _formatDateTime(DateTime.now()),
-          WholesalerLedgerTable.debit: wholesaler.balance,
-          WholesalerLedgerTable.credit: 0,
-          WholesalerLedgerTable.runningBalance: wholesaler.balance,
-        });
+        // Opening balance is not a purchase_invoice — write ledger directly.
+        await _insertWholesalerLedgerEntry(
+          txn,
+          wholesalerId: id,
+          transactionType: WholesalerLedgerTxnType.purchase,
+          referenceId: 'OPENING',
+          date: DateTime.now(),
+          debit: wholesaler.balance,
+          credit: 0,
+          description: 'Opening balance',
+        );
       }
     });
     notifyListeners();
@@ -3044,10 +3976,20 @@ END
     final db = await database;
     await _ensureWholesalerLedgerSchema(db);
     final rows = await db.rawQuery(
-      'SELECT * FROM ${WholesalerLedgerTable.name} '
-      'WHERE ${WholesalerLedgerTable.wholesalerId} = ? '
-      'ORDER BY ${WholesalerLedgerTable.date} DESC, '
-      '${WholesalerLedgerTable.id} DESC',
+      '''
+      SELECT
+        wl.*,
+        SUM(wl.${WholesalerLedgerTable.debit} - wl.${WholesalerLedgerTable.credit})
+          OVER (
+            PARTITION BY wl.${WholesalerLedgerTable.wholesalerId}
+            ORDER BY wl.${WholesalerLedgerTable.date} ASC,
+                     wl.${WholesalerLedgerTable.id} ASC
+          ) AS ${WholesalerLedgerTable.runningBalance}
+      FROM ${WholesalerLedgerTable.name} wl
+      WHERE wl.${WholesalerLedgerTable.wholesalerId} = ?
+      ORDER BY wl.${WholesalerLedgerTable.date} DESC,
+               wl.${WholesalerLedgerTable.id} DESC
+      ''',
       [wholesalerId],
     );
     debugPrint('fetchWholesalerLedger($wholesalerId) -> ${rows.length} row(s)');
@@ -3062,7 +4004,6 @@ END
     required DateTime date,
     required double debit,
     required double credit,
-    required double runningBalance,
     String? description,
   }) async {
     await txn.insert(WholesalerLedgerTable.name, {
@@ -3070,9 +4011,8 @@ END
       WholesalerLedgerTable.transactionType: transactionType,
       WholesalerLedgerTable.referenceId: referenceId,
       WholesalerLedgerTable.date: _formatDateTime(date),
-      WholesalerLedgerTable.debit: debit,
-      WholesalerLedgerTable.credit: credit,
-      WholesalerLedgerTable.runningBalance: runningBalance,
+      WholesalerLedgerTable.debit: debit.round(),
+      WholesalerLedgerTable.credit: credit.round(),
       if (description != null && description.trim().isNotEmpty)
         WholesalerLedgerTable.description: description.trim(),
     });
@@ -3090,7 +4030,7 @@ END
   }) async {
     await txn.insert(WholesalerPaymentsTable.name, {
       WholesalerPaymentsTable.wholesalerId: wholesalerId,
-      WholesalerPaymentsTable.amount: amount,
+      WholesalerPaymentsTable.amount: amount.round(),
       WholesalerPaymentsTable.paymentMethod: paymentMethod,
       WholesalerPaymentsTable.paymentSource: paymentSource,
       WholesalerPaymentsTable.referenceNo: referenceNo,
@@ -3210,7 +4150,7 @@ END
     final q = search?.trim() ?? '';
     if (q.isNotEmpty) {
       where.add(
-        '(COALESCE(w.${WholesalerTable.nameColumn}, pi.${PurchaseInvoicesTable.wholesalerName}) LIKE ? '
+        '(w.${WholesalerTable.nameColumn} LIKE ? '
         'OR pi.${PurchaseInvoicesTable.invoiceNumber} LIKE ?)',
       );
       args.add('%$q%');
@@ -3231,10 +4171,7 @@ END
     return db.rawQuery('''
       SELECT
         pi.*,
-        COALESCE(
-          w.${WholesalerTable.nameColumn},
-          pi.${PurchaseInvoicesTable.wholesalerName}
-        ) AS wholesaler_name,
+        w.${WholesalerTable.nameColumn} AS wholesaler_name,
         (
           SELECT GROUP_CONCAT(
             item.${PurchaseItemsTable.productName}
@@ -3347,17 +4284,7 @@ END
         [newBalance, wholesalerId],
       );
 
-      await _insertWholesalerLedgerEntry(
-        txn,
-        wholesalerId: wholesalerId,
-        transactionType: WholesalerLedgerTxnType.payment,
-        referenceId: receiptNo,
-        date: when,
-        debit: 0,
-        credit: amount,
-        runningBalance: newBalance,
-      );
-
+      // wholesaler_ledger CREDIT is written by after_wholesaler_payment_insert.
       await _insertWholesalerPaymentRow(
         txn,
         wholesalerId: wholesalerId,
@@ -3396,9 +4323,10 @@ END
     return 'PI-1000';
   }
 
-  /// Atomically saves a purchase invoice:
-  /// 1) insert header  2) insert line items  3) increment stock
-  /// 4) increase wholesaler balance when Udhaar / Partial
+  /// Atomically saves a purchase invoice inside one DB transaction:
+  /// purchase_invoices → purchase_items → products/stock_movements →
+  /// wholesaler_payments. Vendor balance + wholesaler_ledger are owned by
+  /// `after_purchase_insert`.
   Future<String> insertPurchaseInvoice({
     required int wholesalerId,
     required String wholesalerName,
@@ -3440,32 +4368,33 @@ END
     final db = await database;
     await _ensureWholesalerPaymentsSchema(db);
     await db.transaction((txn) async {
+      // 1) Header — trigger syncs wholesaler_ledger + vendor balance.
       await txn.insert(PurchaseInvoicesTable.name, {
         PurchaseInvoicesTable.invoiceNumber: invoiceNumber,
         PurchaseInvoicesTable.wholesalerId: wholesalerId,
-        PurchaseInvoicesTable.wholesalerName: wholesalerName,
         PurchaseInvoicesTable.dateTime: _formatDateTime(dateTime),
-        PurchaseInvoicesTable.subtotal: subtotal,
-        PurchaseInvoicesTable.transportCharges: transportCharges,
-        PurchaseInvoicesTable.grandTotal: grandTotal,
+        PurchaseInvoicesTable.subtotal: subtotal.round(),
+        PurchaseInvoicesTable.transportCharges: transportCharges.round(),
+        PurchaseInvoicesTable.grandTotal: grandTotal.round(),
         PurchaseInvoicesTable.paymentType: paymentType,
-        PurchaseInvoicesTable.amountPaid: paid,
-        PurchaseInvoicesTable.outstanding: outstanding,
+        PurchaseInvoicesTable.amountPaid: paid.round(),
+        PurchaseInvoicesTable.outstanding: outstanding.round(),
         if (trimmedDescription.isNotEmpty)
           PurchaseInvoicesTable.description: trimmedDescription,
       });
 
+      // 2) Line items + 3) inventory + 4) stock audit log.
       for (final item in items) {
         await txn.insert(PurchaseItemsTable.name, {
           PurchaseItemsTable.invoiceNumber: invoiceNumber,
           PurchaseItemsTable.productId: item.productId,
           PurchaseItemsTable.productName: item.productName,
           PurchaseItemsTable.quantity: item.quantity,
-          PurchaseItemsTable.purchaseRate: item.purchaseRate,
+          PurchaseItemsTable.purchaseRate: item.purchaseRate.round(),
           PurchaseItemsTable.expiryDate: item.expiryDate != null
               ? _formatDateOnly(item.expiryDate!)
               : null,
-          PurchaseItemsTable.lineTotal: item.lineTotal,
+          PurchaseItemsTable.lineTotal: item.lineTotal.round(),
         });
 
         if (item.productId == null || item.quantity <= 0) continue;
@@ -3503,56 +4432,8 @@ END
         );
       }
 
-      if (outstanding > 0 &&
-          (paymentType == PurchasePaymentType.udhaar ||
-              paymentType == PurchasePaymentType.partial)) {
-        await txn.rawUpdate(
-          'UPDATE ${WholesalerTable.name} '
-          'SET ${WholesalerTable.balance} = ${WholesalerTable.balance} + ? '
-          'WHERE ${WholesalerTable.id} = ?',
-          [outstanding, wholesalerId],
-        );
-      }
-
-      // Always write khata rows so purchases appear in Wholesaler ledger.
-      final balRows = await txn.query(
-        WholesalerTable.name,
-        columns: [WholesalerTable.balance],
-        where: '${WholesalerTable.id} = ?',
-        whereArgs: [wholesalerId],
-        limit: 1,
-      );
-      final runningBalance = balRows.isEmpty
-          ? outstanding
-          : (balRows.first[WholesalerTable.balance] as num?)?.toDouble() ??
-                outstanding;
-
-      await _insertWholesalerLedgerEntry(
-        txn,
-        wholesalerId: wholesalerId,
-        transactionType: WholesalerLedgerTxnType.purchase,
-        referenceId: invoiceNumber,
-        date: dateTime,
-        debit: grandTotal,
-        credit: 0,
-        runningBalance: runningBalance,
-        description: trimmedDescription.isNotEmpty
-            ? trimmedDescription
-            : 'Purchase $invoiceNumber',
-      );
-
+      // 5) Cash/partial outlay voucher (ledger CREDIT already from purchase trigger).
       if (paid > 0) {
-        await _insertWholesalerLedgerEntry(
-          txn,
-          wholesalerId: wholesalerId,
-          transactionType: WholesalerLedgerTxnType.payment,
-          referenceId: '$invoiceNumber-PAID',
-          date: dateTime,
-          debit: 0,
-          credit: paid,
-          runningBalance: runningBalance,
-        );
-
         await _insertWholesalerPaymentRow(
           txn,
           wholesalerId: wholesalerId,
@@ -3570,6 +4451,299 @@ END
     return invoiceNumber;
   }
 
+  /// Atomically deletes a purchase invoice and reverses inventory.
+  /// Cascade clears purchase_items; `after_purchase_delete` clears vendor ledger
+  /// and outstanding balance; cash outlay payment rows are removed explicitly.
+  Future<void> deletePurchaseInvoiceEntirely(String invoiceNumber) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      final headers = await txn.query(
+        PurchaseInvoicesTable.name,
+        where: '${PurchaseInvoicesTable.invoiceNumber} = ?',
+        whereArgs: [invoiceNumber],
+        limit: 1,
+      );
+      if (headers.isEmpty) return;
+
+      final header = headers.first;
+      final wholesalerId = header[PurchaseInvoicesTable.wholesalerId] as int;
+      final wholesalerRows = await txn.query(
+        WholesalerTable.name,
+        columns: [WholesalerTable.nameColumn],
+        where: '${WholesalerTable.id} = ?',
+        whereArgs: [wholesalerId],
+        limit: 1,
+      );
+      final wholesalerName = wholesalerRows.isEmpty
+          ? 'Wholesaler'
+          : wholesalerRows.first[WholesalerTable.nameColumn] as String? ??
+                'Wholesaler';
+
+      final items = await txn.query(
+        PurchaseItemsTable.name,
+        where: '${PurchaseItemsTable.invoiceNumber} = ?',
+        whereArgs: [invoiceNumber],
+      );
+
+      for (final item in items) {
+        final productId = item[PurchaseItemsTable.productId] as int?;
+        final qty = (item[PurchaseItemsTable.quantity] as num?)?.toInt() ?? 0;
+        if (productId == null || qty <= 0) continue;
+
+        final rows = await txn.query(
+          ProductTable.name,
+          columns: [ProductTable.availableStock],
+          where: '${ProductTable.id} = ?',
+          whereArgs: [productId],
+          limit: 1,
+        );
+        if (rows.isEmpty) continue;
+        final current = _readIntValue(rows.first[ProductTable.availableStock]);
+        await txn.update(
+          ProductTable.name,
+          {
+            ProductTable.availableStock: (current - qty).clamp(0, 1 << 31),
+          },
+          where: '${ProductTable.id} = ?',
+          whereArgs: [productId],
+        );
+
+        await _insertStockMovement(
+          txn,
+          productId: productId,
+          movementType: StockMovementType.stockOut,
+          quantity: qty,
+          partyLabel: wholesalerName,
+          referenceType: StockMovementRef.purchase,
+          referenceId: invoiceNumber,
+          dateTime: DateTime.now(),
+          notes: 'Purchase $invoiceNumber reversed',
+        );
+      }
+
+      await txn.delete(
+        StockMovementTable.name,
+        where:
+            '${StockMovementTable.referenceType} = ? AND '
+            '${StockMovementTable.referenceId} = ? AND '
+            '${StockMovementTable.movementType} = ?',
+        whereArgs: [
+          StockMovementRef.purchase,
+          invoiceNumber,
+          StockMovementType.stockIn,
+        ],
+      );
+
+      await txn.delete(
+        WholesalerPaymentsTable.name,
+        where:
+            '${WholesalerPaymentsTable.referenceNo} = ? AND '
+            '${WholesalerPaymentsTable.paymentSource} = ?',
+        whereArgs: [
+          invoiceNumber,
+          WholesalerPaymentSource.cashPurchaseOutlay,
+        ],
+      );
+
+      // Triggers purge wholesaler_ledger + reverse outstanding on header delete.
+      await txn.delete(
+        PurchaseInvoicesTable.name,
+        where: '${PurchaseInvoicesTable.invoiceNumber} = ?',
+        whereArgs: [invoiceNumber],
+      );
+    });
+
+    notifyListeners();
+  }
+
+  /// Atomically rewrites a purchase invoice (header, lines, stock, outlay).
+  /// `after_purchase_update` rebuilds wholesaler_ledger + vendor balance.
+  Future<void> updatePurchaseInvoice({
+    required String invoiceNumber,
+    required int wholesalerId,
+    required String wholesalerName,
+    required DateTime dateTime,
+    required List<PurchaseLineItem> items,
+    required double transportCharges,
+    required String paymentType,
+    required double amountPaid,
+    String description = '',
+  }) async {
+    if (items.isEmpty) {
+      throw ArgumentError('Purchase must include at least one line item');
+    }
+
+    final subtotal = items.fold<double>(0, (sum, i) => sum + i.lineTotal);
+    final grandTotal = subtotal + transportCharges;
+
+    double paid = amountPaid;
+    double outstanding;
+    switch (paymentType) {
+      case PurchasePaymentType.cash:
+        paid = grandTotal;
+        outstanding = 0;
+      case PurchasePaymentType.udhaar:
+        paid = 0;
+        outstanding = grandTotal;
+      case PurchasePaymentType.partial:
+        if (paid < 0) paid = 0;
+        if (paid > grandTotal) paid = grandTotal;
+        outstanding = grandTotal - paid;
+      default:
+        throw ArgumentError('Unknown payment type: $paymentType');
+    }
+
+    final trimmedDescription = description.trim();
+    final db = await database;
+    await _ensureWholesalerPaymentsSchema(db);
+
+    await db.transaction((txn) async {
+      final existing = await txn.query(
+        PurchaseInvoicesTable.name,
+        where: '${PurchaseInvoicesTable.invoiceNumber} = ?',
+        whereArgs: [invoiceNumber],
+        limit: 1,
+      );
+      if (existing.isEmpty) {
+        throw StateError('Purchase invoice $invoiceNumber was not found.');
+      }
+
+      // Reverse prior STOCK_IN quantities.
+      final oldItems = await txn.query(
+        PurchaseItemsTable.name,
+        where: '${PurchaseItemsTable.invoiceNumber} = ?',
+        whereArgs: [invoiceNumber],
+      );
+      for (final item in oldItems) {
+        final productId = item[PurchaseItemsTable.productId] as int?;
+        final qty = (item[PurchaseItemsTable.quantity] as num?)?.toInt() ?? 0;
+        if (productId == null || qty <= 0) continue;
+        final rows = await txn.query(
+          ProductTable.name,
+          columns: [ProductTable.availableStock],
+          where: '${ProductTable.id} = ?',
+          whereArgs: [productId],
+          limit: 1,
+        );
+        if (rows.isEmpty) continue;
+        final current = _readIntValue(rows.first[ProductTable.availableStock]);
+        await txn.update(
+          ProductTable.name,
+          {
+            ProductTable.availableStock: (current - qty).clamp(0, 1 << 31),
+          },
+          where: '${ProductTable.id} = ?',
+          whereArgs: [productId],
+        );
+      }
+
+      await txn.delete(
+        StockMovementTable.name,
+        where:
+            '${StockMovementTable.referenceType} = ? AND '
+            '${StockMovementTable.referenceId} = ?',
+        whereArgs: [StockMovementRef.purchase, invoiceNumber],
+      );
+      await txn.delete(
+        PurchaseItemsTable.name,
+        where: '${PurchaseItemsTable.invoiceNumber} = ?',
+        whereArgs: [invoiceNumber],
+      );
+      await txn.delete(
+        WholesalerPaymentsTable.name,
+        where:
+            '${WholesalerPaymentsTable.referenceNo} = ? AND '
+            '${WholesalerPaymentsTable.paymentSource} = ?',
+        whereArgs: [
+          invoiceNumber,
+          WholesalerPaymentSource.cashPurchaseOutlay,
+        ],
+      );
+
+      await txn.update(
+        PurchaseInvoicesTable.name,
+        {
+          PurchaseInvoicesTable.wholesalerId: wholesalerId,
+          PurchaseInvoicesTable.dateTime: _formatDateTime(dateTime),
+          PurchaseInvoicesTable.subtotal: subtotal.round(),
+          PurchaseInvoicesTable.transportCharges: transportCharges.round(),
+          PurchaseInvoicesTable.grandTotal: grandTotal.round(),
+          PurchaseInvoicesTable.paymentType: paymentType,
+          PurchaseInvoicesTable.amountPaid: paid.round(),
+          PurchaseInvoicesTable.outstanding: outstanding.round(),
+          PurchaseInvoicesTable.description: trimmedDescription.isEmpty
+              ? null
+              : trimmedDescription,
+        },
+        where: '${PurchaseInvoicesTable.invoiceNumber} = ?',
+        whereArgs: [invoiceNumber],
+      );
+
+      for (final item in items) {
+        await txn.insert(PurchaseItemsTable.name, {
+          PurchaseItemsTable.invoiceNumber: invoiceNumber,
+          PurchaseItemsTable.productId: item.productId,
+          PurchaseItemsTable.productName: item.productName,
+          PurchaseItemsTable.quantity: item.quantity,
+          PurchaseItemsTable.purchaseRate: item.purchaseRate.round(),
+          PurchaseItemsTable.expiryDate: item.expiryDate != null
+              ? _formatDateOnly(item.expiryDate!)
+              : null,
+          PurchaseItemsTable.lineTotal: item.lineTotal.round(),
+        });
+
+        if (item.productId == null || item.quantity <= 0) continue;
+
+        final updates = <String, Object?>{
+          ProductTable.costPrice: item.purchaseRate.round(),
+        };
+        if (item.expiryDate != null) {
+          updates[ProductTable.expiryDate] = _formatDateOnly(item.expiryDate!);
+        }
+
+        await txn.rawUpdate(
+          'UPDATE ${ProductTable.name} '
+          'SET ${ProductTable.availableStock} = ${ProductTable.availableStock} + ? '
+          'WHERE ${ProductTable.id} = ?',
+          [item.quantity, item.productId],
+        );
+        await txn.update(
+          ProductTable.name,
+          updates,
+          where: '${ProductTable.id} = ?',
+          whereArgs: [item.productId],
+        );
+
+        await _insertStockMovement(
+          txn,
+          productId: item.productId!,
+          movementType: StockMovementType.stockIn,
+          quantity: item.quantity,
+          partyLabel: wholesalerName,
+          referenceType: StockMovementRef.purchase,
+          referenceId: invoiceNumber,
+          dateTime: dateTime,
+          notes: 'Purchase $invoiceNumber',
+        );
+      }
+
+      if (paid > 0) {
+        await _insertWholesalerPaymentRow(
+          txn,
+          wholesalerId: wholesalerId,
+          amount: paid,
+          paymentMethod: 'Cash',
+          paymentSource: WholesalerPaymentSource.cashPurchaseOutlay,
+          referenceNo: invoiceNumber,
+          date: dateTime,
+          notes: '$paymentType purchase outlay',
+        );
+      }
+    });
+
+    notifyListeners();
+  }
+
   /// Fetches complete invoice data for editing via invoice_number
   /// Returns a map with all necessary information to reconstruct the sale
   Future<Map<String, dynamic>?> getInvoiceDataByInvoiceNumber(
@@ -3577,12 +4751,22 @@ END
   ) async {
     final db = await database;
 
-    // Fetch the main sale record
-    final salesMaps = await db.query(
-      SalesTable.name,
-      where: '${SalesTable.invoiceNumber} = ?',
-      whereArgs: [invoiceNumber],
-      limit: 1,
+    // Fetch the main sale record with joined party names.
+    final salesMaps = await db.rawQuery(
+      '''
+      SELECT
+        s.*,
+        z.${ZamindarTable.nameColumn} AS ${SalesTable.zamindarName},
+        k.${KisaanTable.nameColumn} AS ${SalesTable.kisaanName}
+      FROM ${SalesTable.name} s
+      LEFT JOIN ${ZamindarTable.name} z
+        ON z.${ZamindarTable.id} = s.${SalesTable.zamindarId}
+      LEFT JOIN ${KisaanTable.name} k
+        ON k.${KisaanTable.id} = s.${SalesTable.kisaanId}
+      WHERE s.${SalesTable.invoiceNumber} = ?
+      LIMIT 1
+      ''',
+      [invoiceNumber],
     );
 
     if (salesMaps.isEmpty) return null;
@@ -4090,13 +5274,10 @@ END
     );
 
     for (final payment in walletPayments) {
-      final zamindarName = payment[PaymentsTable.zamindarName] as String? ?? '';
+      final zamindarId = payment[PaymentsTable.zamindarId] as int?;
       final amount =
           (payment[PaymentsTable.amountPaid] as num?)?.round() ?? 0;
-      if (zamindarName.isEmpty || amount <= 0) continue;
-
-      final zamindarId = await _resolveZamindarIdByName(txn, zamindarName);
-      if (zamindarId == null) continue;
+      if (zamindarId == null || amount <= 0) continue;
 
       final rows = await txn.query(
         ZamindarTable.name,
@@ -4117,8 +5298,11 @@ END
     }
   }
 
-  /// Removes sale-originated payments/ledger for an invoice, keeping later
+  /// Removes sale-originated payment vouchers for an invoice, keeping later
   /// settlement rows (`category = PAYMENT` from [insertPayment]).
+  ///
+  /// Ledger rebuild is owned by `after_sale_update` / payment triggers —
+  /// this method only touches the `payments` table.
   Future<void> _clearSaleOriginatedFinancials(
     DatabaseExecutor txn,
     String invoiceNumber,
@@ -4136,14 +5320,6 @@ END
         .whereType<String>()
         .where((id) => id.trim().isNotEmpty)
         .toSet();
-
-    await txn.delete(
-      LedgerTransactionTable.name,
-      where:
-          '${LedgerTransactionTable.invoiceNumber} = ? AND '
-          'UPPER(${LedgerTransactionTable.category}) != ?',
-      whereArgs: [invoiceNumber, 'PAYMENT'],
-    );
 
     if (settlementPaymentIds.isEmpty) {
       await txn.delete(
@@ -4175,16 +5351,15 @@ END
     await db.transaction((txn) async {
       final saleRows = await txn.query(
         SalesTable.name,
-        columns: [SalesTable.zamindarName],
+        columns: [SalesTable.zamindarId],
         where: '${SalesTable.invoiceNumber} = ?',
         whereArgs: [invoiceNumber],
         limit: 1,
       );
       if (saleRows.isEmpty) return;
 
-      final zamindarName =
-          saleRows.first[SalesTable.zamindarName] as String? ?? '';
-      affectedZamindarId = await _resolveZamindarIdByName(txn, zamindarName);
+      affectedZamindarId =
+          saleRows.first[SalesTable.zamindarId] as int?;
 
       final oldItems = await txn.query(
         SaleItemsTable.name,
@@ -4244,28 +5419,69 @@ END
     notifyListeners();
   }
 
-  /// Wipes all transactional business data while preserving table schemas.
-  /// Product inventory is intentionally left intact.
+  /// Partial factory reset for a new season.
+  ///
+  /// Completely wipes transactional history, operational logs, and financial
+  /// records, then resets auto-increment counters. Master profiles are kept:
+  /// zamindars, kisaans, products, and wholesalers.
   Future<void> truncateFullDatabase() async {
     final db = await database;
-    final tables = [
+
+    // Child / dependent tables first, then parents — safe even if FK pragma
+    // is ignored by the platform during the transaction.
+    const transactionalTables = <String>[
       SaleItemsTable.name,
       PaymentsTable.name,
       LedgerTransactionTable.name,
       SalesTable.name,
-      KisaanTable.name,
-      ZamindarTable.name,
+      PurchaseItemsTable.name,
+      WholesalerLedgerTable.name,
+      WholesalerPaymentsTable.name,
+      PurchaseInvoicesTable.name,
+      StockMovementTable.name,
       ExpenseTable.name,
     ];
 
-    await db.transaction((txn) async {
-      for (final table in tables) {
-        await txn.delete(table);
-        await txn.rawDelete('DELETE FROM sqlite_sequence WHERE name = ?', [
-          table,
-        ]);
-      }
-    });
+    await db.execute('PRAGMA foreign_keys = OFF');
+    try {
+      await db.transaction((txn) async {
+        for (final table in transactionalTables) {
+          await txn.delete(table);
+        }
+
+        // Reset AUTOINCREMENT trackers so new IDs start at 1 again.
+        final placeholders =
+            List.filled(transactionalTables.length, '?').join(', ');
+        await txn.rawDelete(
+          'DELETE FROM sqlite_sequence WHERE name IN ($placeholders)',
+          transactionalTables,
+        );
+
+        // Reset payment receipt sequences to the default seed value.
+        await txn.rawUpdate(
+          'UPDATE payment_sequences SET last_value = 1000',
+        );
+        for (final key in ['standard', 'advance']) {
+          await txn.insert(
+            'payment_sequences',
+            {'sequence_key': key, 'last_value': 1000},
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+
+        // Cached balances on preserved masters must not retain wiped history.
+        await txn.rawUpdate(
+          'UPDATE ${ZamindarTable.name} SET '
+          '${ZamindarTable.currentBalance} = 0, '
+          '${ZamindarTable.advanceBalance} = 0',
+        );
+        await txn.rawUpdate(
+          'UPDATE ${WholesalerTable.name} SET ${WholesalerTable.balance} = 0',
+        );
+      });
+    } finally {
+      await db.execute('PRAGMA foreign_keys = ON');
+    }
 
     notifyListeners();
   }
@@ -4390,23 +5606,27 @@ END
         }
       }
 
-      // Step 1: Insert the sale parent record first (FK target for payments).
+      if (resolvedZamindarId == null) {
+        throw StateError(
+          'Cannot insert sale: zamindar "$zamindarName" was not resolved to an id.',
+        );
+      }
+
+      // Step 1: Insert sale (after_sale_insert trigger writes ledger DEBIT).
       await txn.insert(SalesTable.name, {
         SalesTable.invoiceNumber: invoiceNumber,
         SalesTable.dateTime: _formatDateTime(dateTime),
-        SalesTable.zamindarName: zamindarName,
-        SalesTable.kisaanName: kisaanName,
-        SalesTable.subtotal: subtotal,
-        SalesTable.itemDiscountsTotal: itemDiscountsTotal,
-        SalesTable.seasonalIncrementTotal: seasonalIncrementTotal,
-        SalesTable.overallDiscount: overallDiscount,
-        SalesTable.totalPayable: totalPayable,
-        SalesTable.paidAmount: salePaidAmount,
+        SalesTable.subtotal: subtotal.round(),
+        SalesTable.itemDiscountsTotal: itemDiscountsTotal.round(),
+        SalesTable.seasonalIncrementTotal: seasonalIncrementTotal.round(),
+        SalesTable.overallDiscount: overallDiscount.round(),
+        SalesTable.totalPayable: totalPayable.round(),
+        SalesTable.paidAmount: salePaidAmount.round(),
         SalesTable.paymentMethod: paymentMethod,
         SalesTable.season: season,
         SalesTable.paymentTerm: isCreditSale ? paymentTerm : null,
         SalesTable.transactionType: SaleTransactionType.productSale,
-        SalesTable.creditAmount: creditAmount,
+        SalesTable.creditAmount: creditAmount.round(),
         SalesTable.fuelQuantity: null,
         SalesTable.remarks: null,
         SalesTable.zamindarId: resolvedZamindarId,
@@ -4421,10 +5641,10 @@ END
           SaleItemsTable.productName: item.productName,
           SaleItemsTable.productType: productType,
           SaleItemsTable.quantity: item.qty.round(),
-          SaleItemsTable.unitPrice: item.unitPrice,
+          SaleItemsTable.unitPrice: item.unitPrice.round(),
           SaleItemsTable.seasonalIncrement: 0,
-          SaleItemsTable.itemDiscount: item.discount,
-          SaleItemsTable.subtotal: itemSubtotal,
+          SaleItemsTable.itemDiscount: item.discount.round(),
+          SaleItemsTable.subtotal: itemSubtotal.round(),
         });
       }
 
@@ -4481,9 +5701,9 @@ END
           PaymentsTable.paymentId: walletPaymentId,
           PaymentsTable.invoiceNumber: invoiceNumber,
           PaymentsTable.dateTime: _formatDateTime(dateTime),
-          PaymentsTable.zamindarName: zamindarName,
-          PaymentsTable.kisaanName: kisaanName,
-          PaymentsTable.amountPaid: drawdown,
+          PaymentsTable.zamindarId: resolvedZamindarId,
+          PaymentsTable.kisaanId: resolvedKisaanId,
+          PaymentsTable.amountPaid: drawdown.round(),
           PaymentsTable.paymentMethod: 'Advance Wallet Deduction',
           PaymentsTable.season: season,
         });
@@ -4494,9 +5714,9 @@ END
             PaymentsTable.paymentId: cashPaymentId,
             PaymentsTable.invoiceNumber: invoiceNumber,
             PaymentsTable.dateTime: _formatDateTime(dateTime),
-            PaymentsTable.zamindarName: zamindarName,
-            PaymentsTable.kisaanName: kisaanName,
-            PaymentsTable.amountPaid: remainingPhysicalCash,
+            PaymentsTable.zamindarId: resolvedZamindarId,
+            PaymentsTable.kisaanId: resolvedKisaanId,
+            PaymentsTable.amountPaid: remainingPhysicalCash.round(),
             PaymentsTable.paymentMethod: 'Cash',
             PaymentsTable.season: season,
           });
@@ -4507,39 +5727,16 @@ END
           PaymentsTable.paymentId: cashPaymentId,
           PaymentsTable.invoiceNumber: invoiceNumber,
           PaymentsTable.dateTime: _formatDateTime(dateTime),
-          PaymentsTable.zamindarName: zamindarName,
-          PaymentsTable.kisaanName: kisaanName,
-          PaymentsTable.amountPaid: effectivePaidAmount,
+          PaymentsTable.zamindarId: resolvedZamindarId,
+          PaymentsTable.kisaanId: resolvedKisaanId,
+          PaymentsTable.amountPaid: effectivePaidAmount.round(),
           PaymentsTable.paymentMethod: 'Cash',
           PaymentsTable.season: season,
         });
       }
+      // Ledger CREDIT rows for payments are created by after_payment_insert.
 
-      // Step 3: Ledger entries — payment_id FKs require payments to exist first.
-      await _insertLedgerEntriesForSale(
-        txn,
-        invoiceNumber: invoiceNumber,
-        zamindarName: zamindarName,
-        kisaanName: kisaanName,
-        description: items
-            .map((item) => '${item.productName} x${item.qty.round()}')
-            .join(' · '),
-        totalPayable: totalPayable,
-        paidAmount: usesAdvanceWallet
-            ? remainingPhysicalCash
-            : effectivePaidAmount,
-        paymentMethod: paymentMethod,
-        season: season,
-        dateTime: dateTime,
-        advanceDrawdown: drawdown,
-        walletPaymentId: walletPaymentId,
-        cashPaymentId: cashPaymentId,
-      );
-
-      final zamindarId = await _resolveZamindarIdByName(txn, zamindarName);
-      if (zamindarId != null) {
-        await _recalculateZamindarBalanceOn(txn, zamindarId);
-      }
+      await _recalculateZamindarBalanceOn(txn, resolvedZamindarId);
     });
 
     notifyListeners();
@@ -4597,29 +5794,23 @@ END
     final itemLabel = liters != null
         ? '$displayName (${_formatLiters(liters)} L)'
         : displayName;
-    final ledgerDescription = (trimmedRemarks != null &&
-            trimmedRemarks.isNotEmpty)
-        ? '$itemLabel — $trimmedRemarks'
-        : itemLabel;
 
     final db = await database;
     await db.transaction((txn) async {
       await txn.insert(SalesTable.name, {
         SalesTable.invoiceNumber: invoiceNumber,
         SalesTable.dateTime: _formatDateTime(dateTime),
-        SalesTable.zamindarName: zamindarName,
-        SalesTable.kisaanName: kisaanName ?? 'Self',
-        SalesTable.subtotal: amount,
+        SalesTable.subtotal: amount.round(),
         SalesTable.itemDiscountsTotal: 0,
         SalesTable.seasonalIncrementTotal: 0,
         SalesTable.overallDiscount: 0,
-        SalesTable.totalPayable: amount,
+        SalesTable.totalPayable: amount.round(),
         SalesTable.paidAmount: 0,
         SalesTable.paymentMethod: 'Credit',
         SalesTable.season: season,
         SalesTable.paymentTerm: 'After Harvest',
         SalesTable.transactionType: transactionType,
-        SalesTable.creditAmount: amount,
+        SalesTable.creditAmount: amount.round(),
         SalesTable.fuelQuantity: liters,
         SalesTable.remarks:
             (trimmedRemarks != null && trimmedRemarks.isNotEmpty)
@@ -4628,6 +5819,7 @@ END
         SalesTable.zamindarId: zamindarId,
         SalesTable.kisaanId: kisaanId,
       });
+      // after_sale_insert trigger writes advance DEBIT ledger row.
 
       // Liters live on sales.fuel_quantity; line qty stays 1 so reports
       // that multiply qty × unit price stay accurate.
@@ -4636,52 +5828,11 @@ END
         SaleItemsTable.productName: itemLabel,
         SaleItemsTable.productType: 'Advance',
         SaleItemsTable.quantity: 1,
-        SaleItemsTable.unitPrice: amount,
+        SaleItemsTable.unitPrice: amount.round(),
         SaleItemsTable.seasonalIncrement: 0,
         SaleItemsTable.itemDiscount: 0,
-        SaleItemsTable.subtotal: amount,
+        SaleItemsTable.subtotal: amount.round(),
       });
-
-      await _insertLedgerEntriesForSale(
-        txn,
-        invoiceNumber: invoiceNumber,
-        zamindarName: zamindarName,
-        kisaanName: kisaanName ?? 'Self',
-        description: ledgerDescription,
-        totalPayable: amount,
-        paidAmount: 0,
-        paymentMethod: 'Credit',
-        season: season,
-        dateTime: dateTime,
-      );
-
-      // Prefer explicit IDs on the sale row for ledger when names resolve oddly.
-      if (kisaanId != null) {
-        await txn.update(
-          LedgerTransactionTable.name,
-          {
-            LedgerTransactionTable.zamindarId: zamindarId,
-            LedgerTransactionTable.kisaanId: kisaanId,
-            LedgerTransactionTable.category: transactionType,
-          },
-          where:
-              '${LedgerTransactionTable.invoiceNumber} = ? AND '
-              '${LedgerTransactionTable.type} = ?',
-          whereArgs: [invoiceNumber, LedgerTransactionType.debit],
-        );
-      } else {
-        await txn.update(
-          LedgerTransactionTable.name,
-          {
-            LedgerTransactionTable.zamindarId: zamindarId,
-            LedgerTransactionTable.category: transactionType,
-          },
-          where:
-              '${LedgerTransactionTable.invoiceNumber} = ? AND '
-              '${LedgerTransactionTable.type} = ?',
-          whereArgs: [invoiceNumber, LedgerTransactionType.debit],
-        );
-      }
 
       await _recalculateZamindarBalanceOn(txn, zamindarId);
     });
@@ -4717,11 +5868,23 @@ END
   }) async {
     final db = await database;
 
-    final salesMaps = await db.query(
-      SalesTable.name,
-      where: season != null ? '${SalesTable.season} = ?' : null,
-      whereArgs: season != null ? [season] : null,
-      orderBy: '${SalesTable.dateTime} DESC',
+    final seasonClause =
+        season != null ? 'WHERE s.${SalesTable.season} = ?' : '';
+    final salesMaps = await db.rawQuery(
+      '''
+      SELECT
+        s.*,
+        z.${ZamindarTable.nameColumn} AS ${SalesTable.zamindarName},
+        k.${KisaanTable.nameColumn} AS ${SalesTable.kisaanName}
+      FROM ${SalesTable.name} s
+      LEFT JOIN ${ZamindarTable.name} z
+        ON z.${ZamindarTable.id} = s.${SalesTable.zamindarId}
+      LEFT JOIN ${KisaanTable.name} k
+        ON k.${KisaanTable.id} = s.${SalesTable.kisaanId}
+      $seasonClause
+      ORDER BY s.${SalesTable.dateTime} DESC
+      ''',
+      season != null ? [season] : [],
     );
 
     final salesWithDetails = <Map<String, dynamic>>[];
@@ -5053,33 +6216,42 @@ END
     final saleRows = await db.rawQuery('''
       SELECT
         s.${SalesTable.invoiceNumber} AS invoice_number,
-        s.${SalesTable.zamindarName} AS zamindar_name,
+        z.${ZamindarTable.nameColumn} AS zamindar_name,
         s.${SalesTable.dateTime} AS date_time,
         s.${SalesTable.paymentTerm} AS payment_term,
         ($_sqlSaleRemainingExpr) AS remaining
       FROM ${SalesTable.name} s
+      LEFT JOIN ${ZamindarTable.name} z
+        ON z.${ZamindarTable.id} = s.${SalesTable.zamindarId}
     ''');
 
-    final paymentRows = await db.query(
-      PaymentsTable.name,
-      columns: [
-        PaymentsTable.invoiceNumber,
-        PaymentsTable.dateTime,
-        PaymentsTable.zamindarName,
-      ],
-    );
+    final paymentRows = await db.rawQuery('''
+      SELECT
+        p.${PaymentsTable.invoiceNumber} AS invoice_number,
+        p.${PaymentsTable.dateTime} AS date_time,
+        COALESCE(
+          z.${ZamindarTable.nameColumn},
+          zs.${ZamindarTable.nameColumn}
+        ) AS zamindar_name
+      FROM ${PaymentsTable.name} p
+      LEFT JOIN ${ZamindarTable.name} z
+        ON z.${ZamindarTable.id} = p.${PaymentsTable.zamindarId}
+      LEFT JOIN ${SalesTable.name} s
+        ON s.${SalesTable.invoiceNumber} = p.${PaymentsTable.invoiceNumber}
+      LEFT JOIN ${ZamindarTable.name} zs
+        ON zs.${ZamindarTable.id} = s.${SalesTable.zamindarId}
+    ''');
     final paymentDatesByInvoice = <String, List<DateTime>>{};
     for (final payment in paymentRows) {
-      final invoice = payment[PaymentsTable.invoiceNumber] as String?;
+      final invoice = payment['invoice_number'] as String?;
       final paidAt = _parseDateTime(
-        payment[PaymentsTable.dateTime] as String? ?? '',
+        payment['date_time'] as String? ?? '',
       );
       if (invoice != null && invoice.isNotEmpty) {
         paymentDatesByInvoice.putIfAbsent(invoice, () => []).add(paidAt);
       }
       // Advance / unscoped payments still count toward last activity by name.
-      final payee = (payment[PaymentsTable.zamindarName] as String? ?? '')
-          .trim();
+      final payee = (payment['zamindar_name'] as String? ?? '').trim();
       if (payee.isNotEmpty) {
         final prev = lastActiveByName[payee];
         if (prev == null || paidAt.isAfter(prev)) {
@@ -5348,11 +6520,21 @@ END
     String? season,
   }) async {
     final db = await database;
-    final salesMaps = await db.query(
-      SalesTable.name,
-      where: '${SalesTable.zamindarName} = ?',
-      whereArgs: [zamindarName],
-      orderBy: '${SalesTable.dateTime} DESC',
+    final salesMaps = await db.rawQuery(
+      '''
+      SELECT
+        s.*,
+        z.${ZamindarTable.nameColumn} AS ${SalesTable.zamindarName},
+        k.${KisaanTable.nameColumn} AS ${SalesTable.kisaanName}
+      FROM ${SalesTable.name} s
+      LEFT JOIN ${ZamindarTable.name} z
+        ON z.${ZamindarTable.id} = s.${SalesTable.zamindarId}
+      LEFT JOIN ${KisaanTable.name} k
+        ON k.${KisaanTable.id} = s.${SalesTable.kisaanId}
+      WHERE z.${ZamindarTable.nameColumn} = ?
+      ORDER BY s.${SalesTable.dateTime} DESC
+      ''',
+      [zamindarName],
     );
 
     final salesWithDetails = <Map<String, dynamic>>[];
@@ -5425,25 +6607,13 @@ END
         PaymentsTable.paymentId: resolvedPaymentId,
         PaymentsTable.invoiceNumber: invoiceNumber,
         PaymentsTable.dateTime: _formatDateTime(dateTime),
-        PaymentsTable.zamindarName: zamindarName,
-        PaymentsTable.kisaanName: kisaanName,
-        PaymentsTable.amountPaid: amountPaid,
+        PaymentsTable.zamindarId: zamindarId,
+        PaymentsTable.kisaanId: kisaanId,
+        PaymentsTable.amountPaid: amountPaid.round(),
         PaymentsTable.paymentMethod: paymentMethod,
         PaymentsTable.season: season,
       });
-
-      await txn.insert(LedgerTransactionTable.name, {
-        LedgerTransactionTable.zamindarId: zamindarId,
-        LedgerTransactionTable.kisaanId: kisaanId,
-        LedgerTransactionTable.invoiceNumber: invoiceNumber,
-        LedgerTransactionTable.paymentId: resolvedPaymentId,
-        LedgerTransactionTable.type: LedgerTransactionType.credit,
-        LedgerTransactionTable.category: 'PAYMENT',
-        LedgerTransactionTable.description: 'Payment for $invoiceNumber',
-        LedgerTransactionTable.amount: amountPaid.round(),
-        LedgerTransactionTable.dateTime: _formatDateTime(dateTime),
-        LedgerTransactionTable.season: season,
-      });
+      // after_payment_insert trigger writes the ledger CREDIT row.
 
       await _recalculateZamindarBalanceOn(txn, zamindarId);
     });
@@ -5466,10 +6636,15 @@ END
       '''
         SELECT COALESCE(SUM($_sqlSaleRemainingExpr), 0) AS outstanding
         FROM ${SalesTable.name} s
-        WHERE s.${SalesTable.zamindarName} = ?
-          AND s.${SalesTable.kisaanName} = ?
+        LEFT JOIN ${KisaanTable.name} k
+          ON k.${KisaanTable.id} = s.${SalesTable.kisaanId}
+        WHERE s.${SalesTable.zamindarId} = ?
+          AND (
+            k.${KisaanTable.nameColumn} = ?
+            OR (s.${SalesTable.kisaanId} IS NULL AND ? = 'Self')
+          )
       ''',
-      [zamindar.name, kisaanName],
+      [zamindarId, kisaanName, kisaanName],
     );
     return (rows.first['outstanding'] as num?)?.toDouble() ?? 0.0;
   }
@@ -5531,14 +6706,19 @@ END
         '''
           SELECT s.${SalesTable.invoiceNumber},
                  s.${SalesTable.totalPayable},
-                 s.${SalesTable.zamindarName},
+                 s.${SalesTable.zamindarId},
                  s.${SalesTable.paidAmount}
           FROM ${SalesTable.name} s
-          WHERE s.${SalesTable.zamindarName} = ?
-            AND s.${SalesTable.kisaanName} = ?
+          LEFT JOIN ${KisaanTable.name} k
+            ON k.${KisaanTable.id} = s.${SalesTable.kisaanId}
+          WHERE s.${SalesTable.zamindarId} = ?
+            AND (
+              k.${KisaanTable.nameColumn} = ?
+              OR (s.${SalesTable.kisaanId} IS NULL AND ? = 'Self')
+            )
           ORDER BY s.${SalesTable.dateTime} ASC
         ''',
-        [zamindar.name, kisaanName],
+        [zamindarId, kisaanName, kisaanName],
       );
 
       for (var inv in invoices) {
@@ -5572,25 +6752,13 @@ END
           PaymentsTable.paymentId: paymentId,
           PaymentsTable.invoiceNumber: invoiceNumber,
           PaymentsTable.dateTime: _formatDateTime(now),
-          PaymentsTable.zamindarName: inv[SalesTable.zamindarName],
-          PaymentsTable.kisaanName: kisaanName,
-          PaymentsTable.amountPaid: allocation,
+          PaymentsTable.zamindarId: zamindarId,
+          PaymentsTable.kisaanId: kisaanId,
+          PaymentsTable.amountPaid: allocation.round(),
           PaymentsTable.paymentMethod: paymentMethod,
           PaymentsTable.season: season,
         });
-
-        await txn.insert(LedgerTransactionTable.name, {
-          LedgerTransactionTable.zamindarId: zamindarId,
-          LedgerTransactionTable.kisaanId: kisaanId,
-          LedgerTransactionTable.invoiceNumber: invoiceNumber,
-          LedgerTransactionTable.paymentId: paymentId,
-          LedgerTransactionTable.type: LedgerTransactionType.credit,
-          LedgerTransactionTable.category: 'PAYMENT',
-          LedgerTransactionTable.description: 'Payment for $invoiceNumber',
-          LedgerTransactionTable.amount: allocation.round(),
-          LedgerTransactionTable.dateTime: _formatDateTime(now),
-          LedgerTransactionTable.season: season,
-        });
+        // after_payment_insert trigger writes the ledger CREDIT row.
 
         remainingCash -= allocation;
       }
@@ -5636,6 +6804,14 @@ END
     return db.rawQuery('''
       SELECT
         p.*,
+        COALESCE(
+          z.${ZamindarTable.nameColumn},
+          zs.${ZamindarTable.nameColumn}
+        ) AS ${PaymentsTable.zamindarName},
+        COALESCE(
+          k.${KisaanTable.nameColumn},
+          ks.${KisaanTable.nameColumn}
+        ) AS ${PaymentsTable.kisaanName},
         CASE
           WHEN p.${PaymentsTable.invoiceNumber} IS NULL
             THEN 'N/A (Advance Collection)'
@@ -5652,6 +6828,16 @@ END
           )
         END AS ${PaymentsTable.itemsSummary}
       FROM ${PaymentsTable.name} p
+      LEFT JOIN ${ZamindarTable.name} z
+        ON z.${ZamindarTable.id} = p.${PaymentsTable.zamindarId}
+      LEFT JOIN ${KisaanTable.name} k
+        ON k.${KisaanTable.id} = p.${PaymentsTable.kisaanId}
+      LEFT JOIN ${SalesTable.name} s
+        ON s.${SalesTable.invoiceNumber} = p.${PaymentsTable.invoiceNumber}
+      LEFT JOIN ${ZamindarTable.name} zs
+        ON zs.${ZamindarTable.id} = s.${SalesTable.zamindarId}
+      LEFT JOIN ${KisaanTable.name} ks
+        ON ks.${KisaanTable.id} = s.${SalesTable.kisaanId}
       $whereSql
       ORDER BY p.${PaymentsTable.dateTime} DESC
       ''', args);
@@ -5711,7 +6897,7 @@ END
     await db.transaction((txn) async {
       final existingSale = await txn.query(
         SalesTable.name,
-        columns: [SalesTable.zamindarName],
+        columns: [SalesTable.zamindarId],
         where: '${SalesTable.invoiceNumber} = ?',
         whereArgs: [invoiceNumber],
         limit: 1,
@@ -5720,12 +6906,8 @@ END
         throw StateError('Invoice $invoiceNumber was not found.');
       }
 
-      final previousZamindarName =
-          existingSale.first[SalesTable.zamindarName] as String? ?? '';
-      final previousZamindarId = await _resolveZamindarIdByName(
-        txn,
-        previousZamindarName,
-      );
+      final previousZamindarId =
+          existingSale.first[SalesTable.zamindarId] as int?;
       if (previousZamindarId != null) {
         affectedZamindarIds.add(previousZamindarId);
       }
@@ -5864,29 +7046,34 @@ END
         }
       }
 
+      if (resolvedZamindarId == null) {
+        throw StateError(
+          'Cannot update sale: zamindar "$zamindarName" was not resolved to an id.',
+        );
+      }
+
       await txn.update(
         SalesTable.name,
         {
           SalesTable.dateTime: _formatDateTime(dateTime),
-          SalesTable.zamindarName: zamindarName,
-          SalesTable.kisaanName: kisaanName,
-          SalesTable.subtotal: subtotal,
-          SalesTable.itemDiscountsTotal: itemDiscountsTotal,
-          SalesTable.seasonalIncrementTotal: seasonalIncrementTotal,
-          SalesTable.overallDiscount: overallDiscount,
-          SalesTable.totalPayable: totalPayable,
-          SalesTable.paidAmount: salePaidAmount,
+          SalesTable.subtotal: subtotal.round(),
+          SalesTable.itemDiscountsTotal: itemDiscountsTotal.round(),
+          SalesTable.seasonalIncrementTotal: seasonalIncrementTotal.round(),
+          SalesTable.overallDiscount: overallDiscount.round(),
+          SalesTable.totalPayable: totalPayable.round(),
+          SalesTable.paidAmount: salePaidAmount.round(),
           SalesTable.paymentMethod: paymentMethod,
           SalesTable.season: season,
           SalesTable.paymentTerm: isCreditSale ? paymentTerm : null,
           SalesTable.transactionType: SaleTransactionType.productSale,
-          SalesTable.creditAmount: creditAmount,
+          SalesTable.creditAmount: creditAmount.round(),
           SalesTable.zamindarId: resolvedZamindarId,
           SalesTable.kisaanId: resolvedKisaanId,
         },
         where: '${SalesTable.invoiceNumber} = ?',
         whereArgs: [invoiceNumber],
       );
+      // after_sale_update trigger refreshes the sale DEBIT ledger row.
 
       for (final item in items) {
         final itemSubtotal = (item.qty * item.unitPrice) - item.discount;
@@ -5895,10 +7082,10 @@ END
           SaleItemsTable.productName: item.productName,
           SaleItemsTable.productType: productType,
           SaleItemsTable.quantity: item.qty.round(),
-          SaleItemsTable.unitPrice: item.unitPrice,
+          SaleItemsTable.unitPrice: item.unitPrice.round(),
           SaleItemsTable.seasonalIncrement: 0,
-          SaleItemsTable.itemDiscount: item.discount,
-          SaleItemsTable.subtotal: itemSubtotal,
+          SaleItemsTable.itemDiscount: item.discount.round(),
+          SaleItemsTable.subtotal: itemSubtotal.round(),
         });
       }
 
@@ -5957,9 +7144,9 @@ END
           PaymentsTable.paymentId: walletPaymentId,
           PaymentsTable.invoiceNumber: invoiceNumber,
           PaymentsTable.dateTime: _formatDateTime(dateTime),
-          PaymentsTable.zamindarName: zamindarName,
-          PaymentsTable.kisaanName: kisaanName,
-          PaymentsTable.amountPaid: drawdown,
+          PaymentsTable.zamindarId: resolvedZamindarId,
+          PaymentsTable.kisaanId: resolvedKisaanId,
+          PaymentsTable.amountPaid: drawdown.round(),
           PaymentsTable.paymentMethod: 'Advance Wallet Deduction',
           PaymentsTable.season: season,
         });
@@ -5970,9 +7157,9 @@ END
             PaymentsTable.paymentId: cashPaymentId,
             PaymentsTable.invoiceNumber: invoiceNumber,
             PaymentsTable.dateTime: _formatDateTime(dateTime),
-            PaymentsTable.zamindarName: zamindarName,
-            PaymentsTable.kisaanName: kisaanName,
-            PaymentsTable.amountPaid: remainingPhysicalCash,
+            PaymentsTable.zamindarId: resolvedZamindarId,
+            PaymentsTable.kisaanId: resolvedKisaanId,
+            PaymentsTable.amountPaid: remainingPhysicalCash.round(),
             PaymentsTable.paymentMethod: 'Cash',
             PaymentsTable.season: season,
           });
@@ -5983,38 +7170,16 @@ END
           PaymentsTable.paymentId: cashPaymentId,
           PaymentsTable.invoiceNumber: invoiceNumber,
           PaymentsTable.dateTime: _formatDateTime(dateTime),
-          PaymentsTable.zamindarName: zamindarName,
-          PaymentsTable.kisaanName: kisaanName,
-          PaymentsTable.amountPaid: effectivePaidAmount,
+          PaymentsTable.zamindarId: resolvedZamindarId,
+          PaymentsTable.kisaanId: resolvedKisaanId,
+          PaymentsTable.amountPaid: effectivePaidAmount.round(),
           PaymentsTable.paymentMethod: 'Cash',
           PaymentsTable.season: season,
         });
       }
+      // Ledger CREDIT rows for payments are created by after_payment_insert.
 
-      await _insertLedgerEntriesForSale(
-        txn,
-        invoiceNumber: invoiceNumber,
-        zamindarName: zamindarName,
-        kisaanName: kisaanName,
-        description: items
-            .map((item) => '${item.productName} x${item.qty.round()}')
-            .join(' · '),
-        totalPayable: totalPayable,
-        paidAmount: usesAdvanceWallet
-            ? remainingPhysicalCash
-            : effectivePaidAmount,
-        paymentMethod: paymentMethod,
-        season: season,
-        dateTime: dateTime,
-        advanceDrawdown: drawdown,
-        walletPaymentId: walletPaymentId,
-        cashPaymentId: cashPaymentId,
-      );
-
-      final newZamindarId = await _resolveZamindarIdByName(txn, zamindarName);
-      if (newZamindarId != null) {
-        affectedZamindarIds.add(newZamindarId);
-      }
+      affectedZamindarIds.add(resolvedZamindarId);
       for (final id in affectedZamindarIds) {
         await _recalculateZamindarBalanceOn(txn, id);
       }
@@ -6066,7 +7231,7 @@ END
     await db.transaction((txn) async {
       final zamindarMaps = await txn.query(
         ZamindarTable.name,
-        columns: [ZamindarTable.advanceBalance, ZamindarTable.nameColumn],
+        columns: [ZamindarTable.advanceBalance],
         where: '${ZamindarTable.id} = ?',
         whereArgs: [zamindarId],
         limit: 1,
@@ -6076,8 +7241,6 @@ END
         throw StateError('Zamindar not found.');
       }
 
-      final zamindarName =
-          zamindarMaps.first[ZamindarTable.nameColumn] as String;
       final currentBalance = _readIntValue(
         zamindarMaps.first[ZamindarTable.advanceBalance],
       );
@@ -6097,25 +7260,13 @@ END
         PaymentsTable.paymentId: paymentId,
         PaymentsTable.invoiceNumber: null,
         PaymentsTable.dateTime: formattedDateTime,
-        PaymentsTable.zamindarName: zamindarName,
-        PaymentsTable.kisaanName: null,
+        PaymentsTable.zamindarId: zamindarId,
+        PaymentsTable.kisaanId: null,
         PaymentsTable.amountPaid: amount,
         PaymentsTable.paymentMethod: 'Cash',
         PaymentsTable.season: season,
       });
-
-      await txn.insert(LedgerTransactionTable.name, {
-        LedgerTransactionTable.zamindarId: zamindarId,
-        LedgerTransactionTable.kisaanId: null,
-        LedgerTransactionTable.invoiceNumber: null,
-        LedgerTransactionTable.paymentId: paymentId,
-        LedgerTransactionTable.type: LedgerTransactionType.credit,
-        LedgerTransactionTable.category: 'ADVANCE_PAYMENT',
-        LedgerTransactionTable.description: 'Advance payment received',
-        LedgerTransactionTable.amount: amount,
-        LedgerTransactionTable.dateTime: formattedDateTime,
-        LedgerTransactionTable.season: season,
-      });
+      // after_payment_insert trigger writes ADVANCE_PAYMENT ledger CREDIT.
     });
 
     notifyListeners();
@@ -6217,7 +7368,9 @@ class SalesTable {
   static const String name = 'sales';
   static const String invoiceNumber = 'invoice_number';
   static const String dateTime = 'date_time';
+  /// JOIN alias only — not a physical column after schema v26.
   static const String zamindarName = 'zamindar_name';
+  /// JOIN alias only — not a physical column after schema v26.
   static const String kisaanName = 'kisaan_name';
   static const String subtotal = 'subtotal';
   static const String itemDiscountsTotal = 'item_discounts_total';
@@ -6287,7 +7440,11 @@ class PaymentsTable {
   static const String paymentId = 'payment_id';
   static const String invoiceNumber = 'invoice_number';
   static const String dateTime = 'date_time';
+  static const String zamindarId = 'zamindar_id';
+  static const String kisaanId = 'kisaan_id';
+  /// JOIN alias only — not a physical column after schema v26.
   static const String zamindarName = 'zamindar_name';
+  /// JOIN alias only — not a physical column after schema v26.
   static const String kisaanName = 'kisaan_name';
   static const String amountPaid = 'amount_paid';
   static const String paymentMethod = 'payment_method';
@@ -6336,6 +7493,7 @@ class PurchaseInvoicesTable {
   static const String name = 'purchase_invoices';
   static const String invoiceNumber = 'invoice_number';
   static const String wholesalerId = 'wholesaler_id';
+  /// JOIN alias only — not a physical column after schema v26.
   static const String wholesalerName = 'wholesaler_name';
   static const String dateTime = 'date_time';
   static const String subtotal = 'subtotal';
@@ -6368,6 +7526,7 @@ class WholesalerLedgerTable {
   static const String date = 'date';
   static const String debit = 'debit';
   static const String credit = 'credit';
+  /// Computed in SELECT via window function — not a physical column after v26.
   static const String runningBalance = 'running_balance';
   static const String description = 'description';
 }

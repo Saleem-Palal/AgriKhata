@@ -1,5 +1,6 @@
 import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Database/database_helper.dart';
+import 'package:agrikhata/Widgets/ledger_widgets.dart';
 import 'package:agrikhata/utils/pdf_generator.dart';
 import 'package:agrikhata/utils/season_utils.dart';
 import 'package:flutter/material.dart';
@@ -129,6 +130,7 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
     required String title,
     required Widget child,
     Widget? trailing,
+    bool padChild = true,
   }) {
     return Container(
       width: double.infinity,
@@ -163,7 +165,10 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
               ],
             ),
           ),
-          Padding(padding: const EdgeInsets.all(14), child: child),
+          if (padChild)
+            Padding(padding: const EdgeInsets.all(14), child: child)
+          else
+            child,
         ],
       ),
     );
@@ -335,6 +340,7 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
   Widget _buildRecentTransactionsCard() {
     return _card(
       title: "Recent transactions",
+      padChild: false,
       trailing: MouseRegion(
         cursor: SystemMouseCursors.click,
         child: GestureDetector(
@@ -345,17 +351,12 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
           ),
         ),
       ),
-      child: FutureBuilder<List<Map<String, dynamic>>>(
-        future: widget.zamindar.id == null
-            ? Future.value(const [])
-            : DatabaseHelper.instance.getLedgerTransactions(
-                widget.zamindar.id!,
-                limit: 4,
-              ),
+      child: FutureBuilder<List<ZamindarLedgerRow>>(
+        future: _loadRecentLedgerRows(),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Padding(
-              padding: EdgeInsets.symmetric(vertical: 16),
+              padding: EdgeInsets.all(14),
               child: Center(
                 child: SizedBox(
                   width: 20,
@@ -367,181 +368,73 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
           }
 
           if (snapshot.hasError) {
-            return Text(
-              'Failed to load transactions',
-              style: TextStyle(fontSize: 11, color: Colors.red[700]),
+            return Padding(
+              padding: const EdgeInsets.all(14),
+              child: Text(
+                'Failed to load transactions',
+                style: TextStyle(fontSize: 11, color: Colors.red[700]),
+              ),
             );
           }
 
-          final transactions = snapshot.data ?? [];
-          if (transactions.isEmpty) {
-            return const Text(
-              'No transactions yet',
-              style: TextStyle(fontSize: 11, color: AppColors.textMuted),
+          final rows = snapshot.data ?? [];
+          if (rows.isEmpty) {
+            return const Padding(
+              padding: EdgeInsets.all(14),
+              child: Text(
+                'No transactions yet',
+                style: TextStyle(fontSize: 11, color: AppColors.textMuted),
+              ),
             );
           }
 
-          return Column(
-            children: [
-              for (var i = 0; i < transactions.length; i++) ...[
-                if (i > 0)
-                  const Divider(height: 1, color: AppColors.border),
-                _txnRowFromMap(transactions[i]),
-              ],
-            ],
+          return LayoutBuilder(
+            builder: (context, constraints) {
+              final width = constraints.maxWidth < 720
+                  ? 720.0
+                  : constraints.maxWidth;
+              return SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: SizedBox(
+                  width: width,
+                  child: ZamindarLedgerTable(
+                    rows: rows,
+                    shrinkWrap: true,
+                    embedded: true,
+                  ),
+                ),
+              );
+            },
           );
         },
       ),
     );
   }
 
-  Widget _txnRowFromMap(Map<String, dynamic> row) {
-    final type = row[LedgerTransactionTable.type] as String? ?? '';
-    final category =
-        (row[LedgerTransactionTable.category] as String? ?? '').toUpperCase();
-    final isDebit = type == LedgerTransactionType.debit;
-    final amount =
-        (row[LedgerTransactionTable.amount] as num?)?.toDouble() ?? 0.0;
-    final description =
-        row[LedgerTransactionTable.description] as String? ?? '';
-    final kisaanName = row['kisaan_name'] as String?;
-    final dateTime = LedgerTransaction.fromMap(row).dateTime;
-    final formattedDate = _formatDate(dateTime);
-    final formattedAmount = "${isDebit ? '+' : '−'}Rs ${_fmt(amount)}";
-    final amountColor = _transactionAmountColor(
-      isDebit: isDebit,
-      category: category,
+  Future<List<ZamindarLedgerRow>> _loadRecentLedgerRows() async {
+    if (widget.zamindar.id == null) return const [];
+
+    final transactions = await DatabaseHelper.instance.getLedgerTransactions(
+      widget.zamindar.id!,
+      limit: 4,
     );
-    final descriptionColor = _transactionDescriptionColor(category);
+    if (transactions.isEmpty) return const [];
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 10),
-      child: Row(
-        children: [
-          Container(
-            width: 7,
-            height: 7,
-            margin: const EdgeInsets.only(right: 10),
-            decoration: BoxDecoration(
-              color: isDebit
-                  ? const Color(0xFFC0DD97)
-                  : const Color(0xFF85B7EB),
-              shape: BoxShape.circle,
-            ),
-          ),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  description,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: descriptionColor,
-                    fontWeight: FontWeight.w500,
-                  ),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                if (kisaanName != null && kisaanName.isNotEmpty) ...[
-                  const SizedBox(height: 2),
-                  Text(
-                    kisaanName,
-                    style: const TextStyle(
-                      fontSize: 10,
-                      color: AppColors.textMuted,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ],
-                const SizedBox(height: 2),
-                Row(
-                  children: [
-                    Text(
-                      formattedDate,
-                      style: const TextStyle(
-                        fontSize: 10,
-                        color: AppColors.textMuted,
-                      ),
-                    ),
-                    if (category.isNotEmpty) ...[
-                      const Text(
-                        ' · ',
-                        style: TextStyle(
-                          fontSize: 10,
-                          color: AppColors.textMuted,
-                        ),
-                      ),
-                      Text(
-                        category,
-                        style: const TextStyle(
-                          fontSize: 10,
-                          color: AppColors.textMuted,
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ],
-            ),
-          ),
-          Text(
-            formattedAmount,
-            style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w500,
-              color: amountColor,
-            ),
-          ),
-        ],
-      ),
+    final invoiceNumbers = transactions
+        .map((row) => row[LedgerTransactionTable.invoiceNumber] as String?)
+        .whereType<String>()
+        .toList();
+
+    final itemSummaries = await DatabaseHelper.instance
+        .getSaleItemsSummariesForInvoices(invoiceNumbers);
+    final collections = await DatabaseHelper.instance
+        .getInvoiceCollectionSummaries(invoiceNumbers);
+
+    return ZamindarLedgerRow.fromTransactions(
+      transactions: transactions,
+      itemSummaries: itemSummaries,
+      collections: collections,
     );
-  }
-
-  Color _transactionAmountColor({
-    required bool isDebit,
-    required String category,
-  }) {
-    if (category == 'ADVANCE_PAYMENT' || category == 'ADVANCE') {
-      return Colors.cyan[700]!;
-    }
-    if (!isDebit &&
-        (category == 'CASH_PAYMENT' ||
-            category == 'PAYMENT' ||
-            category == 'DEBT_SETTLEMENT')) {
-      return Colors.blue[900]!;
-    }
-    return isDebit ? const Color(0xFFA32D2D) : const Color(0xFF0C447C);
-  }
-
-  Color _transactionDescriptionColor(String category) {
-    if (category == 'ADVANCE_PAYMENT' || category == 'ADVANCE') {
-      return Colors.cyan[700]!;
-    }
-    if (category == 'CASH_PAYMENT' ||
-        category == 'PAYMENT' ||
-        category == 'DEBT_SETTLEMENT') {
-      return Colors.blue[900]!;
-    }
-    return AppColors.darkGreen;
-  }
-
-  String _formatDate(DateTime date) {
-    final months = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec',
-    ];
-    return '${date.day} ${months[date.month - 1]} ${date.year}';
   }
 
   Widget _buildQuickActionsCard(BuildContext context) {
@@ -856,7 +749,6 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
                   // Trigger receipt printing
                   try {
                     await PdfGenerator.printAdvancePaymentReceipt(
-                      shopName: 'AGRI KHATA',
                       zamindarName: widget.zamindar.name,
                       amount: amount,
                       date: DateTime.now(),

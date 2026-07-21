@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AgriKhata — Settings</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    background:#F7F9F4;
+    display:flex;min-height:100vh;
+  }
+
+  /* ---------- Sidebar ---------- */
+  .sidebar{width:220px;flex-shrink:0;background:#1B4332;display:flex;flex-direction:column}
+  .logo{padding:18px 16px 14px;border-bottom:0.5px solid rgba(255,255,255,0.5)}
+  .logo-name{font-size:20px;font-weight:700;color:#fff;display:flex;align-items:center;gap:7px}
+  .logo-name i{font-size:15px;color:#95D5B2}
+  .logo-sub{font-size:11px;color:#A7C4A0;margin-top:2px}
+  .nav{padding:12px 10px;flex:1}
+  .nav-section{font-size:10px;color:#6B9E7A;font-weight:700;letter-spacing:1.2px;padding:10px 8px 4px;text-transform:uppercase}
+  .nav-item{display:flex;align-items:center;gap:9px;padding:10px 12px;border-radius:10px;cursor:pointer;color:#A7C4A0;font-size:12.5px;margin-bottom:2px}
+  .nav-item.active{background:#2D6A4F;color:#fff;font-weight:500}
+  .nav-item i{width:16px;text-align:center;font-size:13px}
+  .sb-footer{padding:12px 14px;border-top:0.5px solid rgba(255,255,255,0.05);display:flex;align-items:center;gap:9px}
+  .sb-av{width:30px;height:30px;border-radius:50%;background:#2D6A4F;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:500;color:#B7E4C7;border:1px solid #40916C;flex-shrink:0}
+  .sb-name{font-size:12px;font-weight:500;color:#fff}
+  .sb-role{font-size:10px;color:#6B9E7A}
+  .version-tag{text-align:center;font-size:9.5px;color:#5C8468;padding:8px 0 4px}
+
+  /* ---------- Main ---------- */
+  .main{flex:1;display:flex;flex-direction:column;min-width:0}
+  .topbar{background:#fff;border-bottom:0.5px solid #E2EBE0;padding:12px 24px}
+  .breadcrumb{font-size:12px;color:#95B89A}
+  .breadcrumb .cur{color:#1B4332;font-weight:500}
+  .content{padding:28px;flex:1;display:flex;justify-content:center}
+
+  /* ---------- Canvas ---------- */
+  .canvas{
+    width:100%;max-width:520px;
+    background:#F7F9F4;
+    padding:0;
+  }
+
+  /* ---------- Header ---------- */
+  .page-header{margin-bottom:22px}
+  .page-title{font-size:22px;font-weight:700;color:#1B4332}
+  .page-sub{font-size:12.5px;color:#5C8468;margin-top:3px}
+
+  /* ---------- Section label ---------- */
+  .section-label{
+    font-size:11px;font-weight:700;color:#5C8468;
+    text-transform:uppercase;letter-spacing:.6px;
+    margin:24px 2px 8px;
+  }
+  .section-label:first-of-type{margin-top:0}
+
+  /* ---------- Card ---------- */
+  .card{
+    background:#FFFFFF;
+    border:1px solid #E2EBE0;
+    border-radius:14px;
+    overflow:hidden;
+  }
+
+  /* ---------- Row ---------- */
+  .row{
+    display:flex;align-items:center;gap:13px;
+    padding:14px 16px;
+    border-bottom:1px solid #EEF3EC;
+    cursor:pointer;
+    transition:background .15s ease;
+  }
+  .row:last-child{border-bottom:none}
+  .row:hover{background:#FAFBF8}
+
+  .row-icon{
+    width:38px;height:38px;border-radius:10px;
+    background:#F0F5EE;
+    display:flex;align-items:center;justify-content:center;
+    flex-shrink:0;
+  }
+  .row-icon i{font-size:15px;color:#40916C}
+
+  .row-text{flex:1;min-width:0}
+  .row-title{font-size:13.5px;font-weight:600;color:#1B4332}
+  .row-sub{font-size:11.5px;color:#8CA491;margin-top:2px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  .chevron{color:#C6D5C9;font-size:13px;flex-shrink:0}
+
+  /* ---------- Export button ---------- */
+  .export-btn{
+    display:inline-flex;align-items:center;gap:6px;
+    background:#1B4332;color:#fff;
+    font-size:11.5px;font-weight:600;
+    padding:7px 14px;border-radius:20px;
+    border:none;cursor:pointer;flex-shrink:0;
+    transition:background .15s ease;
+  }
+  .export-btn:hover{background:#163828}
+  .export-btn i{font-size:10.5px}
+
+  /* ---------- Toggle switch ---------- */
+  .switch{
+    width:40px;height:23px;border-radius:20px;
+    background:#DCE5DA;position:relative;flex-shrink:0;
+    cursor:pointer;transition:background .2s ease;
+  }
+  .switch::after{
+    content:'';position:absolute;top:2.5px;left:2.5px;
+    width:18px;height:18px;border-radius:50%;
+    background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.2);
+    transition:transform .2s ease;
+  }
+  .switch.on{background:#40916C}
+  .switch.on::after{transform:translateX(17px)}
+
+  /* ---------- Danger zone ---------- */
+  .danger-card{
+    background:#FFF5F5;
+    border:1px solid #F5C6C6;
+    border-radius:14px;
+    padding:16px;
+    display:flex;align-items:center;gap:14px;
+    margin-top:38px;
+    cursor:pointer;
+    transition:background .15s ease;
+  }
+  .danger-card:hover{background:#FEEAEA}
+  .danger-icon{
+    width:44px;height:44px;border-radius:50%;
+    background:#FCDCDC;
+    display:flex;align-items:center;justify-content:center;
+    flex-shrink:0;
+  }
+  .danger-icon i{font-size:17px;color:#D64545}
+  .danger-title{font-size:14px;font-weight:700;color:#D64545}
+  .danger-sub{font-size:11.5px;color:#B56A6A;margin-top:3px;line-height:1.4}
+
+  /* ---------- Footer ---------- */
+  .footer{
+    text-align:center;font-size:11px;color:#95AC9C;
+    margin-top:36px;
+  }
+</style>
+</head>
+<body>
+
+<div style="display:flex;width:100%">
+
+  <!-- ================= SIDEBAR ================= -->
+  <div class="sidebar">
+    <div class="logo">
+      <div class="logo-name"><i class="fa-solid fa-leaf"></i>AgriKhata</div>
+      <div class="logo-sub">AM Pesticides and Fertilizer</div>
+    </div>
+    <div class="nav">
+      <div class="nav-section">Main</div>
+      <div class="nav-item"><i class="fa-solid fa-table-cells-large"></i>Dashboard</div>
+      <div class="nav-item"><i class="fa-solid fa-user"></i>Zamindars</div>
+      <div class="nav-item"><i class="fa-solid fa-cart-shopping"></i>New Sale</div>
+      <div class="nav-section">Inventory</div>
+      <div class="nav-item"><i class="fa-solid fa-box-archive"></i>Products</div>
+      <div class="nav-item"><i class="fa-solid fa-clipboard-list"></i>Purchase</div>
+      <div class="nav-item"><i class="fa-solid fa-handshake"></i>Wholesalers</div>
+      <div class="nav-section">Finance</div>
+      <div class="nav-item"><i class="fa-solid fa-book-open"></i>Ledger</div>
+      <div class="nav-item"><i class="fa-solid fa-money-bill-wave"></i>Expenses</div>
+      <div class="nav-item"><i class="fa-solid fa-chart-column"></i>Reports</div>
+      <div class="nav-section">System</div>
+      <div class="nav-item active"><i class="fa-solid fa-gear"></i>Settings</div>
+    </div>
+    <div class="sb-footer">
+      <div class="sb-av">AM</div>
+      <div><div class="sb-name">Atta Muhammad</div><div class="sb-role">Owner</div></div>
+    </div>
+    <div class="version-tag">v1.0.8</div>
+  </div>
+
+  <!-- ================= MAIN ================= -->
+  <div class="main">
+    <div class="topbar">
+      <div class="breadcrumb">System &nbsp;›&nbsp; <span class="cur">Settings</span></div>
+    </div>
+
+    <div class="content">
+<div class="canvas">
+
+  <!-- ================= PAGE HEADER ================= -->
+  <div class="page-header">
+    <div class="page-title">Settings</div>
+    <div class="page-sub">Manage your shop identity, preferences, and data</div>
+  </div>
+
+  <!-- ================= SECTION 1: Shop Identity ================= -->
+  <div class="section-label">Shop Identity</div>
+  <div class="card">
+    <div class="row">
+      <div class="row-icon"><i class="fa-solid fa-store"></i></div>
+      <div class="row-text">
+        <div class="row-title">Shop Name</div>
+        <div class="row-sub">AM Pesticides and Fertilizer</div>
+      </div>
+      <i class="fa-solid fa-chevron-right chevron"></i>
+    </div>
+    <div class="row">
+      <div class="row-icon"><i class="fa-solid fa-location-dot"></i></div>
+      <div class="row-text">
+        <div class="row-title">Business Address</div>
+        <div class="row-sub">Not configured yet</div>
+      </div>
+      <i class="fa-solid fa-chevron-right chevron"></i>
+    </div>
+    <div class="row">
+      <div class="row-icon"><i class="fa-solid fa-phone"></i></div>
+      <div class="row-text">
+        <div class="row-title">Contact Number</div>
+        <div class="row-sub">Not configured yet</div>
+      </div>
+      <i class="fa-solid fa-chevron-right chevron"></i>
+    </div>
+  </div>
+
+  <!-- ================= SECTION 2: Preferences & Data Safety ================= -->
+  <div class="section-label">Preferences &amp; Data Safety</div>
+  <div class="card">
+    <div class="row">
+      <div class="row-icon"><i class="fa-solid fa-cloud-arrow-up"></i></div>
+      <div class="row-text">
+        <div class="row-title">Google Drive Cloud Backup</div>
+        <div class="row-sub">Save your local database securely to the cloud</div>
+      </div>
+      <button class="export-btn"><i class="fa-solid fa-download"></i>Export Now</button>
+    </div>
+    <div class="row">
+      <div class="row-icon"><i class="fa-solid fa-moon"></i></div>
+      <div class="row-text">
+        <div class="row-title">Dark Theme</div>
+        <div class="row-sub">Reduce eye strain in low-light environments</div>
+      </div>
+      <div class="switch" id="darkThemeToggle" onclick="this.classList.toggle('on')"></div>
+    </div>
+    <div class="row">
+      <div class="row-icon"><i class="fa-solid fa-circle-question"></i></div>
+      <div class="row-text">
+        <div class="row-title">Contact Support</div>
+        <div class="row-sub">Get help with double-ledger rules or report an issue</div>
+      </div>
+      <i class="fa-solid fa-chevron-right chevron"></i>
+    </div>
+  </div>
+
+  <!-- ================= SECTION 3: Danger Zone ================= -->
+  <div class="danger-card">
+    <div class="danger-icon"><i class="fa-solid fa-trash"></i></div>
+    <div>
+      <div class="danger-title">Reset Application</div>
+      <div class="danger-sub">Wipes all local transactions, customers, and data forever.</div>
+    </div>
+  </div>
+
+  <!-- ================= FOOTER ================= -->
+  <div class="footer">AgriKhata v1.0.8 &nbsp;•&nbsp; Built with ❤️</div>
+
+</div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

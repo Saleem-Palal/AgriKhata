@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AgriKhata — Sidebar (Improved)</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#F7F9F4;color:#1B4332;display:flex;min-height:100vh}
+
+  /* ================= SIDEBAR ================= */
+  .sidebar{
+    width:220px;flex-shrink:0;
+    background:linear-gradient(180deg,#1B4332 0%,#173B2B 100%);
+    display:flex;flex-direction:column;
+    position:relative;overflow:hidden;
+    box-shadow:2px 0 12px rgba(0,0,0,0.08);
+  }
+
+  /* subtle ambient glow drifting in the background */
+  .sidebar::before{
+    content:'';position:absolute;top:-60px;left:-60px;width:220px;height:220px;
+    background:radial-gradient(circle,rgba(64,145,108,0.25) 0%,transparent 70%);
+    animation:drift 10s ease-in-out infinite;pointer-events:none;
+  }
+  @keyframes drift{
+    0%,100%{transform:translate(0,0)}
+    50%{transform:translate(30px,40px)}
+  }
+
+  /* ---------- Logo ---------- */
+  .logo{
+    padding:20px 18px 16px;position:relative;z-index:1;
+    opacity:0;animation:fadeSlideDown .5s ease forwards;
+  }
+  @keyframes fadeSlideDown{
+    from{opacity:0;transform:translateY(-8px)}
+    to{opacity:1;transform:translateY(0)}
+  }
+  .logo-name{font-size:21px;font-weight:700;color:#fff;letter-spacing:.2px;display:flex;align-items:center;gap:7px}
+  .logo-name i{font-size:16px;color:#95D5B2;animation:sway 3.5s ease-in-out infinite}
+  @keyframes sway{
+    0%,100%{transform:rotate(0deg)}
+    50%{transform:rotate(-8deg)}
+  }
+  .logo-sub{font-size:11px;color:#A7C4A0;margin-top:3px}
+  .logo-underline{
+    height:1.5px;background:linear-gradient(90deg,#40916C,rgba(255,255,255,0.5),transparent);
+    margin-top:14px;width:0%;
+    animation:drawLine .8s .3s ease forwards;
+  }
+  @keyframes drawLine{ to{width:100%} }
+
+  /* ---------- Nav ---------- */
+  .nav{padding:14px 10px;flex:1;position:relative;z-index:1;overflow-y:auto}
+  .nav::-webkit-scrollbar{width:4px}
+  .nav::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.15);border-radius:4px}
+
+  .nav-section{
+    font-size:10px;color:#6B9E7A;font-weight:700;letter-spacing:1.3px;
+    padding:14px 10px 6px;text-transform:uppercase;
+    opacity:0;animation:fadeIn .4s ease forwards;
+  }
+  .nav-section:first-child{padding-top:2px}
+
+  .nav-item{
+    display:flex;align-items:center;gap:11px;
+    padding:10px 12px;border-radius:11px;cursor:pointer;
+    color:#B7CFB9;font-size:13px;font-weight:400;
+    margin-bottom:3px;position:relative;
+    opacity:0;transform:translateX(-12px);
+    animation:slideIn .4s ease forwards;
+    transition:background .22s ease, color .22s ease, transform .18s ease, padding-left .18s ease;
+  }
+
+  /* staggered entrance for each item */
+  .nav-item:nth-of-type(1){animation-delay:.05s}
+  .nav-item:nth-of-type(2){animation-delay:.10s}
+  .nav-item:nth-of-type(3){animation-delay:.15s}
+  .nav-item:nth-of-type(4){animation-delay:.20s}
+  .nav-item:nth-of-type(5){animation-delay:.25s}
+  .nav-item:nth-of-type(6){animation-delay:.30s}
+  .nav-item:nth-of-type(7){animation-delay:.35s}
+  .nav-item:nth-of-type(8){animation-delay:.40s}
+  .nav-item:nth-of-type(9){animation-delay:.45s}
+  .nav-item:nth-of-type(10){animation-delay:.50s}
+
+  @keyframes slideIn{ to{opacity:1;transform:translateX(0)} }
+  @keyframes fadeIn{ to{opacity:1} }
+
+  .nav-item i{
+    width:16px;text-align:center;font-size:14px;flex-shrink:0;
+    transition:transform .25s cubic-bezier(.34,1.56,.64,1), color .2s ease;
+  }
+
+  /* hover: gentle lift + icon pop, no layout jump */
+  .nav-item:not(.active):hover{
+    background:rgba(255,255,255,0.06);
+    color:#fff;
+    transform:translateX(3px);
+  }
+  .nav-item:not(.active):hover i{
+    transform:scale(1.15) rotate(-6deg);
+    color:#95D5B2;
+  }
+
+  /* active state: filled pill + soft glow + left accent bar */
+  .nav-item.active{
+    background:#2D6A4F;
+    color:#fff;
+    font-weight:500;
+    box-shadow:0 3px 10px rgba(45,106,79,0.45), inset 0 0 0 1px rgba(255,255,255,0.06);
+  }
+  .nav-item.active i{color:#fff}
+  .nav-item.active::before{
+    content:'';position:absolute;left:-10px;top:50%;
+    width:3px;height:60%;transform:translateY(-50%);
+    background:#95D5B2;border-radius:0 3px 3px 0;
+    box-shadow:0 0 8px rgba(149,213,178,0.8);
+    animation:pulseBar 2s ease-in-out infinite;
+  }
+  @keyframes pulseBar{
+    0%,100%{opacity:1}
+    50%{opacity:.5}
+  }
+
+  /* subtle press feedback */
+  .nav-item:active{transform:scale(.97) translateX(3px)}
+
+  /* ---------- Footer ---------- */
+  .sb-footer{
+    padding:13px 14px;position:relative;z-index:1;
+    border-top:0.5px solid rgba(255,255,255,0.08);
+    display:flex;align-items:center;gap:10px;
+    opacity:0;animation:fadeIn .5s .55s ease forwards;
+  }
+  .sb-av-wrap{position:relative;flex-shrink:0}
+  .sb-av{
+    width:32px;height:32px;border-radius:50%;
+    background:#2D6A4F;display:flex;align-items:center;justify-content:center;
+    font-size:11.5px;font-weight:600;color:#D8F3DC;
+    border:1.5px solid #40916C;
+  }
+  .status-dot{
+    position:absolute;bottom:-1px;right:-1px;width:9px;height:9px;border-radius:50%;
+    background:#52D68C;border:2px solid #173B2B;
+  }
+  .status-dot::after{
+    content:'';position:absolute;inset:-3px;border-radius:50%;
+    border:1.5px solid #52D68C;
+    animation:ping 2s ease-out infinite;
+  }
+  @keyframes ping{
+    0%{opacity:.8;transform:scale(.6)}
+    100%{opacity:0;transform:scale(1.8)}
+  }
+  .sb-name{font-size:12.5px;font-weight:500;color:#fff}
+  .sb-role{font-size:10px;color:#8FBA9A}
+
+  .version-tag{
+    text-align:center;font-size:9.5px;color:#5C8468;
+    padding:8px 0 12px;position:relative;z-index:1;
+    letter-spacing:.4px;
+  }
+
+  /* ================= demo content pane (context only, sidebar is the deliverable) ================= */
+  .demo-note{flex:1;display:flex;align-items:center;justify-content:center;padding:40px;color:#95B89A;font-size:13px;text-align:center}
+</style>
+</head>
+<body>
+
+  <!-- ================= SIDEBAR (the only thing that changed) ================= -->
+  <div class="sidebar">
+    <div class="logo">
+      <div class="logo-name"><i class="fa-solid fa-seedling"></i>AgriKhata</div>
+      <div class="logo-sub">Atta Muhammad &amp; Sons</div>
+      <div class="logo-underline"></div>
+    </div>
+
+    <div class="nav">
+      <div class="nav-section">Main</div>
+      <div class="nav-item"><i class="fa-solid fa-table-cells-large"></i>Dashboard</div>
+      <div class="nav-item active"><i class="fa-solid fa-user"></i>Zamindars</div>
+      <div class="nav-item"><i class="fa-solid fa-cart-shopping"></i>New Sale</div>
+
+      <div class="nav-section">Inventory</div>
+      <div class="nav-item"><i class="fa-solid fa-box-archive"></i>Products</div>
+      <div class="nav-item"><i class="fa-solid fa-clipboard-list"></i>Purchase</div>
+      <div class="nav-item"><i class="fa-solid fa-handshake"></i>Wholesalers</div>
+
+      <div class="nav-section">Finance</div>
+      <div class="nav-item"><i class="fa-solid fa-book-open"></i>Ledger</div>
+      <div class="nav-item"><i class="fa-solid fa-money-bill-wave"></i>Expenses</div>
+      <div class="nav-item"><i class="fa-solid fa-chart-column"></i>Reports</div>
+
+      <div class="nav-section">System</div>
+      <div class="nav-item"><i class="fa-solid fa-gear"></i>Settings</div>
+    </div>
+
+    <div class="sb-footer">
+      <div class="sb-av-wrap">
+        <div class="sb-av">AM</div>
+        <div class="status-dot"></div>
+      </div>
+      <div>
+        <div class="sb-name">Atta Muhammad</div>
+        <div class="sb-role">Owner</div>
+      </div>
+    </div>
+    <div class="version-tag">v1.0.8</div>
+  </div>
+
+  <!-- demo pane just for context — not part of the deliverable -->
+  <div class="demo-note">
+    Only the sidebar was redesigned.<br/>Hover the nav items to see the animation. This content pane is a placeholder for demo purposes.
+  </div>
+
+<script>
+// Simple click-to-activate demo behavior so you can test the active-state animation
+document.querySelectorAll('.nav-item').forEach(item => {
+  item.addEventListener('click', () => {
+    document.querySelector('.nav-item.active')?.classList.remove('active');
+    item.classList.add('active');
+  });
+});
+</script>
+</body>
+</html>

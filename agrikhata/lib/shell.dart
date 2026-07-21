@@ -9,11 +9,13 @@ import 'package:agrikhata/screens/products_screen.dart';
 import 'package:agrikhata/screens/purchase_screen.dart';
 import 'package:agrikhata/screens/reports_screen.dart';
 import 'package:agrikhata/screens/settings_screen.dart';
+import 'package:agrikhata/screens/user_accounts_screen.dart';
 import 'package:agrikhata/screens/wholesalers_screen.dart';
 import 'package:agrikhata/screens/zamindar_directory.dart';
 import 'package:agrikhata/screens/zamindar_profile_screen.dart';
 import 'package:agrikhata/services/update_service.dart';
 import 'package:agrikhata/utils/app_version.dart';
+import 'package:agrikhata/utils/shop_settings.dart';
 import 'package:flutter/material.dart';
 
 enum ZamindarView { directory, add, profile }
@@ -38,11 +40,13 @@ class _ShellState extends State<Shell> {
   int? _editReturnIndex;
   int _ledgerRefreshToken = 0; // For forcing ledger refresh
   String _appVersion = '';
+  String _shopName = ShopSettings.defaultShopName;
 
   @override
   void initState() {
     super.initState();
     _loadAppVersion();
+    _loadShopName();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       UpdateService().checkForUpdates(context);
@@ -53,6 +57,12 @@ class _ShellState extends State<Shell> {
     final label = await AppVersion.displayLabel();
     if (!mounted) return;
     setState(() => _appVersion = label);
+  }
+
+  Future<void> _loadShopName() async {
+    final name = await ShopSettings.getShopName();
+    if (!mounted) return;
+    setState(() => _shopName = name);
   }
 
   void _refreshDirectory() {
@@ -236,7 +246,11 @@ class _ShellState extends State<Shell> {
     ),
     const ExpenseScreen(),
     const ReportsScreen(),
-    SettingsScreen(onDataReset: _handleApplicationDataReset),
+    const UserAccountsScreen(),
+    SettingsScreen(
+      onDataReset: _handleApplicationDataReset,
+      onShopNameChanged: (name) => setState(() => _shopName = name),
+    ),
   ];
 
   @override
@@ -246,45 +260,97 @@ class _ShellState extends State<Shell> {
         children: [
           Container(
             width: 220,
-            color: AppColors.sidebarBg,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [AppColors.sidebarBg, AppColors.sidebarBgEnd],
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Color(0x14000000),
+                  offset: Offset(2, 0),
+                  blurRadius: 12,
+                ),
+              ],
+            ),
+            child: Stack(
               children: [
-                _buildHeader(),
-                const SizedBox(height: 20),
-                Expanded(
-                  child: ListView(
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    children: [
-                      _sectionTitle("MAIN"),
-                      _navItem(0, Icons.grid_view_rounded, "Dashboard"),
-                      _navItem(1, Icons.person_outline_rounded, "Zamindars"),
-                      _navItem(2, Icons.add_shopping_cart_rounded, "New Sale"),
-                      const SizedBox(height: 20),
-                      _sectionTitle("INVENTORY"),
-                      _navItem(3, Icons.inventory_2_outlined, "Products"),
-                      _navItem(4, Icons.shopping_bag_outlined, "Purchase"),
-                      _navItem(5, Icons.handshake_outlined, "Wholesalers"),
-                      const SizedBox(height: 20),
-                      _sectionTitle("FINANCE"),
-                      _navItem(
-                        6,
-                        Icons.account_balance_wallet_outlined,
-                        "Ledger",
+                // Soft ambient radial glow (top-left), matching HTML ::before
+                Positioned(
+                  top: -60,
+                  left: -60,
+                  child: IgnorePointer(
+                    child: Container(
+                      width: 220,
+                      height: 220,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: RadialGradient(
+                          colors: [
+                            AppColors.sidebarGlow.withValues(alpha: 0.25),
+                            AppColors.sidebarGlow.withValues(alpha: 0.0),
+                          ],
+                        ),
                       ),
-                      _navItem(
-                        7,
-                        Icons.payments_outlined,
-                        "Expenses",
-                      ),
-                      _navItem(8, Icons.analytics_outlined, "Reports"),
-                      const SizedBox(height: 20),
-                      _sectionTitle("SYSTEM"),
-                      _navItem(9, Icons.settings_outlined, "Settings"),
-                    ],
+                    ),
                   ),
                 ),
-                _buildFooter(),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildHeader(),
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _sectionTitle('MAIN'),
+                            _navItem(0, Icons.grid_view_rounded, 'Dashboard'),
+                            _navItem(
+                              1,
+                              Icons.person_outline_rounded,
+                              'Zamindars',
+                            ),
+                            _navItem(
+                              2,
+                              Icons.add_shopping_cart_rounded,
+                              'New Sale',
+                            ),
+                            const SizedBox(height: 6),
+                            _sectionTitle('INVENTORY'),
+                            _navItem(3, Icons.inventory_2_outlined, 'Products'),
+                            _navItem(
+                              4,
+                              Icons.shopping_bag_outlined,
+                              'Purchase',
+                            ),
+                            _navItem(
+                              5,
+                              Icons.handshake_outlined,
+                              'Wholesalers',
+                            ),
+                            const SizedBox(height: 6),
+                            _sectionTitle('FINANCE'),
+                            _navItem(6, Icons.menu_book_outlined, 'Ledger'),
+                            _navItem(7, Icons.payments_outlined, 'Expenses'),
+                            _navItem(8, Icons.analytics_outlined, 'Reports'),
+                            const SizedBox(height: 6),
+                            _sectionTitle('SYSTEM'),
+                            _navItem(
+                              9,
+                              Icons.manage_accounts_outlined,
+                              'User Accounts',
+                            ),
+                            _navItem(10, Icons.settings_outlined, 'Settings'),
+                          ],
+                        ),
+                      ),
+                    ),
+                    _buildFooter(),
+                  ],
+                ),
               ],
             ),
           ),
@@ -303,23 +369,41 @@ class _ShellState extends State<Shell> {
           bottom: BorderSide(color: Colors.white.withValues(alpha: 0.5)),
         ),
       ),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.start,
         children: [
-          Text(
-            "AgriKhata",
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 20,
-              fontWeight: FontWeight.bold,
-              letterSpacing: 0.5,
-            ),
+          Row(
+            children: [
+              Icon(
+                Icons.eco_rounded,
+                size: 16,
+                color: AppColors.sidebarAccentBar,
+              ),
+              const SizedBox(width: 7),
+              const Text(
+                'AgriKhata',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.2,
+                  height: 1.15,
+                ),
+              ),
+            ],
           ),
+          const SizedBox(height: 3),
           Text(
-            "Atta Muhammad & Sons",
-            style: TextStyle(color: AppColors.sidebarText, fontSize: 11),
+            _shopName,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: AppColors.sidebarText,
+              fontSize: 15,
+              height: 1.8,
+              fontWeight: FontWeight.w600,
+            ),
           ),
         ],
       ),
@@ -328,14 +412,14 @@ class _ShellState extends State<Shell> {
 
   Widget _sectionTitle(String title) {
     return Padding(
-      padding: const EdgeInsets.only(left: 12, bottom: 8, top: 4),
+      padding: const EdgeInsets.only(left: 10, bottom: 4, top: 2),
       child: Text(
         title,
         style: const TextStyle(
           color: AppColors.sidebarSection,
-          fontSize: 10,
-          fontWeight: FontWeight.bold,
-          letterSpacing: 1.2,
+          fontSize: 14,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 1.3,
         ),
       ),
     );
@@ -344,8 +428,11 @@ class _ShellState extends State<Shell> {
   Widget _navItem(int index, IconData icon, String label) {
     final isSelected = _selectedIndex == index;
     return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: InkWell(
+      padding: const EdgeInsets.only(bottom: 3),
+      child: _SidebarNavItem(
+        icon: icon,
+        label: label,
+        isSelected: isSelected,
         onTap: () => setState(() {
           _selectedIndex = index;
           if (index == 1) _zamindarView = ZamindarView.directory;
@@ -357,42 +444,16 @@ class _ShellState extends State<Shell> {
             _preSelectedKisaanIdForSale = null;
           }
         }),
-        borderRadius: BorderRadius.circular(10),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          decoration: BoxDecoration(
-            color: isSelected ? AppColors.sidebarActive : Colors.transparent,
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Row(
-            children: [
-              Icon(
-                icon,
-                size: 20,
-                color: isSelected ? Colors.white : AppColors.sidebarText,
-              ),
-              const SizedBox(width: 12),
-              Text(
-                label,
-                style: TextStyle(
-                  color: isSelected ? Colors.white : AppColors.sidebarText,
-                  fontSize: 14,
-                  fontWeight: isSelected ? FontWeight.w500 : FontWeight.normal,
-                ),
-              ),
-            ],
-          ),
-        ),
       ),
     );
   }
 
   Widget _buildFooter() {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
       decoration: BoxDecoration(
         border: Border(
-          top: BorderSide(color: Colors.white.withValues(alpha: 0.05)),
+          top: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
         ),
       ),
       child: Column(
@@ -401,51 +462,210 @@ class _ShellState extends State<Shell> {
         children: [
           Row(
             children: [
-              CircleAvatar(
-                backgroundColor: AppColors.sidebarActive,
-                radius: 16,
-                child: const Text(
-                  "AM",
-                  style: TextStyle(color: Colors.white, fontSize: 12),
-                ),
-              ),
-              const SizedBox(width: 12),
-              const Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
+              Stack(
+                clipBehavior: Clip.none,
                 children: [
-                  Text(
-                    "Atta Muhammad",
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
+                  Container(
+                    width: 32,
+                    height: 32,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: AppColors.sidebarActive,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: AppColors.accentGreen,
+                        width: 1.5,
+                      ),
+                    ),
+                    child: const Text(
+                      'AM',
+                      style: TextStyle(
+                        color: Color(0xFFD8F3DC),
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
-                  Text(
-                    "Owner",
-                    style: TextStyle(
-                      color: AppColors.sidebarText,
-                      fontSize: 11,
+                  Positioned(
+                    right: -1,
+                    bottom: -1,
+                    child: Container(
+                      width: 9,
+                      height: 9,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF52D68C),
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: AppColors.sidebarBgEnd,
+                          width: 2,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'Atta Muhammad',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    Text(
+                      'Owner',
+                      style: TextStyle(color: Color(0xFF8FBA9A), fontSize: 10),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (_appVersion.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            // Version sits in the bottom-left of the profile footer (not centered)
+            Text(
+              _appVersion,
+              style: const TextStyle(
+                color: AppColors.sidebarVersion,
+                fontSize: 9.5,
+                fontWeight: FontWeight.w500,
+                letterSpacing: 0.4,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Desktop nav row with hover translate + icon scale matching the HTML mock.
+class _SidebarNavItem extends StatefulWidget {
+  final IconData icon;
+  final String label;
+  final bool isSelected;
+  final VoidCallback onTap;
+
+  const _SidebarNavItem({
+    required this.icon,
+    required this.label,
+    required this.isSelected,
+    required this.onTap,
+  });
+
+  @override
+  State<_SidebarNavItem> createState() => _SidebarNavItemState();
+}
+
+class _SidebarNavItemState extends State<_SidebarNavItem> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final isSelected = widget.isSelected;
+    final showHover = _hovered && !isSelected;
+
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          transform: Matrix4.translationValues(showHover ? 3.0 : 0.0, 0, 0),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: isSelected
+                ? AppColors.sidebarActive
+                : showHover
+                ? Colors.white.withValues(alpha: 0.06)
+                : Colors.transparent,
+            borderRadius: BorderRadius.circular(11),
+            boxShadow: isSelected
+                ? [
+                    BoxShadow(
+                      color: AppColors.sidebarActive.withValues(alpha: 0.45),
+                      blurRadius: 10,
+                      offset: const Offset(0, 3),
+                    ),
+                  ]
+                : null,
+          ),
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              if (isSelected)
+                Positioned(
+                  left: -12,
+                  top: 0,
+                  bottom: 0,
+                  child: Center(
+                    child: Container(
+                      width: 3,
+                      height: 18,
+                      decoration: BoxDecoration(
+                        color: AppColors.sidebarAccentBar,
+                        borderRadius: const BorderRadius.only(
+                          topRight: Radius.circular(3),
+                          bottomRight: Radius.circular(3),
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: AppColors.sidebarAccentBar.withValues(
+                              alpha: 0.8,
+                            ),
+                            blurRadius: 8,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              Row(
+                children: [
+                  AnimatedScale(
+                    scale: showHover ? 1.15 : 1.0,
+                    duration: const Duration(milliseconds: 220),
+                    curve: Curves.easeOutBack,
+                    child: Icon(
+                      widget.icon,
+                      size: 16,
+                      color: isSelected || showHover
+                          ? (showHover && !isSelected
+                                ? AppColors.sidebarAccentBar
+                                : Colors.white)
+                          : AppColors.sidebarNavIdle,
+                    ),
+                  ),
+                  const SizedBox(width: 11),
+                  Expanded(
+                    child: Text(
+                      widget.label,
+                      style: TextStyle(
+                        color: isSelected || showHover
+                            ? Colors.white
+                            : AppColors.sidebarNavIdle,
+                        fontSize: 13,
+                        fontWeight: isSelected
+                            ? FontWeight.w500
+                            : FontWeight.w400,
+                      ),
                     ),
                   ),
                 ],
               ),
             ],
           ),
-          if (_appVersion.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            Text(
-              _appVersion,
-              style: TextStyle(
-                color: AppColors.sidebarText.withValues(alpha: 0.75),
-                fontSize: 11,
-                fontWeight: FontWeight.w500,
-                letterSpacing: 0.2,
-              ),
-            ),
-          ],
-        ],
+        ),
       ),
     );
   }

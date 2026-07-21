@@ -231,7 +231,8 @@ class PaymentLedgerEntry {
       paymentId: map['payment_id'] as String,
       invoiceNumber: map['invoice_number'] as String?,
       date: DateTime.parse(map['date_time'] as String),
-      zamindarName: map['zamindar_name'] as String,
+      // Names come from SQL JOINs (not denormalized payment columns).
+      zamindarName: (map['zamindar_name'] as String?) ?? '',
       kisaanName: map['kisaan_name'] as String?,
       amountPaid: (map['amount_paid'] as num).toDouble(),
       paymentMethod: map['payment_method'] as String,

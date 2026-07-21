@@ -6,14 +6,50 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:intl/intl.dart';
 import '../models/ledger_models.dart';
+import 'shop_settings.dart';
 
 class PdfGenerator {
   static final DateFormat _dateFormat = DateFormat('dd MMM yyyy');
   static final DateFormat _timeFormat = DateFormat('hh:mm a');
   static final NumberFormat _currencyFormat = NumberFormat('#,##,##0');
 
+  /// Branding column used across invoice / statement / voucher headers.
+  static pw.Widget _buildBrandBlock({
+    required String shopName,
+    double titleSize = 22,
+    double shopSize = 11,
+    PdfColor? titleColor,
+    PdfColor? shopColor,
+    pw.CrossAxisAlignment align = pw.CrossAxisAlignment.start,
+  }) {
+    final resolvedTitle = titleColor ?? PdfColors.white;
+    final resolvedShop = shopColor ?? PdfColors.white;
+    return pw.Column(
+      crossAxisAlignment: align,
+      children: [
+        pw.Text(
+          'AgriKhata',
+          style: pw.TextStyle(
+            color: resolvedTitle,
+            fontSize: titleSize,
+            fontWeight: pw.FontWeight.bold,
+          ),
+        ),
+        pw.SizedBox(height: 2),
+        pw.Text(
+          shopName,
+          style: pw.TextStyle(
+            color: resolvedShop,
+            fontSize: shopSize,
+          ),
+        ),
+      ],
+    );
+  }
+
   static Future<pw.Document> generateInvoicePdf(LedgerEntry entry, {bool isEdited = false}) async {
     final pdf = pw.Document();
+    final shopName = await ShopSettings.getShopName();
 
     pdf.addPage(
       pw.Page(
@@ -23,7 +59,7 @@ class PdfGenerator {
             crossAxisAlignment: pw.CrossAxisAlignment.start,
             children: [
               if (isEdited) _buildEditedWatermark(),
-              _buildHeader(),
+              _buildHeader(shopName),
               pw.SizedBox(height: 20),
               _buildInvoiceInfo(entry),
               pw.SizedBox(height: 20),
@@ -48,13 +84,14 @@ class PdfGenerator {
   ) async {
     final pdf = pw.Document();
     final summary = LedgerSummary.fromEntries(entries);
+    final shopName = await ShopSettings.getShopName();
 
     pdf.addPage(
       pw.MultiPage(
         pageFormat: PdfPageFormat.a4.landscape,
         build: (pw.Context context) {
           return [
-            _buildStatementHeader(season, ledgerType),
+            _buildStatementHeader(season, ledgerType, shopName),
             pw.SizedBox(height: 20),
             _buildSummaryCards(summary, ledgerType),
             pw.SizedBox(height: 20),
@@ -102,7 +139,7 @@ class PdfGenerator {
     );
   }
 
-  static pw.Widget _buildHeader() {
+  static pw.Widget _buildHeader(String shopName) {
     return pw.Container(
       padding: const pw.EdgeInsets.all(20),
       decoration: pw.BoxDecoration(
@@ -111,25 +148,10 @@ class PdfGenerator {
       child: pw.Row(
         mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
         children: [
-          pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.start,
-            children: [
-              pw.Text(
-                'AGRI KHATA',
-                style: pw.TextStyle(
-                  color: PdfColors.white,
-                  fontSize: 24,
-                  fontWeight: pw.FontWeight.bold,
-                ),
-              ),
-              pw.Text(
-                'Agricultural Supply Store',
-                style: const pw.TextStyle(
-                  color: PdfColors.white,
-                  fontSize: 12,
-                ),
-              ),
-            ],
+          _buildBrandBlock(
+            shopName: shopName,
+            titleSize: 24,
+            shopSize: 12,
           ),
           pw.Text(
             'INVOICE',
@@ -352,7 +374,11 @@ class PdfGenerator {
     );
   }
 
-  static pw.Widget _buildStatementHeader(Season season, LedgerType ledgerType) {
+  static pw.Widget _buildStatementHeader(
+    Season season,
+    LedgerType ledgerType,
+    String shopName,
+  ) {
     return pw.Container(
       padding: const pw.EdgeInsets.all(15),
       decoration: pw.BoxDecoration(
@@ -381,13 +407,11 @@ class PdfGenerator {
               ),
             ],
           ),
-          pw.Text(
-            'AGRI KHATA',
-            style: pw.TextStyle(
-              color: PdfColors.white,
-              fontSize: 18,
-              fontWeight: pw.FontWeight.bold,
-            ),
+          _buildBrandBlock(
+            shopName: shopName,
+            titleSize: 16,
+            shopSize: 10,
+            align: pw.CrossAxisAlignment.end,
           ),
         ],
       ),
@@ -615,27 +639,28 @@ class PdfGenerator {
     final salesSummary = LedgerSummary.fromEntries(salesEntries);
     final purchasesSummary = LedgerSummary.fromEntries(purchasesEntries);
     final paymentSummary = PaymentSummary.fromEntries(paymentEntries);
+    final shopName = await ShopSettings.getShopName();
 
     pdf.addPage(
       pw.MultiPage(
         pageFormat: PdfPageFormat.a4.landscape,
         build: (pw.Context context) {
           return [
-            _buildConsolidatedCover(season),
+            _buildConsolidatedCover(season, shopName),
             pw.SizedBox(height: 24),
-            _buildStatementHeader(season, LedgerType.sales),
+            _buildStatementHeader(season, LedgerType.sales, shopName),
             pw.SizedBox(height: 12),
             _buildSummaryCards(salesSummary, LedgerType.sales),
             pw.SizedBox(height: 12),
             _buildLedgerTable(salesEntries),
             pw.SizedBox(height: 28),
-            _buildStatementHeader(season, LedgerType.purchases),
+            _buildStatementHeader(season, LedgerType.purchases, shopName),
             pw.SizedBox(height: 12),
             _buildSummaryCards(purchasesSummary, LedgerType.purchases),
             pw.SizedBox(height: 12),
             _buildLedgerTable(purchasesEntries),
             pw.SizedBox(height: 28),
-            _buildPaymentsStatementHeader(season),
+            _buildPaymentsStatementHeader(season, shopName),
             pw.SizedBox(height: 12),
             _buildPaymentSummaryCards(paymentSummary),
             pw.SizedBox(height: 12),
@@ -658,7 +683,7 @@ class PdfGenerator {
     return pdf;
   }
 
-  static pw.Widget _buildConsolidatedCover(Season season) {
+  static pw.Widget _buildConsolidatedCover(Season season, String shopName) {
     return pw.Container(
       padding: const pw.EdgeInsets.all(20),
       decoration: pw.BoxDecoration(
@@ -690,20 +715,21 @@ class PdfGenerator {
               ),
             ],
           ),
-          pw.Text(
-            'AGRI KHATA',
-            style: pw.TextStyle(
-              color: PdfColors.white,
-              fontSize: 18,
-              fontWeight: pw.FontWeight.bold,
-            ),
+          _buildBrandBlock(
+            shopName: shopName,
+            titleSize: 16,
+            shopSize: 10,
+            align: pw.CrossAxisAlignment.end,
           ),
         ],
       ),
     );
   }
 
-  static pw.Widget _buildPaymentsStatementHeader(Season season) {
+  static pw.Widget _buildPaymentsStatementHeader(
+    Season season,
+    String shopName,
+  ) {
     return pw.Container(
       padding: const pw.EdgeInsets.all(15),
       decoration: pw.BoxDecoration(
@@ -729,13 +755,11 @@ class PdfGenerator {
               ),
             ],
           ),
-          pw.Text(
-            'AGRI KHATA',
-            style: pw.TextStyle(
-              color: PdfColors.white,
-              fontSize: 18,
-              fontWeight: pw.FontWeight.bold,
-            ),
+          _buildBrandBlock(
+            shopName: shopName,
+            titleSize: 16,
+            shopSize: 10,
+            align: pw.CrossAxisAlignment.end,
           ),
         ],
       ),
@@ -878,12 +902,16 @@ class PdfGenerator {
   // ===== ADVANCE PAYMENT RECEIPT =====
 
   static Future<pw.Document> generateAdvancePaymentReceiptPdf({
-    required String shopName,
+    String? shopName,
     required String zamindarName,
     required int amount,
     required DateTime date,
   }) async {
     final pdf = pw.Document();
+    final resolvedShopName =
+        (shopName == null || shopName.trim().isEmpty)
+            ? await ShopSettings.getShopName()
+            : shopName.trim();
 
     pdf.addPage(
       pw.Page(
@@ -898,9 +926,18 @@ class PdfGenerator {
               crossAxisAlignment: pw.CrossAxisAlignment.center,
               children: [
                 pw.Text(
-                  shopName.toUpperCase(),
+                  'AgriKhata',
                   style: pw.TextStyle(
-                    fontSize: 16,
+                    fontSize: 14,
+                    fontWeight: pw.FontWeight.bold,
+                  ),
+                  textAlign: pw.TextAlign.center,
+                ),
+                pw.SizedBox(height: 2),
+                pw.Text(
+                  resolvedShopName,
+                  style: pw.TextStyle(
+                    fontSize: 12,
                     fontWeight: pw.FontWeight.bold,
                   ),
                   textAlign: pw.TextAlign.center,
@@ -1029,13 +1066,14 @@ class PdfGenerator {
   }
 
   static Future<void> printAdvancePaymentReceipt({
-    required String shopName,
+    String? shopName,
     required String zamindarName,
     required int amount,
     required DateTime date,
   }) async {
+    final resolvedShopName = shopName ?? await ShopSettings.getShopName();
     final pdf = await generateAdvancePaymentReceiptPdf(
-      shopName: shopName,
+      shopName: resolvedShopName,
       zamindarName: zamindarName,
       amount: amount,
       date: date,
@@ -1056,6 +1094,7 @@ class PdfGenerator {
     required int totalDebit,
   }) async {
     final pdf = pw.Document();
+    final shopName = await ShopSettings.getShopName();
 
     pdf.addPage(
       pw.MultiPage(
@@ -1099,13 +1138,11 @@ class PdfGenerator {
                       ),
                     ],
                   ),
-                  pw.Text(
-                    'AGRI KHATA',
-                    style: pw.TextStyle(
-                      color: PdfColors.white,
-                      fontSize: 16,
-                      fontWeight: pw.FontWeight.bold,
-                    ),
+                  _buildBrandBlock(
+                    shopName: shopName,
+                    titleSize: 14,
+                    shopSize: 9,
+                    align: pw.CrossAxisAlignment.end,
                   ),
                 ],
               ),
