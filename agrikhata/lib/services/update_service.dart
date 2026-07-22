@@ -116,8 +116,33 @@ class UpdateService {
       );
     }
 
-    onStatus?.call('Installing update...');
     debugPrint('UpdateService: installing local file $msixPath ($length bytes)');
+
+    final packaged = _isRunningAsPackagedMsix();
+    if (!packaged) {
+      // Debug / unpackaged builds must not hard-exit — that looks like a crash.
+      onStatus?.call('Opening installer...');
+      final opened = await _launchInstallerUiFallback(
+        msixPath.replaceAll("'", "''"),
+        exitAfterLaunch: false,
+      );
+      if (!opened) {
+        throw StateError(
+          'Could not open the MSIX installer. '
+          'Install the packaged AgriKhata build to use automatic updates, '
+          'or run the downloaded .msix manually.',
+        );
+      }
+      onStatus?.call(
+        'Installer opened. Finish the Windows install, then restart AgriKhata.',
+      );
+      return;
+    }
+
+    onStatus?.call('Closing to install update. AgriKhata will restart shortly...');
+    // Let the dialog paint the message before we kill the process.
+    await _flushUiFrames();
+    await Future.delayed(const Duration(milliseconds: 1200));
 
     final installed = await _installLocalMsix(msixPath);
     if (!installed) {
@@ -128,7 +153,32 @@ class UpdateService {
       );
     }
 
+    // _installLocalMsix exits the process on success; this is only a fallback.
     onStatus?.call('Update installed. Restarting...');
+  }
+
+  /// True when running as an installed MSIX (not `flutter run` / unpackaged exe).
+  bool _isRunningAsPackagedMsix() {
+    final env = Platform.environment;
+    if (env.containsKey('APPX_PACKAGE_FULL_NAME') ||
+        env.containsKey('APPX_PACKAGE_NAME') ||
+        env.containsKey('PACKAGE_FAMILY_NAME')) {
+      return true;
+    }
+    final exe = Platform.resolvedExecutable.toLowerCase();
+    return exe.contains(r'\windowsapps\');
+  }
+
+  /// Yields so [setState] from [onStatus] can paint before [exit].
+  Future<void> _flushUiFrames() async {
+    try {
+      final binding = WidgetsBinding.instance;
+      await binding.endOfFrame;
+      binding.scheduleFrame();
+      await binding.endOfFrame;
+    } catch (_) {
+      // Binding may be unavailable in rare edge cases; delay still helps.
+    }
   }
 
   /// Prefer a direct asset URL. Never returns a GitHub web page URL.
@@ -234,18 +284,23 @@ class UpdateService {
       await Future.delayed(const Duration(milliseconds: 500));
 
       final safePath = msixPath.replaceAll("'", "''");
-      final launched = await _launchDetachedInstaller(safePath);
+      final logPath = p
+          .join((await getTemporaryDirectory()).path, 'agrikhata_update.log')
+          .replaceAll("'", "''");
+
+      final launched = await _launchDetachedInstaller(safePath, logPath);
       if (launched) {
         debugPrint(
-          'UpdateService: detached installer started; exiting for clean swap',
+          'UpdateService: detached installer started; exiting for clean swap '
+          '(log: $logPath)',
         );
-        // Detach completely so the installer can overwrite package files.
-        await Future.delayed(const Duration(milliseconds: 300));
+        // Brief pause so the detached process is fully spawned.
+        await Future.delayed(const Duration(milliseconds: 400));
         exit(0);
       }
 
       debugPrint('UpdateService: detached installer failed; trying UI fallback');
-      return await _launchInstallerUiFallback(safePath);
+      return await _launchInstallerUiFallback(safePath, exitAfterLaunch: true);
     } catch (e, st) {
       debugPrint('UpdateService: install launcher error: $e\n$st');
       return false;
@@ -254,20 +309,47 @@ class UpdateService {
 
   /// Runs Add-AppxPackage in a fully detached PowerShell process that waits
   /// for this app to die, installs, then relaunches AgriKhata.
-  Future<bool> _launchDetachedInstaller(String safePath) async {
+  ///
+  /// Failures are written to [logPath] and shown in a MessageBox so the user
+  /// is not left with a silent close and no relaunch.
+  Future<bool> _launchDetachedInstaller(String safePath, String logPath) async {
     try {
-      // Detached script: wait for this process to exit, install, then relaunch.
       final script = '''
 \$ErrorActionPreference = 'Stop'
-Start-Sleep -Seconds 3
-Add-AppxPackage -Path '$safePath' -ForceUpdateFromAnyVersion -ForceApplicationShutdown
-Start-Sleep -Seconds 2
-\$pkg = Get-AppxPackage -Name '$_packageIdentity' | Sort-Object -Property Version -Descending | Select-Object -First 1
-if (\$null -ne \$pkg) {
+\$logFile = '$logPath'
+function Write-UpdateLog([string]\$Message) {
+  \$line = ('[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), \$Message)
+  Add-Content -Path \$logFile -Value \$line -ErrorAction SilentlyContinue
+}
+try {
+  Write-UpdateLog 'Waiting for AgriKhata to exit...'
+  Start-Sleep -Seconds 3
+  Write-UpdateLog "Installing MSIX: $safePath"
+  Add-AppxPackage -Path '$safePath' -ForceUpdateFromAnyVersion -ForceApplicationShutdown
+  Start-Sleep -Seconds 2
+  \$pkg = Get-AppxPackage -Name '$_packageIdentity' | Sort-Object -Property Version -Descending | Select-Object -First 1
+  if (\$null -eq \$pkg) { throw 'Package not found after install ($_packageIdentity).' }
   \$manifest = Get-AppxPackageManifest -Package \$pkg
   \$appId = \$manifest.Package.Applications.Application.Id
+  if (\$appId -is [System.Array]) { \$appId = \$appId[0] }
   if (-not \$appId) { \$appId = 'App' }
-  Start-Process ("shell:AppsFolder\\" + \$pkg.PackageFamilyName + "!" + \$appId)
+  \$aumid = \$pkg.PackageFamilyName + '!' + \$appId
+  Write-UpdateLog "Relaunching \$aumid"
+  Start-Process ("shell:AppsFolder\\" + \$aumid)
+  Write-UpdateLog 'Update completed successfully.'
+} catch {
+  \$err = \$_.Exception.Message
+  Write-UpdateLog ("Update FAILED: " + \$err)
+  try {
+    Add-Type -AssemblyName PresentationFramework | Out-Null
+    [System.Windows.MessageBox]::Show(
+      ("AgriKhata could not finish the update.`n`n" + \$err + "`n`nDetails: $logPath"),
+      'AgriKhata Update',
+      'OK',
+      'Error'
+    ) | Out-Null
+  } catch { }
+  exit 1
 }
 ''';
 
@@ -293,11 +375,19 @@ if (\$null -ne \$pkg) {
     }
   }
 
-  Future<bool> _launchInstallerUiFallback(String safePath) async {
+  /// Opens the MSIX with the Windows installer UI.
+  ///
+  /// When [exitAfterLaunch] is true (packaged app), exits so files can be
+  /// replaced. When false (debug/unpackaged), leaves the process running.
+  Future<bool> _launchInstallerUiFallback(
+    String safePath, {
+    required bool exitAfterLaunch,
+  }) async {
     try {
-      // Ensure DB stays closed for the UI installer path as well.
-      await DatabaseHelper.instance.close();
-      await Future.delayed(const Duration(milliseconds: 400));
+      if (exitAfterLaunch) {
+        await DatabaseHelper.instance.close();
+        await Future.delayed(const Duration(milliseconds: 400));
+      }
 
       await Process.start(
         'powershell.exe',
@@ -313,9 +403,16 @@ if (\$null -ne \$pkg) {
         mode: ProcessStartMode.detached,
       );
 
-      debugPrint('UpdateService: launched local MSIX installer UI (detached)');
-      await Future.delayed(const Duration(milliseconds: 300));
-      exit(0);
+      debugPrint(
+        'UpdateService: launched local MSIX installer UI '
+        '(exitAfterLaunch=$exitAfterLaunch)',
+      );
+      if (exitAfterLaunch) {
+        await _flushUiFrames();
+        await Future.delayed(const Duration(milliseconds: 800));
+        exit(0);
+      }
+      return true;
     } catch (e, st) {
       debugPrint('UpdateService: Start-Process fallback failed: $e\n$st');
       return false;

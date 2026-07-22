@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../utils/season_utils.dart';
+import 'migration_framework.dart';
 
 /// Singleton database helper for the AgriKhata local relational database.
 ///
@@ -17,9 +18,13 @@ import '../utils/season_utils.dart';
 /// - CRUD helpers for all four tables
 /// - business helpers for zamindar balances and product inventory status
 /// - ChangeNotifier mixin for reactive UI updates
+/// - versioned, atomic SQLite migrations (see [migration_framework.dart])
 class DatabaseHelper with ChangeNotifier {
   DatabaseHelper._internal();
   static final DatabaseHelper instance = DatabaseHelper._internal();
+
+  /// Current on-disk schema version. Bump only when adding a new `_migrateToV*`.
+  static const int schemaVersion = 27;
 
   static final NumberFormat _indianCurrencyFormat = NumberFormat('#,##,##0');
 
@@ -74,7 +79,7 @@ class DatabaseHelper with ChangeNotifier {
     return databaseFactory.openDatabase(
       path,
       options: OpenDatabaseOptions(
-        version: 27,
+        version: schemaVersion,
         onConfigure: (db) async {
           await db.execute('PRAGMA foreign_keys = ON');
         },
@@ -108,422 +113,578 @@ class DatabaseHelper with ChangeNotifier {
           await _createLedgerSyncTriggers(db);
         },
         onUpgrade: (db, oldVersion, newVersion) async {
-          if (oldVersion < 3) {
-            try {
-              await db.execute(
-                'ALTER TABLE ${ZamindarTable.name} ADD COLUMN ${ZamindarTable.village} TEXT',
-              );
-            } catch (e) {
-              debugPrint(
-                'Column ${ZamindarTable.village} might already exist: $e',
-              );
-            }
-            try {
-              await db.execute(
-                'ALTER TABLE ${ZamindarTable.name} ADD COLUMN ${ZamindarTable.isDraft} INTEGER DEFAULT 0',
-              );
-            } catch (e) {
-              debugPrint(
-                'Column ${ZamindarTable.isDraft} might already exist: $e',
-              );
-            }
-          }
-          if (oldVersion < 4) {
-            debugPrint('Migrating to version 4: Fixing kisaans table schema');
-            try {
-              await db.execute('DROP TABLE IF EXISTS ${KisaanTable.name}');
-              await db.execute(_createKisaansTable());
-              await db.execute('''
-              CREATE INDEX IF NOT EXISTS idx_kisaans_zamindar_id
-              ON kisaans(zamindar_id)
-            ''');
-              debugPrint('Kisaans table recreated successfully');
-            } catch (e) {
-              debugPrint('Error recreating kisaans table: $e');
-            }
-          }
-          if (oldVersion < 5) {
-            debugPrint(
-              'Migrating to version 5: Adding seasonal_increment to products',
-            );
-            try {
-              await db.execute(
-                'ALTER TABLE ${ProductTable.name} ADD COLUMN ${ProductTable.seasonalIncrement} INTEGER DEFAULT 0',
-              );
-              debugPrint('Seasonal increment column added successfully');
-            } catch (e) {
-              debugPrint(
-                'Column ${ProductTable.seasonalIncrement} might already exist: $e',
-              );
-            }
-          }
-          if (oldVersion < 6) {
-            debugPrint('Migrating to version 6: Fixing products table schema');
-            try {
-              await db.execute('DROP TABLE IF EXISTS ${ProductTable.name}');
-              await db.execute(_createProductsTable());
-              debugPrint(
-                'Products table recreated successfully with correct column names',
-              );
-            } catch (e) {
-              debugPrint('Error recreating products table: $e');
-            }
-          }
-          if (oldVersion < 7) {
-            debugPrint(
-              'Migrating to version 7: Adding product_type to products',
-            );
-            try {
-              await db.execute(
-                'ALTER TABLE ${ProductTable.name} ADD COLUMN ${ProductTable.productType} TEXT DEFAULT \'Fertilizer\'',
-              );
-              debugPrint('Product type column added successfully');
-            } catch (e) {
-              debugPrint(
-                'Column ${ProductTable.productType} might already exist: $e',
-              );
-            }
-          }
-          if (oldVersion < 8) {
-            debugPrint(
-              'Migrating to version 8: Adding advance_balance to zamindars',
-            );
-            try {
-              await db.execute(
-                'ALTER TABLE ${ZamindarTable.name} ADD COLUMN ${ZamindarTable.advanceBalance} INTEGER DEFAULT 0',
-              );
-              debugPrint('Advance balance column added successfully');
-            } catch (e) {
-              debugPrint(
-                'Column ${ZamindarTable.advanceBalance} might already exist: $e',
-              );
-            }
-          }
-          if (oldVersion < 9) {
-            debugPrint(
-              'Migrating to version 9: Creating three-table relational schema',
-            );
-            try {
-              await db.execute(_createSalesTable());
-              await db.execute(_createSaleItemsTable());
-              await db.execute(_createPaymentsTable());
-              await db.execute('''
-                CREATE INDEX IF NOT EXISTS idx_sale_items_invoice
-                ON sale_items(invoice_number)
-              ''');
-              await db.execute('''
-                CREATE INDEX IF NOT EXISTS idx_payments_invoice
-                ON payments(invoice_number)
-              ''');
-              debugPrint('Three-table schema created successfully');
-            } catch (e) {
-              debugPrint('Error creating three-table schema: $e');
-            }
-          }
-          if (oldVersion < 10) {
-            debugPrint(
-              'Migrating to version 10: Fixing sales table schema with season column',
-            );
-            try {
-              // Drop incomplete version 9 tables and recreate with correct schema
-              await db.execute('DROP TABLE IF EXISTS ${PaymentsTable.name}');
-              await db.execute('DROP TABLE IF EXISTS ${SaleItemsTable.name}');
-              await db.execute('DROP TABLE IF EXISTS ${SalesTable.name}');
-
-              // Recreate with corrected schema including season column
-              await db.execute(_createSalesTable());
-              await db.execute(_createSaleItemsTable());
-              await db.execute(_createPaymentsTable());
-
-              // Recreate indexes
-              await db.execute('''
-                CREATE INDEX IF NOT EXISTS idx_sale_items_invoice
-                ON sale_items(invoice_number)
-              ''');
-              await db.execute('''
-                CREATE INDEX IF NOT EXISTS idx_payments_invoice
-                ON payments(invoice_number)
-              ''');
-
-              debugPrint(
-                'Version 10 migration completed: Sales table now includes season column',
-              );
-            } catch (e) {
-              debugPrint('Error migrating to version 10: $e');
-            }
-          }
-          if (oldVersion < 11) {
-            debugPrint(
-              'Migrating to version 11: Adding audit trail linkage columns to ledger_transactions',
-            );
-            try {
-              // Add invoice_number column for linking DEBITs to sales invoices
-              await db.execute(
-                'ALTER TABLE ${LedgerTransactionTable.name} ADD COLUMN ${LedgerTransactionTable.invoiceNumber} TEXT',
-              );
-              debugPrint('Added invoice_number column to ledger_transactions');
-
-              // Add payment_id column for linking CREDITs to payment records
-              await db.execute(
-                'ALTER TABLE ${LedgerTransactionTable.name} ADD COLUMN ${LedgerTransactionTable.paymentId} TEXT',
-              );
-              debugPrint('Added payment_id column to ledger_transactions');
-
-              debugPrint(
-                'Version 11 migration completed: Audit trail linkage columns added successfully',
-              );
-            } catch (e) {
-              debugPrint('Error migrating to version 11: $e');
-            }
-          }
-          if (oldVersion < 12) {
-            debugPrint(
-              'Migrating to version 12: Backfilling ledger_transactions from sales',
-            );
-            try {
-              await _backfillLedgerFromSales(db);
-              debugPrint('Version 12 migration completed');
-            } catch (e) {
-              debugPrint('Error migrating to version 12: $e');
-            }
-          }
-          if (oldVersion < 13) {
-            debugPrint(
-              'Migrating to version 13: Nullable payment invoice + advance backfill',
-            );
-            try {
-              await _migratePaymentsTableNullableInvoice(db);
-              await _backfillAdvancePayments(db);
-              debugPrint('Version 13 migration completed');
-            } catch (e) {
-              debugPrint('Error migrating to version 13: $e');
-            }
-          }
-          if (oldVersion < 14) {
-            debugPrint(
-              'Migrating to version 14: Payment sequences + ghost payment cleanup',
-            );
-            try {
-              await db.execute(_createPaymentSequencesTable());
-              await _seedPaymentSequences(db);
-              await _cleanupGhostAdvancePayments(db);
-              await db.update(
-                LedgerTransactionTable.name,
-                {LedgerTransactionTable.category: 'WALLET_DEDUCTION'},
-                where:
-                    '${LedgerTransactionTable.category} = ? AND ${LedgerTransactionTable.description} = ?',
-                whereArgs: ['ADVANCE_PAYMENT', 'Advance wallet deduction'],
-              );
-              debugPrint('Version 14 migration completed');
-            } catch (e) {
-              debugPrint('Error migrating to version 14: $e');
-            }
-          }
-          if (oldVersion < 15) {
-            debugPrint(
-              'Migrating to version 15: Renumber legacy payment receipt IDs',
-            );
-            try {
-              await db.execute(_createPaymentSequencesTable());
-              await _renumberLegacyPaymentIds(db);
-              debugPrint('Version 15 migration completed');
-            } catch (e) {
-              debugPrint('Error migrating to version 15: $e');
-            }
-          }
-          if (oldVersion < 16) {
-            debugPrint(
-              'Migrating to version 16: Sales payment_term + multi payment terms',
-            );
-            try {
-              await db.execute(
-                'ALTER TABLE ${SalesTable.name} ADD COLUMN ${SalesTable.paymentTerm} TEXT',
-              );
-              debugPrint('Added payment_term column to sales');
-              debugPrint('Version 16 migration completed');
-            } catch (e) {
-              debugPrint(
-                'Column ${SalesTable.paymentTerm} might already exist: $e',
-              );
-            }
-          }
-          if (oldVersion < 17) {
-            debugPrint(
-              'Migrating to version 17: Creating stock_movements ledger',
-            );
-            try {
-              await db.execute(_createStockMovementsTable());
-              await db.execute('''
-                CREATE INDEX IF NOT EXISTS idx_stock_movements_product
-                ON ${StockMovementTable.name}(${StockMovementTable.productId})
-              ''');
-              await _backfillStockMovementsFromSales(db);
-              debugPrint('Version 17 migration completed');
-            } catch (e) {
-              debugPrint('Error migrating to version 17: $e');
-            }
-          }
-          if (oldVersion < 18) {
-            debugPrint(
-              'Migrating to version 18: Wholesalers + Purchase invoices',
-            );
-            try {
-              await db.execute(_createWholesalersTable());
-              await db.execute(_createPurchaseInvoicesTable());
-              await db.execute(_createPurchaseItemsTable());
-              await db.execute('''
-                CREATE INDEX IF NOT EXISTS idx_purchase_items_invoice
-                ON ${PurchaseItemsTable.name}(${PurchaseItemsTable.invoiceNumber})
-              ''');
-              await db.execute('''
-                CREATE INDEX IF NOT EXISTS idx_wholesalers_name
-                ON ${WholesalerTable.name}(${WholesalerTable.nameColumn})
-              ''');
-              debugPrint('Version 18 migration completed');
-            } catch (e) {
-              debugPrint('Error migrating to version 18: $e');
-            }
-          }
-          if (oldVersion < 19) {
-            debugPrint('Migrating to version 19: wholesaler_ledger');
-            try {
-              await db.execute(_createWholesalerLedgerTable());
-              await db.execute('''
-                CREATE INDEX IF NOT EXISTS idx_wholesaler_ledger_wholesaler
-                ON ${WholesalerLedgerTable.name}(${WholesalerLedgerTable.wholesalerId})
-              ''');
-              debugPrint('Version 19 migration completed');
-            } catch (e) {
-              debugPrint('Error migrating to version 19: $e');
-            }
-          }
-          if (oldVersion < 20) {
-            debugPrint(
-              'Migrating to version 20: backfill wholesaler_ledger from purchases',
-            );
-            try {
-              await _ensureWholesalerLedgerSchema(db);
-              debugPrint('Version 20 migration completed');
-            } catch (e) {
-              debugPrint('Error migrating to version 20: $e');
-            }
-          }
-          if (oldVersion < 21) {
-            debugPrint('Migrating to version 21: wholesaler_payments');
-            try {
-              await _ensureWholesalerPaymentsSchema(db);
-              debugPrint('Version 21 migration completed');
-            } catch (e) {
-              debugPrint('Error migrating to version 21: $e');
-            }
-          }
-          if (oldVersion < 22) {
-            debugPrint(
-              'Migrating to version 22: purchase + wholesaler ledger description',
-            );
-            try {
-              await db.execute(
-                'ALTER TABLE ${PurchaseInvoicesTable.name} '
-                'ADD COLUMN ${PurchaseInvoicesTable.description} TEXT',
-              );
-            } catch (e) {
-              debugPrint(
-                'Column ${PurchaseInvoicesTable.description} might already exist: $e',
-              );
-            }
-            try {
-              await db.execute(
-                'ALTER TABLE ${WholesalerLedgerTable.name} '
-                'ADD COLUMN ${WholesalerLedgerTable.description} TEXT',
-              );
-            } catch (e) {
-              debugPrint(
-                'Column ${WholesalerLedgerTable.description} might already exist: $e',
-              );
-            }
-            debugPrint('Version 22 migration completed');
-          }
-          if (oldVersion < 23) {
-            debugPrint('Migrating to version 23: Creating expenses table');
-            try {
-              await _ensureExpensesSchema(db);
-              debugPrint('Version 23 migration completed');
-            } catch (e) {
-              debugPrint('Error migrating to version 23: $e');
-            }
-          }
-          if (oldVersion < 24) {
-            debugPrint(
-              'Migrating to version 24: Cascade invoice FKs + current_balance sync',
-            );
-            try {
-              await _migrateInvoiceIntegrityV24(db);
-              debugPrint('Version 24 migration completed');
-            } catch (e) {
-              debugPrint('Error migrating to version 24: $e');
-              rethrow;
-            }
-          }
-          if (oldVersion < 25) {
-            debugPrint(
-              'Migrating to version 25: Cash/Fuel advance columns on sales',
-            );
-            try {
-              await _ensureSalesAdvanceSchema(db);
-              debugPrint('Version 25 migration completed');
-            } catch (e) {
-              debugPrint('Error migrating to version 25: $e');
-              rethrow;
-            }
-          }
-          if (oldVersion < 26) {
-            debugPrint(
-              'Migrating to version 26: FK integrity, INTEGER money, '
-              'ledger triggers, drop denormalized names',
-            );
-            try {
-              await _migrateSchemaIntegrityV26(db);
-              debugPrint('Version 26 migration completed');
-            } catch (e) {
-              debugPrint('Error migrating to version 26: $e');
-              rethrow;
-            }
-          }
-          if (oldVersion < 27) {
-            debugPrint(
-              'Migrating to version 27: full sales/purchase domain sync triggers',
-            );
-            try {
-              await _createLedgerSyncTriggers(db);
-              debugPrint('Version 27 migration completed');
-            } catch (e) {
-              debugPrint('Error migrating to version 27: $e');
-              rethrow;
-            }
-          }
+          await _runSchemaMigrations(db, oldVersion, newVersion);
         },
       ),
     );
   }
 
-  /// v24: cascade ledger/payments on invoice delete, add cached current_balance,
-  /// purge orphaned ledger rows, and recalculate every zamindar balance.
-  Future<void> _migrateInvoiceIntegrityV24(Database db) async {
-    try {
-      await db.execute(
-        'ALTER TABLE ${ZamindarTable.name} '
-        'ADD COLUMN ${ZamindarTable.currentBalance} INTEGER NOT NULL DEFAULT 0',
-      );
-    } catch (e) {
-      debugPrint(
-        'Column ${ZamindarTable.currentBalance} might already exist: $e',
-      );
+  // ---------------------------------------------------------------------------
+  // Schema migrations (incremental, atomic, data-preserving)
+  // ---------------------------------------------------------------------------
+
+  /// Sequential upgrade path. Each `_migrateToV*` is isolated; failures roll
+  /// back via SAVEPOINT (managed steps) or the migration's own transaction.
+  Future<void> _runSchemaMigrations(
+    Database db,
+    int oldVersion,
+    int newVersion,
+  ) async {
+    await MigrationRunner(db).runSequential(
+      oldVersion: oldVersion,
+      newVersion: newVersion,
+      steps: [
+        MigrationStep(
+          toVersion: 3,
+          description: 'zamindars village + is_draft columns',
+          run: _migrateToV3,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 4,
+          description: 'rebuild kisaans schema (preserve overlapping columns)',
+          run: _migrateToV4,
+        ),
+        MigrationStep(
+          toVersion: 5,
+          description: 'products.seasonal_increment',
+          run: _migrateToV5,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 6,
+          description: 'rebuild products schema (preserve overlapping columns)',
+          run: _migrateToV6,
+        ),
+        MigrationStep(
+          toVersion: 7,
+          description: 'products.product_type',
+          run: _migrateToV7,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 8,
+          description: 'zamindars.advance_balance',
+          run: _migrateToV8,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 9,
+          description: 'create sales / sale_items / payments',
+          run: _migrateToV9,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 10,
+          description: 'rebuild sales domain with season column',
+          run: _migrateToV10,
+        ),
+        MigrationStep(
+          toVersion: 11,
+          description: 'ledger audit trail linkage columns',
+          run: _migrateToV11,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 12,
+          description: 'backfill ledger_transactions from sales',
+          run: _migrateToV12,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 13,
+          description: 'nullable payment invoice + advance backfill',
+          run: _migrateToV13,
+        ),
+        MigrationStep(
+          toVersion: 14,
+          description: 'payment sequences + ghost payment cleanup',
+          run: _migrateToV14,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 15,
+          description: 'renumber legacy payment receipt IDs',
+          run: _migrateToV15,
+          // Owns FK pragma around payment id renames.
+          managed: false,
+        ),
+        MigrationStep(
+          toVersion: 16,
+          description: 'sales.payment_term',
+          run: _migrateToV16,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 17,
+          description: 'stock_movements ledger',
+          run: _migrateToV17,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 18,
+          description: 'wholesalers + purchase invoices',
+          run: _migrateToV18,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 19,
+          description: 'wholesaler_ledger table',
+          run: _migrateToV19,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 20,
+          description: 'backfill wholesaler_ledger from purchases',
+          run: _migrateToV20,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 21,
+          description: 'wholesaler_payments table',
+          run: _migrateToV21,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 22,
+          description: 'purchase + wholesaler ledger description columns',
+          run: _migrateToV22,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 23,
+          description: 'expenses table',
+          run: _migrateToV23,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 24,
+          description: 'cascade invoice FKs + current_balance sync',
+          run: _migrateToV24,
+          // Table swaps inside manage their own FK pragma toggles.
+          managed: false,
+        ),
+        MigrationStep(
+          toVersion: 25,
+          description: 'cash/fuel advance columns on sales',
+          run: _migrateToV25,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 26,
+          description: 'FK integrity, INTEGER money, ledger triggers',
+          run: _migrateToV26,
+          // Large multi-table rebuild; owns transaction + FK lifecycle.
+          managed: false,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 27,
+          description: 'full sales/purchase domain sync triggers',
+          run: _migrateToV27,
+        ),
+      ],
+    );
+  }
+
+  Future<void> _migrateToV3(Database db, MigrationLog log) async {
+    await addColumnIfMissing(
+      db,
+      table: ZamindarTable.name,
+      column: ZamindarTable.village,
+      columnDefSql: '${ZamindarTable.village} TEXT',
+      log: log,
+    );
+    await addColumnIfMissing(
+      db,
+      table: ZamindarTable.name,
+      column: ZamindarTable.isDraft,
+      columnDefSql: '${ZamindarTable.isDraft} INTEGER DEFAULT 0',
+      log: log,
+    );
+  }
+
+  Future<void> _migrateToV4(Database db, MigrationLog log) async {
+    log.step('rebuild kisaans via 6-step swap');
+    final oldCols = await tableExists(db, KisaanTable.name)
+        ? await tableColumnNames(db, KisaanTable.name)
+        : <String>{};
+    const targetCols = [
+      KisaanTable.id,
+      KisaanTable.zamindarId,
+      KisaanTable.nameColumn,
+      KisaanTable.village,
+      KisaanTable.phone,
+      KisaanTable.landAcres,
+      KisaanTable.currentCrop,
+    ];
+    final copyCols = [
+      for (final c in targetCols)
+        if (oldCols.contains(c)) c,
+    ];
+
+    final createNew = _createKisaansTable().replaceFirst(
+      'CREATE TABLE IF NOT EXISTS ${KisaanTable.name}',
+      'CREATE TABLE ${KisaanTable.name}_new',
+    );
+
+    await rebuildTableWithSwap(
+      db,
+      TableSwapSpec(
+        tableName: KisaanTable.name,
+        createNewTableSql: createNew,
+        copyColumns: copyCols,
+        recreateIndexSql: const [
+          'CREATE INDEX IF NOT EXISTS idx_kisaans_zamindar_id '
+              'ON kisaans(zamindar_id)',
+        ],
+      ),
+      log: log,
+    );
+  }
+
+  Future<void> _migrateToV5(Database db, MigrationLog log) async {
+    await addColumnIfMissing(
+      db,
+      table: ProductTable.name,
+      column: ProductTable.seasonalIncrement,
+      columnDefSql: '${ProductTable.seasonalIncrement} INTEGER DEFAULT 0',
+      log: log,
+    );
+  }
+
+  Future<void> _migrateToV6(Database db, MigrationLog log) async {
+    log.step('rebuild products via 6-step swap');
+    final oldCols = await tableExists(db, ProductTable.name)
+        ? await tableColumnNames(db, ProductTable.name)
+        : <String>{};
+    const targetCols = [
+      ProductTable.id,
+      ProductTable.nameColumn,
+      ProductTable.brand,
+      ProductTable.productType,
+      ProductTable.packagingSize,
+      ProductTable.costPrice,
+      ProductTable.retailPrice,
+      ProductTable.seasonalIncrement,
+      ProductTable.availableStock,
+      ProductTable.uom,
+      ProductTable.expiryDate,
+      ProductTable.lowStockThreshold,
+      ProductTable.description,
+    ];
+    final copyCols = [
+      for (final c in targetCols)
+        if (oldCols.contains(c)) c,
+    ];
+
+    final createNew = _createProductsTable().replaceFirst(
+      'CREATE TABLE IF NOT EXISTS ${ProductTable.name}',
+      'CREATE TABLE ${ProductTable.name}_new',
+    );
+
+    await rebuildTableWithSwap(
+      db,
+      TableSwapSpec(
+        tableName: ProductTable.name,
+        createNewTableSql: createNew,
+        copyColumns: copyCols,
+      ),
+      log: log,
+    );
+  }
+
+  Future<void> _migrateToV7(Database db, MigrationLog log) async {
+    await addColumnIfMissing(
+      db,
+      table: ProductTable.name,
+      column: ProductTable.productType,
+      columnDefSql: "${ProductTable.productType} TEXT DEFAULT 'Fertilizer'",
+      log: log,
+    );
+  }
+
+  Future<void> _migrateToV8(Database db, MigrationLog log) async {
+    await addColumnIfMissing(
+      db,
+      table: ZamindarTable.name,
+      column: ZamindarTable.advanceBalance,
+      columnDefSql: '${ZamindarTable.advanceBalance} INTEGER DEFAULT 0',
+      log: log,
+    );
+  }
+
+  Future<void> _migrateToV9(Database db, MigrationLog log) async {
+    log.step('CREATE sales / sale_items / payments');
+    await db.execute(_createSalesTable());
+    await db.execute(_createSaleItemsTable());
+    await db.execute(_createPaymentsTable());
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_sale_items_invoice
+      ON sale_items(invoice_number)
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_payments_invoice
+      ON payments(invoice_number)
+    ''');
+  }
+
+  Future<void> _migrateToV10(Database db, MigrationLog log) async {
+    // Historical fix for incomplete v9 sales tables. Recreate the v10-era
+    // shape (name-based parties + season). Do NOT jump to the modern id-based
+    // schema here — later migrations (v13/v24/v26) expect transitional columns.
+    await dropTriggers(db, kLedgerSyncTriggerNames, log: log);
+
+    for (final table in [
+      PaymentsTable.name,
+      SaleItemsTable.name,
+      SalesTable.name,
+    ]) {
+      if (await tableExists(db, table)) {
+        await dropTriggers(db, await triggersOnTable(db, table), log: log);
+        await dropIndexes(db, await indexesOnTable(db, table), log: log);
+      }
     }
 
-    await _rebuildLedgerTransactionsWithInvoiceCascade(db);
-    await _rebuildPaymentsWithInvoiceCascade(db);
+    log.step('DROP incomplete v9 sales domain tables');
+    await db.execute('DROP TABLE IF EXISTS ${PaymentsTable.name}');
+    await db.execute('DROP TABLE IF EXISTS ${SaleItemsTable.name}');
+    await db.execute('DROP TABLE IF EXISTS ${SalesTable.name}');
+
+    log.step('CREATE v10 sales domain (season + name columns)');
+    await db.execute('''
+      CREATE TABLE ${SalesTable.name} (
+        ${SalesTable.invoiceNumber} TEXT PRIMARY KEY,
+        ${SalesTable.dateTime} TEXT NOT NULL,
+        ${SalesTable.zamindarName} TEXT NOT NULL,
+        ${SalesTable.kisaanName} TEXT,
+        ${SalesTable.subtotal} REAL NOT NULL,
+        ${SalesTable.itemDiscountsTotal} REAL NOT NULL DEFAULT 0,
+        ${SalesTable.seasonalIncrementTotal} REAL NOT NULL DEFAULT 0,
+        ${SalesTable.overallDiscount} REAL NOT NULL DEFAULT 0,
+        ${SalesTable.totalPayable} REAL NOT NULL,
+        ${SalesTable.paidAmount} REAL NOT NULL DEFAULT 0,
+        ${SalesTable.paymentMethod} TEXT NOT NULL,
+        ${SalesTable.season} TEXT NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE ${SaleItemsTable.name} (
+        ${SaleItemsTable.id} INTEGER PRIMARY KEY AUTOINCREMENT,
+        ${SaleItemsTable.invoiceNumber} TEXT NOT NULL,
+        ${SaleItemsTable.productName} TEXT NOT NULL,
+        ${SaleItemsTable.productType} TEXT NOT NULL,
+        ${SaleItemsTable.quantity} REAL NOT NULL,
+        ${SaleItemsTable.unitPrice} REAL NOT NULL,
+        ${SaleItemsTable.seasonalIncrement} REAL NOT NULL DEFAULT 0,
+        ${SaleItemsTable.itemDiscount} REAL NOT NULL DEFAULT 0,
+        ${SaleItemsTable.subtotal} REAL NOT NULL,
+        FOREIGN KEY (${SaleItemsTable.invoiceNumber})
+          REFERENCES ${SalesTable.name}(${SalesTable.invoiceNumber})
+          ON DELETE CASCADE
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE ${PaymentsTable.name} (
+        ${PaymentsTable.paymentId} TEXT PRIMARY KEY,
+        ${PaymentsTable.invoiceNumber} TEXT NOT NULL,
+        ${PaymentsTable.dateTime} TEXT NOT NULL,
+        ${PaymentsTable.zamindarName} TEXT NOT NULL,
+        ${PaymentsTable.kisaanName} TEXT,
+        ${PaymentsTable.amountPaid} REAL NOT NULL,
+        ${PaymentsTable.paymentMethod} TEXT NOT NULL,
+        ${PaymentsTable.season} TEXT NOT NULL,
+        FOREIGN KEY (${PaymentsTable.invoiceNumber})
+          REFERENCES ${SalesTable.name}(${SalesTable.invoiceNumber})
+          ON DELETE CASCADE
+      )
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_sale_items_invoice
+      ON sale_items(invoice_number)
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_payments_invoice
+      ON payments(invoice_number)
+    ''');
+  }
+
+  Future<void> _migrateToV11(Database db, MigrationLog log) async {
+    await addColumnIfMissing(
+      db,
+      table: LedgerTransactionTable.name,
+      column: LedgerTransactionTable.invoiceNumber,
+      columnDefSql: '${LedgerTransactionTable.invoiceNumber} TEXT',
+      log: log,
+    );
+    await addColumnIfMissing(
+      db,
+      table: LedgerTransactionTable.name,
+      column: LedgerTransactionTable.paymentId,
+      columnDefSql: '${LedgerTransactionTable.paymentId} TEXT',
+      log: log,
+    );
+  }
+
+  Future<void> _migrateToV12(Database db, MigrationLog log) async {
+    log.step('backfill ledger from sales');
+    await _backfillLedgerFromSales(db);
+  }
+
+  Future<void> _migrateToV13(Database db, MigrationLog log) async {
+    log.step('nullable payment invoice');
+    await _migratePaymentsTableNullableInvoice(db, log: log);
+    log.step('backfill advance payments');
+    await _backfillAdvancePayments(db);
+  }
+
+  Future<void> _migrateToV14(Database db, MigrationLog log) async {
+    log.step('create payment_sequences');
+    await db.execute(_createPaymentSequencesTable());
+    log.step('seed payment sequences');
+    await _seedPaymentSequences(db);
+    log.step('cleanup ghost advance payments');
+    await _cleanupGhostAdvancePayments(db);
+    log.step('normalize wallet deduction category');
+    await db.update(
+      LedgerTransactionTable.name,
+      {LedgerTransactionTable.category: 'WALLET_DEDUCTION'},
+      where:
+          '${LedgerTransactionTable.category} = ? AND ${LedgerTransactionTable.description} = ?',
+      whereArgs: ['ADVANCE_PAYMENT', 'Advance wallet deduction'],
+    );
+  }
+
+  Future<void> _migrateToV15(Database db, MigrationLog log) async {
+    log.step('ensure payment_sequences');
+    await db.execute(_createPaymentSequencesTable());
+    log.step('renumber legacy payment ids');
+    await _renumberLegacyPaymentIds(db);
+    log.step('integrity_check');
+    await verifyDatabaseIntegrity(db, log: log);
+  }
+
+  Future<void> _migrateToV16(Database db, MigrationLog log) async {
+    await addColumnIfMissing(
+      db,
+      table: SalesTable.name,
+      column: SalesTable.paymentTerm,
+      columnDefSql: '${SalesTable.paymentTerm} TEXT',
+      log: log,
+    );
+  }
+
+  Future<void> _migrateToV17(Database db, MigrationLog log) async {
+    log.step('create stock_movements');
+    await db.execute(_createStockMovementsTable());
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_stock_movements_product
+      ON ${StockMovementTable.name}(${StockMovementTable.productId})
+    ''');
+    log.step('backfill stock movements from sales');
+    await _backfillStockMovementsFromSales(db);
+  }
+
+  Future<void> _migrateToV18(Database db, MigrationLog log) async {
+    log.step('create wholesalers + purchases');
+    await db.execute(_createWholesalersTable());
+    await db.execute(_createPurchaseInvoicesTable());
+    await db.execute(_createPurchaseItemsTable());
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_purchase_items_invoice
+      ON ${PurchaseItemsTable.name}(${PurchaseItemsTable.invoiceNumber})
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_wholesalers_name
+      ON ${WholesalerTable.name}(${WholesalerTable.nameColumn})
+    ''');
+  }
+
+  Future<void> _migrateToV19(Database db, MigrationLog log) async {
+    log.step('create wholesaler_ledger');
+    await db.execute(_createWholesalerLedgerTable());
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_wholesaler_ledger_wholesaler
+      ON ${WholesalerLedgerTable.name}(${WholesalerLedgerTable.wholesalerId})
+    ''');
+  }
+
+  Future<void> _migrateToV20(Database db, MigrationLog log) async {
+    log.step('ensure + backfill wholesaler_ledger');
+    await _ensureWholesalerLedgerSchema(db);
+  }
+
+  Future<void> _migrateToV21(Database db, MigrationLog log) async {
+    log.step('ensure wholesaler_payments');
+    await _ensureWholesalerPaymentsSchema(db);
+  }
+
+  Future<void> _migrateToV22(Database db, MigrationLog log) async {
+    await addColumnIfMissing(
+      db,
+      table: PurchaseInvoicesTable.name,
+      column: PurchaseInvoicesTable.description,
+      columnDefSql: '${PurchaseInvoicesTable.description} TEXT',
+      log: log,
+    );
+    await addColumnIfMissing(
+      db,
+      table: WholesalerLedgerTable.name,
+      column: WholesalerLedgerTable.description,
+      columnDefSql: '${WholesalerLedgerTable.description} TEXT',
+      log: log,
+    );
+  }
+
+  Future<void> _migrateToV23(Database db, MigrationLog log) async {
+    log.step('ensure expenses schema');
+    await _ensureExpensesSchema(db);
+  }
+
+  Future<void> _migrateToV24(Database db, MigrationLog log) async {
+    log.step('invoice integrity cascade + balance sync');
+    await _migrateInvoiceIntegrityV24(db, log: log);
+    log.step('integrity_check');
+    await verifyDatabaseIntegrity(db, log: log);
+  }
+
+  Future<void> _migrateToV25(Database db, MigrationLog log) async {
+    log.step('ensure sales advance columns');
+    await _ensureSalesAdvanceSchema(db);
+  }
+
+  Future<void> _migrateToV26(Database db, MigrationLog log) async {
+    log.step('schema integrity refactor');
+    await _migrateSchemaIntegrityV26(db, log: log);
+    log.step('integrity_check');
+    await verifyDatabaseIntegrity(db, log: log);
+  }
+
+  Future<void> _migrateToV27(Database db, MigrationLog log) async {
+    log.step('recreate ledger sync triggers');
+    await _createLedgerSyncTriggers(db);
+  }
+
+  /// v24: cascade ledger/payments on invoice delete, add cached current_balance,
+  /// purge orphaned ledger rows, and recalculate every zamindar balance.
+  Future<void> _migrateInvoiceIntegrityV24(
+    Database db, {
+    MigrationLog? log,
+  }) async {
+    await addColumnIfMissing(
+      db,
+      table: ZamindarTable.name,
+      column: ZamindarTable.currentBalance,
+      columnDefSql:
+          '${ZamindarTable.currentBalance} INTEGER NOT NULL DEFAULT 0',
+      log: log,
+    );
+
+    await _rebuildLedgerTransactionsWithInvoiceCascade(db, log: log);
+    await _rebuildPaymentsWithInvoiceCascade(db, log: log);
 
     // Orphan SALE/payment ledger rows left behind by the old ON DELETE SET NULL.
+    log?.step('purge orphan ledger/payment rows');
     await db.rawDelete('''
       DELETE FROM ${LedgerTransactionTable.name}
       WHERE ${LedgerTransactionTable.invoiceNumber} IS NOT NULL
@@ -549,6 +710,7 @@ class DatabaseHelper with ChangeNotifier {
         )
     ''');
 
+    log?.step('backfill ledger + recalculate balances');
     await _backfillLedgerFromSales(db);
     await _recalculateAllZamindarBalances(db);
   }
@@ -557,9 +719,13 @@ class DatabaseHelper with ChangeNotifier {
   /// TEMP-stage live transactional data → rebuild INTEGER/FK tables →
   /// name→id mapping with ROUND money → fresh ledger triggers → balance sweep.
   ///
-  /// [PRAGMA foreign_keys] is toggled outside the SQL transaction (SQLite
-  /// ignores FK pragma changes while a transaction is open).
-  Future<void> _migrateSchemaIntegrityV26(Database db) async {
+  /// FK pragma is toggled via [ForeignKeyGuard] (also enables
+  /// `defer_foreign_keys` because sqflite's onUpgrade transaction makes
+  /// `PRAGMA foreign_keys` changes a no-op).
+  Future<void> _migrateSchemaIntegrityV26(
+    Database db, {
+    MigrationLog? log,
+  }) async {
     const stageSales = '_mig26_sales';
     const stageSaleItems = '_mig26_sale_items';
     const stagePayments = '_mig26_payments';
@@ -583,24 +749,10 @@ class DatabaseHelper with ChangeNotifier {
       return roundInt('$tableAlias.$column');
     }
 
-    // Drop any leftover domain triggers before table surgery.
-    for (final name in const [
-      'after_sale_insert',
-      'after_sale_delete',
-      'after_sale_update',
-      'after_payment_insert',
-      'after_payment_delete',
-      'after_payment_update',
-      'after_purchase_insert',
-      'after_purchase_update',
-      'after_purchase_delete',
-      'after_wholesaler_payment_insert',
-      'after_wholesaler_payment_delete',
-    ]) {
-      await db.execute('DROP TRIGGER IF EXISTS $name');
-    }
+    log?.step('drop domain triggers');
+    await dropTriggers(db, kLedgerSyncTriggerNames, log: log);
 
-    await db.execute('PRAGMA foreign_keys = OFF');
+    final guard = await ForeignKeyGuard.enter(db);
     try {
       await db.transaction((txn) async {
         // ---------------------------------------------------------------
@@ -615,11 +767,11 @@ class DatabaseHelper with ChangeNotifier {
             final countRow =
                 await txn.rawQuery('SELECT COUNT(*) AS c FROM $stage');
             final count = (countRow.first['c'] as num?)?.toInt() ?? 0;
-            debugPrint('v26 staged $source → $stage ($count rows)');
+            log?.info('staged $source → $stage ($count rows)');
           } else {
             // Empty shell so later INSERTs are no-ops instead of hard failures.
             await txn.execute('CREATE TEMP TABLE $stage (id INTEGER)');
-            debugPrint('v26: $source missing — empty stage $stage');
+            log?.info('$source missing — empty stage $stage');
           }
         }
 
@@ -645,6 +797,7 @@ class DatabaseHelper with ChangeNotifier {
         // 2) DROP OLD TABLES + REBUILD VERSION 26 LAYOUT
         // ---------------------------------------------------------------
         // Child → parent order (FK pragma is OFF, but keep dependencies sane).
+        log?.step('drop + recreate transactional tables');
         await txn.execute('DROP TABLE IF EXISTS ${SaleItemsTable.name}');
         await txn.execute('DROP TABLE IF EXISTS ${LedgerTransactionTable.name}');
         await txn.execute('DROP TABLE IF EXISTS ${PaymentsTable.name}');
@@ -666,6 +819,7 @@ class DatabaseHelper with ChangeNotifier {
         // ---------------------------------------------------------------
         // 3) SAFE DATA MAPPING & ROUNDING CONVERSION
         // ---------------------------------------------------------------
+        log?.step('map staged data into new schema');
 
         // --- sales: name strings → zamindar_id / kisaan_id, REAL → INTEGER ---
         if (salesCols.contains(SalesTable.invoiceNumber)) {
@@ -989,11 +1143,12 @@ class DatabaseHelper with ChangeNotifier {
       // ---------------------------------------------------------------
       // 4) RE-INJECT NATIVE TRIGGERS & RECALCULATE LEDGER / BALANCES
       // ---------------------------------------------------------------
+      log?.step('recreate triggers + rebuild ledger stream');
       await _createLedgerSyncTriggers(db);
       await _rebuildLedgerStreamAfterV26(db);
       await _recalculateAllZamindarBalances(db);
     } finally {
-      await db.execute('PRAGMA foreign_keys = ON');
+      await guard.exit();
     }
   }
 
@@ -1047,24 +1202,14 @@ class DatabaseHelper with ChangeNotifier {
     );
   }
 
-  Future<bool> _tableExists(DatabaseExecutor db, String table) async {
-    final rows = await db.rawQuery(
-      "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ? LIMIT 1",
-      [table],
-    );
-    return rows.isNotEmpty;
-  }
+  Future<bool> _tableExists(DatabaseExecutor db, String table) =>
+      tableExists(db, table);
 
   Future<Set<String>> _tableColumnNames(
     DatabaseExecutor db,
     String table,
-  ) async {
-    final info = await db.rawQuery('PRAGMA table_info($table)');
-    return {
-      for (final row in info)
-        if (row['name'] is String) row['name'] as String,
-    };
-  }
+  ) =>
+      tableColumnNames(db, table);
 
   /// Single source of truth for how much has been collected on sale alias `s`.
   /// Prefer SUM(payments) when payment rows exist; otherwise sales.paid_amount.
@@ -1092,142 +1237,298 @@ CASE
 END
 ''';
 
-  Future<void> _rebuildLedgerTransactionsWithInvoiceCascade(Database db) async {
-    await db.execute('PRAGMA foreign_keys = OFF');
+  Future<void> _rebuildLedgerTransactionsWithInvoiceCascade(
+    Database db, {
+    MigrationLog? log,
+  }) async {
+    final guard = await ForeignKeyGuard.enter(db);
     try {
-      await db.execute('DROP TABLE IF EXISTS ledger_transactions_new');
-      await db.execute('''
-        CREATE TABLE ledger_transactions_new (
-          ${LedgerTransactionTable.id} INTEGER PRIMARY KEY AUTOINCREMENT,
-          ${LedgerTransactionTable.zamindarId} INTEGER NOT NULL,
-          ${LedgerTransactionTable.kisaanId} INTEGER,
-          ${LedgerTransactionTable.invoiceNumber} TEXT,
-          ${LedgerTransactionTable.paymentId} TEXT,
-          ${LedgerTransactionTable.type} TEXT NOT NULL,
-          ${LedgerTransactionTable.category} TEXT NOT NULL,
-          ${LedgerTransactionTable.description} TEXT NOT NULL,
-          ${LedgerTransactionTable.amount} INTEGER NOT NULL,
-          ${LedgerTransactionTable.dateTime} TEXT NOT NULL,
-          ${LedgerTransactionTable.season} TEXT NOT NULL,
-          FOREIGN KEY (${LedgerTransactionTable.zamindarId})
-            REFERENCES ${ZamindarTable.name}(${ZamindarTable.id})
-            ON DELETE CASCADE,
-          FOREIGN KEY (${LedgerTransactionTable.kisaanId})
-            REFERENCES ${KisaanTable.name}(${KisaanTable.id})
-            ON DELETE SET NULL,
-          FOREIGN KEY (${LedgerTransactionTable.invoiceNumber})
-            REFERENCES ${SalesTable.name}(${SalesTable.invoiceNumber})
-            ON UPDATE CASCADE ON DELETE CASCADE,
-          FOREIGN KEY (${LedgerTransactionTable.paymentId})
-            REFERENCES ${PaymentsTable.name}(${PaymentsTable.paymentId})
-            ON DELETE SET NULL
-        )
-      ''');
-
-      await db.execute('''
-        INSERT INTO ledger_transactions_new (
-          ${LedgerTransactionTable.id},
-          ${LedgerTransactionTable.zamindarId},
-          ${LedgerTransactionTable.kisaanId},
-          ${LedgerTransactionTable.invoiceNumber},
-          ${LedgerTransactionTable.paymentId},
-          ${LedgerTransactionTable.type},
-          ${LedgerTransactionTable.category},
-          ${LedgerTransactionTable.description},
-          ${LedgerTransactionTable.amount},
-          ${LedgerTransactionTable.dateTime},
-          ${LedgerTransactionTable.season}
-        )
-        SELECT
-          ${LedgerTransactionTable.id},
-          ${LedgerTransactionTable.zamindarId},
-          ${LedgerTransactionTable.kisaanId},
-          ${LedgerTransactionTable.invoiceNumber},
-          ${LedgerTransactionTable.paymentId},
-          ${LedgerTransactionTable.type},
-          ${LedgerTransactionTable.category},
-          ${LedgerTransactionTable.description},
-          ${LedgerTransactionTable.amount},
-          ${LedgerTransactionTable.dateTime},
-          ${LedgerTransactionTable.season}
-        FROM ${LedgerTransactionTable.name}
-      ''');
-
-      await db.execute('DROP TABLE ${LedgerTransactionTable.name}');
-      await db.execute(
-        'ALTER TABLE ledger_transactions_new RENAME TO ${LedgerTransactionTable.name}',
+      await rebuildTableWithSwap(
+        db,
+        TableSwapSpec(
+          tableName: LedgerTransactionTable.name,
+          createNewTableSql: '''
+            CREATE TABLE ledger_transactions_new (
+              ${LedgerTransactionTable.id} INTEGER PRIMARY KEY AUTOINCREMENT,
+              ${LedgerTransactionTable.zamindarId} INTEGER NOT NULL,
+              ${LedgerTransactionTable.kisaanId} INTEGER,
+              ${LedgerTransactionTable.invoiceNumber} TEXT,
+              ${LedgerTransactionTable.paymentId} TEXT,
+              ${LedgerTransactionTable.type} TEXT NOT NULL,
+              ${LedgerTransactionTable.category} TEXT NOT NULL,
+              ${LedgerTransactionTable.description} TEXT NOT NULL,
+              ${LedgerTransactionTable.amount} INTEGER NOT NULL,
+              ${LedgerTransactionTable.dateTime} TEXT NOT NULL,
+              ${LedgerTransactionTable.season} TEXT NOT NULL,
+              FOREIGN KEY (${LedgerTransactionTable.zamindarId})
+                REFERENCES ${ZamindarTable.name}(${ZamindarTable.id})
+                ON DELETE CASCADE,
+              FOREIGN KEY (${LedgerTransactionTable.kisaanId})
+                REFERENCES ${KisaanTable.name}(${KisaanTable.id})
+                ON DELETE SET NULL,
+              FOREIGN KEY (${LedgerTransactionTable.invoiceNumber})
+                REFERENCES ${SalesTable.name}(${SalesTable.invoiceNumber})
+                ON UPDATE CASCADE ON DELETE CASCADE,
+              FOREIGN KEY (${LedgerTransactionTable.paymentId})
+                REFERENCES ${PaymentsTable.name}(${PaymentsTable.paymentId})
+                ON DELETE SET NULL
+            )
+          ''',
+          copyColumns: const [
+            LedgerTransactionTable.id,
+            LedgerTransactionTable.zamindarId,
+            LedgerTransactionTable.kisaanId,
+            LedgerTransactionTable.invoiceNumber,
+            LedgerTransactionTable.paymentId,
+            LedgerTransactionTable.type,
+            LedgerTransactionTable.category,
+            LedgerTransactionTable.description,
+            LedgerTransactionTable.amount,
+            LedgerTransactionTable.dateTime,
+            LedgerTransactionTable.season,
+          ],
+          dependentTriggers: kLedgerSyncTriggerNames,
+          verifyAfter: false,
+          recreateIndexSql: const [
+            'CREATE INDEX IF NOT EXISTS idx_ledger_zamindar_id '
+                'ON ledger_transactions(zamindar_id)',
+            'CREATE INDEX IF NOT EXISTS idx_ledger_kisaan_id '
+                'ON ledger_transactions(kisaan_id)',
+            'CREATE INDEX IF NOT EXISTS idx_ledger_invoice_number '
+                'ON ledger_transactions(invoice_number)',
+          ],
+        ),
+        log: log,
       );
-      await db.execute('''
-        CREATE INDEX IF NOT EXISTS idx_ledger_zamindar_id
-        ON ${LedgerTransactionTable.name}(${LedgerTransactionTable.zamindarId})
-      ''');
-      await db.execute('''
-        CREATE INDEX IF NOT EXISTS idx_ledger_kisaan_id
-        ON ${LedgerTransactionTable.name}(${LedgerTransactionTable.kisaanId})
-      ''');
-      await db.execute('''
-        CREATE INDEX IF NOT EXISTS idx_ledger_invoice_number
-        ON ${LedgerTransactionTable.name}(${LedgerTransactionTable.invoiceNumber})
-      ''');
     } finally {
-      await db.execute('PRAGMA foreign_keys = ON');
+      await guard.exit();
     }
   }
 
-  Future<void> _rebuildPaymentsWithInvoiceCascade(Database db) async {
-    await db.execute('PRAGMA foreign_keys = OFF');
+  Future<void> _rebuildPaymentsWithInvoiceCascade(
+    Database db, {
+    MigrationLog? log,
+  }) async {
+    final liveCols = await tableColumnNames(db, PaymentsTable.name);
+    final hasName = liveCols.contains(PaymentsTable.zamindarName);
+    final hasId = liveCols.contains(PaymentsTable.zamindarId);
+    final salesCols = await tableExists(db, SalesTable.name)
+        ? await tableColumnNames(db, SalesTable.name)
+        : <String>{};
+
+    log?.info(
+      'payments rebuild: hasName=$hasName hasId=$hasId cols=$liveCols',
+    );
+
+    final guard = await ForeignKeyGuard.enter(db);
     try {
-      await db.execute('DROP TABLE IF EXISTS payments_new');
-      await db.execute('''
-        CREATE TABLE payments_new (
-          ${PaymentsTable.paymentId} TEXT PRIMARY KEY,
-          ${PaymentsTable.invoiceNumber} TEXT,
-          ${PaymentsTable.dateTime} TEXT NOT NULL,
-          ${PaymentsTable.zamindarName} TEXT NOT NULL,
-          ${PaymentsTable.kisaanName} TEXT,
-          ${PaymentsTable.amountPaid} REAL NOT NULL,
-          ${PaymentsTable.paymentMethod} TEXT NOT NULL,
-          ${PaymentsTable.season} TEXT NOT NULL,
-          FOREIGN KEY (${PaymentsTable.invoiceNumber})
-            REFERENCES ${SalesTable.name}(${SalesTable.invoiceNumber})
-            ON UPDATE CASCADE ON DELETE CASCADE
-        )
-      ''');
+      // Prefer id-based CASCADE rebuild whenever names are absent. Forcing a
+      // name-based destination (zamindar_name NOT NULL) is what crashed when
+      // live payments only had ids / bare columns.
+      if (!hasName) {
+        final zamindarIdExpr = _sqlResolvePaymentZamindarId(
+          hasPaymentId: hasId,
+          salesCols: salesCols,
+        );
+        final kisaanIdExpr = _sqlResolvePaymentKisaanId(
+          hasPaymentKisaanId: liveCols.contains(PaymentsTable.kisaanId),
+          salesCols: salesCols,
+        );
 
-      await db.execute('''
-        INSERT INTO payments_new (
-          ${PaymentsTable.paymentId},
-          ${PaymentsTable.invoiceNumber},
-          ${PaymentsTable.dateTime},
-          ${PaymentsTable.zamindarName},
-          ${PaymentsTable.kisaanName},
-          ${PaymentsTable.amountPaid},
-          ${PaymentsTable.paymentMethod},
-          ${PaymentsTable.season}
-        )
-        SELECT
-          ${PaymentsTable.paymentId},
-          ${PaymentsTable.invoiceNumber},
-          ${PaymentsTable.dateTime},
-          ${PaymentsTable.zamindarName},
-          ${PaymentsTable.kisaanName},
-          ${PaymentsTable.amountPaid},
-          ${PaymentsTable.paymentMethod},
-          ${PaymentsTable.season}
-        FROM ${PaymentsTable.name}
-      ''');
+        await rebuildTableWithSwap(
+          db,
+          TableSwapSpec(
+            tableName: PaymentsTable.name,
+            createNewTableSql: '''
+              CREATE TABLE payments_new (
+                ${PaymentsTable.paymentId} TEXT PRIMARY KEY,
+                ${PaymentsTable.invoiceNumber} TEXT,
+                ${PaymentsTable.dateTime} TEXT NOT NULL,
+                ${PaymentsTable.zamindarId} INTEGER,
+                ${PaymentsTable.kisaanId} INTEGER,
+                ${PaymentsTable.amountPaid} REAL NOT NULL,
+                ${PaymentsTable.paymentMethod} TEXT NOT NULL,
+                ${PaymentsTable.season} TEXT NOT NULL,
+                FOREIGN KEY (${PaymentsTable.invoiceNumber})
+                  REFERENCES ${SalesTable.name}(${SalesTable.invoiceNumber})
+                  ON UPDATE CASCADE ON DELETE CASCADE,
+                FOREIGN KEY (${PaymentsTable.zamindarId})
+                  REFERENCES ${ZamindarTable.name}(${ZamindarTable.id})
+                  ON DELETE RESTRICT,
+                FOREIGN KEY (${PaymentsTable.kisaanId})
+                  REFERENCES ${KisaanTable.name}(${KisaanTable.id})
+                  ON DELETE SET NULL
+              )
+            ''',
+            copyColumns: const [
+              PaymentsTable.paymentId,
+              PaymentsTable.invoiceNumber,
+              PaymentsTable.dateTime,
+              PaymentsTable.zamindarId,
+              PaymentsTable.kisaanId,
+              PaymentsTable.amountPaid,
+              PaymentsTable.paymentMethod,
+              PaymentsTable.season,
+            ],
+            selectExpressions: {
+              PaymentsTable.zamindarId: zamindarIdExpr,
+              PaymentsTable.kisaanId: kisaanIdExpr,
+            },
+            dependentTriggers: const [
+              'after_payment_insert',
+              'after_payment_delete',
+              'after_payment_update',
+            ],
+            verifyAfter: false,
+            recreateIndexSql: const [
+              'CREATE INDEX IF NOT EXISTS idx_payments_invoice '
+                  'ON payments(invoice_number)',
+              'CREATE INDEX IF NOT EXISTS idx_payments_zamindar_id '
+                  'ON payments(zamindar_id)',
+            ],
+          ),
+          log: log,
+        );
+        return;
+      }
 
-      await db.execute('DROP TABLE ${PaymentsTable.name}');
-      await db.execute(
-        'ALTER TABLE payments_new RENAME TO ${PaymentsTable.name}',
+      // Classic pre-v26 shape: keep denormalized names, add CASCADE.
+      final nameExpr = _sqlResolvePaymentZamindarName(
+        hasPaymentName: true,
+        hasPaymentId: hasId,
+        salesCols: salesCols,
       );
-      await db.execute('''
-        CREATE INDEX IF NOT EXISTS idx_payments_invoice
-        ON ${PaymentsTable.name}(${PaymentsTable.invoiceNumber})
-      ''');
+      final kisaanNameExpr = liveCols.contains(PaymentsTable.kisaanName)
+          ? "NULLIF(TRIM(${PaymentsTable.kisaanName}), '')"
+          : 'NULL';
+
+      await rebuildTableWithSwap(
+        db,
+        TableSwapSpec(
+          tableName: PaymentsTable.name,
+          createNewTableSql: '''
+            CREATE TABLE payments_new (
+              ${PaymentsTable.paymentId} TEXT PRIMARY KEY,
+              ${PaymentsTable.invoiceNumber} TEXT,
+              ${PaymentsTable.dateTime} TEXT NOT NULL,
+              ${PaymentsTable.zamindarName} TEXT NOT NULL,
+              ${PaymentsTable.kisaanName} TEXT,
+              ${PaymentsTable.amountPaid} REAL NOT NULL,
+              ${PaymentsTable.paymentMethod} TEXT NOT NULL,
+              ${PaymentsTable.season} TEXT NOT NULL,
+              FOREIGN KEY (${PaymentsTable.invoiceNumber})
+                REFERENCES ${SalesTable.name}(${SalesTable.invoiceNumber})
+                ON UPDATE CASCADE ON DELETE CASCADE
+            )
+          ''',
+          copyColumns: const [
+            PaymentsTable.paymentId,
+            PaymentsTable.invoiceNumber,
+            PaymentsTable.dateTime,
+            PaymentsTable.zamindarName,
+            PaymentsTable.kisaanName,
+            PaymentsTable.amountPaid,
+            PaymentsTable.paymentMethod,
+            PaymentsTable.season,
+          ],
+          selectExpressions: {
+            PaymentsTable.zamindarName: nameExpr,
+            PaymentsTable.kisaanName: kisaanNameExpr,
+          },
+          dependentTriggers: const [
+            'after_payment_insert',
+            'after_payment_delete',
+            'after_payment_update',
+          ],
+          verifyAfter: false,
+          recreateIndexSql: const [
+            'CREATE INDEX IF NOT EXISTS idx_payments_invoice '
+                'ON payments(invoice_number)',
+          ],
+        ),
+        log: log,
+      );
     } finally {
-      await db.execute('PRAGMA foreign_keys = ON');
+      await guard.exit();
     }
+  }
+
+  /// SQL expression resolving a payment's zamindar_id from the row and/or sales.
+  String _sqlResolvePaymentZamindarId({
+    required bool hasPaymentId,
+    required Set<String> salesCols,
+  }) {
+    final parts = <String>[];
+    if (hasPaymentId) parts.add(PaymentsTable.zamindarId);
+    if (salesCols.contains(SalesTable.zamindarId)) {
+      parts.add('''
+        (SELECT s.${SalesTable.zamindarId} FROM ${SalesTable.name} s
+         WHERE s.${SalesTable.invoiceNumber} = ${PaymentsTable.invoiceNumber}
+         LIMIT 1)''');
+    }
+    if (salesCols.contains(SalesTable.zamindarName)) {
+      parts.add('''
+        (SELECT z.${ZamindarTable.id} FROM ${ZamindarTable.name} z
+         INNER JOIN ${SalesTable.name} s
+           ON z.${ZamindarTable.nameColumn} = TRIM(s.${SalesTable.zamindarName})
+         WHERE s.${SalesTable.invoiceNumber} = ${PaymentsTable.invoiceNumber}
+         LIMIT 1)''');
+    }
+    if (parts.isEmpty) return 'NULL';
+    if (parts.length == 1) return parts.first;
+    return 'COALESCE(${parts.join(', ')})';
+  }
+
+  String _sqlResolvePaymentKisaanId({
+    required bool hasPaymentKisaanId,
+    required Set<String> salesCols,
+  }) {
+    final parts = <String>[];
+    if (hasPaymentKisaanId) parts.add(PaymentsTable.kisaanId);
+    if (salesCols.contains(SalesTable.kisaanId)) {
+      parts.add('''
+        (SELECT s.${SalesTable.kisaanId} FROM ${SalesTable.name} s
+         WHERE s.${SalesTable.invoiceNumber} = ${PaymentsTable.invoiceNumber}
+         LIMIT 1)''');
+    }
+    if (parts.isEmpty) return 'NULL';
+    if (parts.length == 1) return parts.first;
+    return 'COALESCE(${parts.join(', ')})';
+  }
+
+  /// Always yields a non-null display name for legacy name-based payments tables.
+  String _sqlResolvePaymentZamindarName({
+    required bool hasPaymentName,
+    required bool hasPaymentId,
+    required Set<String> salesCols,
+  }) {
+    final parts = <String>[];
+    if (hasPaymentName) {
+      parts.add("NULLIF(TRIM(${PaymentsTable.zamindarName}), '')");
+    }
+    if (salesCols.contains(SalesTable.zamindarName)) {
+      parts.add('''
+        (SELECT NULLIF(TRIM(s.${SalesTable.zamindarName}), '')
+         FROM ${SalesTable.name} s
+         WHERE s.${SalesTable.invoiceNumber} = ${PaymentsTable.invoiceNumber}
+         LIMIT 1)''');
+    }
+    if (hasPaymentId) {
+      parts.add('''
+        (SELECT z.${ZamindarTable.nameColumn} FROM ${ZamindarTable.name} z
+         WHERE z.${ZamindarTable.id} = ${PaymentsTable.zamindarId}
+         LIMIT 1)''');
+    }
+    if (salesCols.contains(SalesTable.zamindarId)) {
+      parts.add('''
+        (SELECT z.${ZamindarTable.nameColumn} FROM ${ZamindarTable.name} z
+         INNER JOIN ${SalesTable.name} s
+           ON z.${ZamindarTable.id} = s.${SalesTable.zamindarId}
+         WHERE s.${SalesTable.invoiceNumber} = ${PaymentsTable.invoiceNumber}
+         LIMIT 1)''');
+    }
+    parts.add("'Unknown'");
+    return 'COALESCE(${parts.join(', ')})';
   }
 
   /// Creates expenses table + date index if missing.
@@ -1240,46 +1541,44 @@ END
   }
 
   /// Adds Cash/Fuel Advance columns on [SalesTable] (idempotent).
+  /// Called from onOpen and v25 — must stay quiet when columns already exist.
   Future<void> _ensureSalesAdvanceSchema(Database db) async {
-    Future<void> addColumn(String sql, String columnLabel) async {
-      try {
-        await db.execute(sql);
-        debugPrint('Added $columnLabel to ${SalesTable.name}');
-      } catch (e) {
-        debugPrint('Column $columnLabel might already exist: $e');
-      }
-    }
-
-    await addColumn(
-      'ALTER TABLE ${SalesTable.name} '
-      'ADD COLUMN ${SalesTable.transactionType} TEXT NOT NULL '
-      "DEFAULT '${SaleTransactionType.productSale}'",
-      SalesTable.transactionType,
+    await addColumnIfMissing(
+      db,
+      table: SalesTable.name,
+      column: SalesTable.transactionType,
+      columnDefSql:
+          "${SalesTable.transactionType} TEXT NOT NULL DEFAULT '${SaleTransactionType.productSale}'",
     );
-    await addColumn(
-      'ALTER TABLE ${SalesTable.name} '
-      'ADD COLUMN ${SalesTable.creditAmount} INTEGER NOT NULL DEFAULT 0',
-      SalesTable.creditAmount,
+    await addColumnIfMissing(
+      db,
+      table: SalesTable.name,
+      column: SalesTable.creditAmount,
+      columnDefSql: '${SalesTable.creditAmount} INTEGER NOT NULL DEFAULT 0',
     );
-    await addColumn(
-      'ALTER TABLE ${SalesTable.name} '
-      'ADD COLUMN ${SalesTable.fuelQuantity} REAL',
-      SalesTable.fuelQuantity,
+    await addColumnIfMissing(
+      db,
+      table: SalesTable.name,
+      column: SalesTable.fuelQuantity,
+      columnDefSql: '${SalesTable.fuelQuantity} REAL',
     );
-    await addColumn(
-      'ALTER TABLE ${SalesTable.name} '
-      'ADD COLUMN ${SalesTable.remarks} TEXT',
-      SalesTable.remarks,
+    await addColumnIfMissing(
+      db,
+      table: SalesTable.name,
+      column: SalesTable.remarks,
+      columnDefSql: '${SalesTable.remarks} TEXT',
     );
-    await addColumn(
-      'ALTER TABLE ${SalesTable.name} '
-      'ADD COLUMN ${SalesTable.zamindarId} INTEGER',
-      SalesTable.zamindarId,
+    await addColumnIfMissing(
+      db,
+      table: SalesTable.name,
+      column: SalesTable.zamindarId,
+      columnDefSql: '${SalesTable.zamindarId} INTEGER',
     );
-    await addColumn(
-      'ALTER TABLE ${SalesTable.name} '
-      'ADD COLUMN ${SalesTable.kisaanId} INTEGER',
-      SalesTable.kisaanId,
+    await addColumnIfMissing(
+      db,
+      table: SalesTable.name,
+      column: SalesTable.kisaanId,
+      columnDefSql: '${SalesTable.kisaanId} INTEGER',
     );
 
     await db.execute('''
@@ -1700,22 +1999,7 @@ END
   /// Native SQLite triggers keep sales/payments/purchases ledgers in sync.
   /// Sale polarity: SALE = DEBIT, payment = CREDIT (app convention).
   Future<void> _createLedgerSyncTriggers(Database db) async {
-    const dropTriggers = <String>[
-      'after_sale_insert',
-      'after_sale_delete',
-      'after_sale_update',
-      'after_payment_insert',
-      'after_payment_delete',
-      'after_payment_update',
-      'after_purchase_insert',
-      'after_purchase_update',
-      'after_purchase_delete',
-      'after_wholesaler_payment_insert',
-      'after_wholesaler_payment_delete',
-    ];
-    for (final name in dropTriggers) {
-      await db.execute('DROP TRIGGER IF EXISTS $name');
-    }
+    await dropTriggers(db, kLedgerSyncTriggerNames);
 
     // Shared CASE expressions for payment → ledger mapping.
     const paymentCategoryCase = '''
@@ -2449,7 +2733,10 @@ END
     await batch.commit(noResult: true);
   }
 
-  Future<void> _migratePaymentsTableNullableInvoice(Database db) async {
+  Future<void> _migratePaymentsTableNullableInvoice(
+    Database db, {
+    MigrationLog? log,
+  }) async {
     final tableInfo = await db.rawQuery(
       'PRAGMA table_info(${PaymentsTable.name})',
     );
@@ -2457,55 +2744,122 @@ END
       (col) => col['name'] == PaymentsTable.invoiceNumber,
     );
     if (invoiceColumn.isNotEmpty && invoiceColumn.first['notnull'] == 0) {
+      log?.info('payments.invoice_number already nullable — skip');
       return;
     }
 
-    await db.execute('DROP TABLE IF EXISTS payments_new');
+    final liveCols = {
+      for (final row in tableInfo)
+        if (row['name'] is String) row['name'] as String,
+    };
+    final hasName = liveCols.contains(PaymentsTable.zamindarName);
+    final hasId = liveCols.contains(PaymentsTable.zamindarId);
+    final salesCols = await tableExists(db, SalesTable.name)
+        ? await tableColumnNames(db, SalesTable.name)
+        : <String>{};
 
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS payments_new (
-        ${PaymentsTable.paymentId} TEXT PRIMARY KEY,
-        ${PaymentsTable.invoiceNumber} TEXT,
-        ${PaymentsTable.dateTime} TEXT NOT NULL,
-        ${PaymentsTable.zamindarName} TEXT NOT NULL,
-        ${PaymentsTable.kisaanName} TEXT,
-        ${PaymentsTable.amountPaid} REAL NOT NULL,
-        ${PaymentsTable.paymentMethod} TEXT NOT NULL,
-        ${PaymentsTable.season} TEXT NOT NULL
-      )
-    ''');
+    final guard = await ForeignKeyGuard.enter(db);
+    try {
+      if (!hasName) {
+        await rebuildTableWithSwap(
+          db,
+          TableSwapSpec(
+            tableName: PaymentsTable.name,
+            createNewTableSql: '''
+              CREATE TABLE payments_new (
+                ${PaymentsTable.paymentId} TEXT PRIMARY KEY,
+                ${PaymentsTable.invoiceNumber} TEXT,
+                ${PaymentsTable.dateTime} TEXT NOT NULL,
+                ${PaymentsTable.zamindarId} INTEGER,
+                ${PaymentsTable.kisaanId} INTEGER,
+                ${PaymentsTable.amountPaid} REAL NOT NULL,
+                ${PaymentsTable.paymentMethod} TEXT NOT NULL,
+                ${PaymentsTable.season} TEXT NOT NULL
+              )
+            ''',
+            copyColumns: const [
+              PaymentsTable.paymentId,
+              PaymentsTable.invoiceNumber,
+              PaymentsTable.dateTime,
+              PaymentsTable.zamindarId,
+              PaymentsTable.kisaanId,
+              PaymentsTable.amountPaid,
+              PaymentsTable.paymentMethod,
+              PaymentsTable.season,
+            ],
+            selectExpressions: {
+              PaymentsTable.zamindarId: _sqlResolvePaymentZamindarId(
+                hasPaymentId: hasId,
+                salesCols: salesCols,
+              ),
+              PaymentsTable.kisaanId: _sqlResolvePaymentKisaanId(
+                hasPaymentKisaanId: liveCols.contains(PaymentsTable.kisaanId),
+                salesCols: salesCols,
+              ),
+            },
+            dependentTriggers: const [
+              'after_payment_insert',
+              'after_payment_delete',
+              'after_payment_update',
+            ],
+            recreateIndexSql: const [
+              'CREATE INDEX IF NOT EXISTS idx_payments_invoice '
+                  'ON payments(invoice_number)',
+            ],
+          ),
+          log: log,
+        );
+        return;
+      }
 
-    await db.execute('''
-      INSERT INTO payments_new (
-        ${PaymentsTable.paymentId},
-        ${PaymentsTable.invoiceNumber},
-        ${PaymentsTable.dateTime},
-        ${PaymentsTable.zamindarName},
-        ${PaymentsTable.kisaanName},
-        ${PaymentsTable.amountPaid},
-        ${PaymentsTable.paymentMethod},
-        ${PaymentsTable.season}
-      )
-      SELECT
-        ${PaymentsTable.paymentId},
-        ${PaymentsTable.invoiceNumber},
-        ${PaymentsTable.dateTime},
-        ${PaymentsTable.zamindarName},
-        ${PaymentsTable.kisaanName},
-        ${PaymentsTable.amountPaid},
-        ${PaymentsTable.paymentMethod},
-        ${PaymentsTable.season}
-      FROM ${PaymentsTable.name}
-    ''');
-
-    await db.execute('DROP TABLE ${PaymentsTable.name}');
-    await db.execute(
-      'ALTER TABLE payments_new RENAME TO ${PaymentsTable.name}',
-    );
-    await db.execute('''
-      CREATE INDEX IF NOT EXISTS idx_payments_invoice
-      ON ${PaymentsTable.name}(${PaymentsTable.invoiceNumber})
-    ''');
+      await rebuildTableWithSwap(
+        db,
+        TableSwapSpec(
+          tableName: PaymentsTable.name,
+          createNewTableSql: '''
+            CREATE TABLE payments_new (
+              ${PaymentsTable.paymentId} TEXT PRIMARY KEY,
+              ${PaymentsTable.invoiceNumber} TEXT,
+              ${PaymentsTable.dateTime} TEXT NOT NULL,
+              ${PaymentsTable.zamindarName} TEXT NOT NULL,
+              ${PaymentsTable.kisaanName} TEXT,
+              ${PaymentsTable.amountPaid} REAL NOT NULL,
+              ${PaymentsTable.paymentMethod} TEXT NOT NULL,
+              ${PaymentsTable.season} TEXT NOT NULL
+            )
+          ''',
+          copyColumns: const [
+            PaymentsTable.paymentId,
+            PaymentsTable.invoiceNumber,
+            PaymentsTable.dateTime,
+            PaymentsTable.zamindarName,
+            PaymentsTable.kisaanName,
+            PaymentsTable.amountPaid,
+            PaymentsTable.paymentMethod,
+            PaymentsTable.season,
+          ],
+          selectExpressions: {
+            PaymentsTable.zamindarName: _sqlResolvePaymentZamindarName(
+              hasPaymentName: true,
+              hasPaymentId: hasId,
+              salesCols: salesCols,
+            ),
+          },
+          dependentTriggers: const [
+            'after_payment_insert',
+            'after_payment_delete',
+            'after_payment_update',
+          ],
+          recreateIndexSql: const [
+            'CREATE INDEX IF NOT EXISTS idx_payments_invoice '
+                'ON payments(invoice_number)',
+          ],
+        ),
+        log: log,
+      );
+    } finally {
+      await guard.exit();
+    }
   }
 
   Future<void> _backfillAdvancePayments(Database db) async {
@@ -2516,6 +2870,10 @@ END
       whereArgs: ['ADVANCE_PAYMENT', 'Advance payment received'],
       orderBy: '${LedgerTransactionTable.dateTime} ASC',
     );
+
+    final paymentCols = await tableColumnNames(db, PaymentsTable.name);
+    final usesNames = paymentCols.contains(PaymentsTable.zamindarName);
+    final usesIds = paymentCols.contains(PaymentsTable.zamindarId);
 
     for (final row in advanceRows) {
       final zamindarId = row[LedgerTransactionTable.zamindarId] as int?;
@@ -2534,17 +2892,29 @@ END
       final dateTime = row[LedgerTransactionTable.dateTime] as String;
       final amount = (row[LedgerTransactionTable.amount] as num).round();
       final season = row[LedgerTransactionTable.season] as String;
+      final zamindarName =
+          zamindarRows.first[ZamindarTable.nameColumn] as String;
 
-      await db.insert(PaymentsTable.name, {
+      final values = <String, Object?>{
         PaymentsTable.paymentId: paymentId,
         PaymentsTable.invoiceNumber: null,
         PaymentsTable.dateTime: dateTime,
-        PaymentsTable.zamindarId: zamindarId,
-        PaymentsTable.kisaanId: null,
         PaymentsTable.amountPaid: amount,
         PaymentsTable.paymentMethod: 'Cash',
         PaymentsTable.season: season,
-      });
+      };
+      if (usesIds) {
+        values[PaymentsTable.zamindarId] = zamindarId;
+        values[PaymentsTable.kisaanId] = null;
+      }
+      if (usesNames) {
+        values[PaymentsTable.zamindarName] = zamindarName;
+        values[PaymentsTable.kisaanName] = null;
+      }
+      // Extremely defensive: if schema has neither party column, skip insert.
+      if (!usesIds && !usesNames) continue;
+
+      await db.insert(PaymentsTable.name, values);
 
       await db.update(
         LedgerTransactionTable.name,

@@ -55,6 +55,7 @@ class UpdateDialog extends StatefulWidget {
 
 class _UpdateDialogState extends State<UpdateDialog> {
   bool _busy = false;
+  bool _completed = false;
   String _status = '';
   String? _error;
   double? _progress; // null => indeterminate
@@ -76,6 +77,7 @@ class _UpdateDialogState extends State<UpdateDialog> {
 
     setState(() {
       _busy = true;
+      _completed = false;
       _error = null;
       _status = 'Preparing update...';
       _progress = null;
@@ -103,13 +105,23 @@ class _UpdateDialogState extends State<UpdateDialog> {
           });
         },
       );
-      // Detached install + exit(0) normally kills this process first.
-      // If we are still here, close the dialog.
-      if (mounted) Navigator.of(context).pop();
+      // Packaged installs call exit(0) and never reach here.
+      // Unpackaged / fallback paths leave the process alive — keep the dialog
+      // open with the final status so it does not look like a crash.
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _completed = true;
+        _progress = null;
+        if (_status.isEmpty) {
+          _status = 'Update ready. Restart AgriKhata to finish.';
+        }
+      });
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _busy = false;
+        _completed = false;
         _status = '';
         _progress = null;
         _error = e.toString().replaceFirst('Exception: ', '');
@@ -177,6 +189,19 @@ class _UpdateDialogState extends State<UpdateDialog> {
                   ),
                 ),
               ],
+              if (!_busy && _completed && _status.isNotEmpty) ...[
+                const SizedBox(height: 18),
+                Text(
+                  _status,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: AppColors.darkGreen,
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
+                    height: 1.35,
+                  ),
+                ),
+              ],
               if (_error != null) ...[
                 const SizedBox(height: 14),
                 Container(
@@ -216,7 +241,11 @@ class _UpdateDialogState extends State<UpdateDialog> {
         border: Border.all(color: AppColors.border),
       ),
       child: Icon(
-        _busy ? Icons.downloading_rounded : Icons.rocket_launch_rounded,
+        _completed
+            ? Icons.check_circle_rounded
+            : _busy
+                ? Icons.downloading_rounded
+                : Icons.rocket_launch_rounded,
         color: AppColors.darkGreen,
         size: 30,
       ),
@@ -301,6 +330,32 @@ class _UpdateDialogState extends State<UpdateDialog> {
   }
 
   Widget _buildActions() {
+    if (_completed) {
+      return SizedBox(
+        width: double.infinity,
+        child: ElevatedButton(
+          onPressed: () => Navigator.of(context).pop(),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppColors.darkGreen,
+            foregroundColor: Colors.white,
+            elevation: 0,
+            shadowColor: Colors.transparent,
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
+          ),
+          child: const Text(
+            'OK',
+            style: TextStyle(
+              fontSize: 13.5,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+      );
+    }
+
     return Row(
       children: [
         Expanded(
