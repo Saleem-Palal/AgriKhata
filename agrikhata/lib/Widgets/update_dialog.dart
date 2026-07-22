@@ -90,8 +90,12 @@ class _UpdateDialogState extends State<UpdateDialog> {
           if (!mounted) return;
           setState(() {
             _status = status;
-            // Non-download phases use an indeterminate bar.
-            if (!status.startsWith('Downloading:')) {
+            if (status.startsWith('Downloading:')) {
+              // Keep whatever progress onProgress last set.
+            } else if (status.toLowerCase().contains('install')) {
+              // Download finished — hold a full bar, then indeterminate feel.
+              _progress = null;
+            } else {
               _progress = null;
             }
           });
@@ -102,12 +106,16 @@ class _UpdateDialogState extends State<UpdateDialog> {
             _status = _formatDownloadLabel(receivedBytes, totalBytes);
             _progress =
                 totalBytes > 0 ? (receivedBytes / totalBytes).clamp(0.0, 1.0) : null;
+            // Keep the bar full once download finishes so it doesn't look
+            // like the UI reset right before install.
+            if (totalBytes > 0 && receivedBytes >= totalBytes) {
+              _progress = 1.0;
+            }
           });
         },
       );
-      // Packaged installs call exit(0) and never reach here.
-      // Unpackaged / fallback paths leave the process alive — keep the dialog
-      // open with the final status so it does not look like a crash.
+      // Install may shut the process down via ForceApplicationShutdown.
+      // If we are still here, show the final status (success or manual steps).
       if (!mounted) return;
       setState(() {
         _busy = false;
