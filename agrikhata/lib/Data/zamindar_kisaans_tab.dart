@@ -1,5 +1,6 @@
 import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Database/database_helper.dart';
+import 'package:agrikhata/Widgets/app_auto_suggest_field.dart';
 import 'package:agrikhata/utils/pdf_generator.dart';
 import 'package:agrikhata/utils/pdf_share.dart';
 import 'package:flutter/material.dart';
@@ -419,7 +420,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
               },
             )
             .toList();
-        final file = await PdfGenerator.saveZamindarLedgerToDocuments(
+        final file = await PdfGenerator.saveZamindarTransactionLedgerToDocuments(
           zamindarName: '${kisaan.name} · ${widget.zamindarName}',
           seasonLabel: 'All seasons',
           transactions: rows,
@@ -466,7 +467,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
               },
             )
             .toList();
-        final pdf = await PdfGenerator.generateZamindarLedgerPdf(
+        final pdf = await PdfGenerator.generateZamindarTransactionLedgerPdf(
           zamindarName: '${kisaan.name} · ${widget.zamindarName}',
           seasonLabel: 'All seasons',
           transactions: rows,
@@ -918,6 +919,77 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
     return '${value.toStringAsFixed(value == value.roundToDouble() ? 0 : 2)} $unit';
   }
 
+  List<Map<String, dynamic>> _buildKisaanSummaryRows(
+    Map<int, DateTime> lastPurchaseDates,
+  ) {
+    return _kisaans.map((k) {
+      final lastPurchase =
+          k.id != null ? lastPurchaseDates[k.id!] : null;
+      return <String, dynamic>{
+        'name': k.name,
+        'village': k.village,
+        'athaas': DatabaseHelper.landAcresToUnit(k.landAcres, 'Athaas'),
+        'current_crop': k.currentCrop,
+        'last_purchase_date': lastPurchase,
+        'balance_due': k.id != null ? (_kisaanBalances[k.id] ?? 0.0) : 0.0,
+      };
+    }).toList();
+  }
+
+  Future<void> _exportOrShareKisaanSummary({required bool share}) async {
+    if (_kisaans.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No kisaans to include in the summary PDF'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    try {
+      Map<int, DateTime> lastPurchaseDates = {};
+      try {
+        lastPurchaseDates = await DatabaseHelper.instance
+            .getLastPurchaseDatesForZamindar(widget.zamindarId);
+      } catch (_) {
+        // Keep exporting even if last-purchase lookup fails.
+      }
+      final rows = _buildKisaanSummaryRows(lastPurchaseDates);
+      final file = await PdfGenerator.saveKisaanSummaryToDocuments(
+        zamindarName: widget.zamindarName,
+        rows: rows,
+      );
+      if (share) {
+        await PdfShare.sharePdfFile(
+          file: file,
+          fileName:
+              'kisaan_summary_${widget.zamindarName.replaceAll(' ', '_')}.pdf',
+          text:
+              'AgriKhata Kisaan Summary — Overall debt overview for ${widget.zamindarName}',
+          subject: 'Kisaan Summary — ${widget.zamindarName}',
+        );
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('PDF saved to ${file.path}'),
+            backgroundColor: AppColors.darkGreen,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
   Widget _buildLandAllocationSummary() {
     final summary = _landSummary;
     if (summary == null) return const SizedBox.shrink();
@@ -948,16 +1020,22 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
                 fontWeight: FontWeight.w500,
                 color: AppColors.darkGreen,
               ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
           ),
-          Text(
-            'Remaining: $remainingText',
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              color: summary.remainingLand <= 0
-                  ? const Color(0xFFA32D2D)
-                  : const Color(0xFF27500A),
+          Flexible(
+            child: Text(
+              'Remaining: $remainingText',
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: summary.remainingLand <= 0
+                    ? const Color(0xFFA32D2D)
+                    : const Color(0xFF27500A),
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
           ),
         ],
@@ -1011,6 +1089,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
                   ),
                 ),
                 child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Expanded(
                       child: Text(
@@ -1020,31 +1099,72 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
                           fontWeight: FontWeight.w500,
                           color: AppColors.darkGreen,
                         ),
-                      ),
-                    ),
-                    OutlinedButton.icon(
-                      onPressed: _openSettlementForm,
-                      icon: const Icon(
-                        Icons.payment_outlined,
-                        size: 14,
-                        color: Color(0xFF27500A),
-                      ),
-                      label: const Text(
-                        "Bill Settlement",
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Color(0xFF27500A),
-                        ),
-                      ),
-                      style: OutlinedButton.styleFrom(
-                        side: const BorderSide(color: Color(0xFF27500A)),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                     const SizedBox(width: 8),
-                    ElevatedButton.icon(
-                      onPressed: () => _openKisaanPanel(),
-                      icon: const Icon(Icons.person_add_outlined, size: 15),
-                      label: const Text("Add Kisaan"),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      alignment: WrapAlignment.end,
+                      children: [
+                        OutlinedButton.icon(
+                          onPressed: () =>
+                              _exportOrShareKisaanSummary(share: false),
+                          icon: const Icon(
+                            Icons.picture_as_pdf_outlined,
+                            size: 14,
+                            color: Color(0xFF27500A),
+                          ),
+                          label: const Text(
+                            "Summary PDF",
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Color(0xFF27500A),
+                            ),
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            side: const BorderSide(color: Color(0xFF27500A)),
+                          ),
+                        ),
+                        ElevatedButton.icon(
+                          onPressed: () =>
+                              _exportOrShareKisaanSummary(share: true),
+                          icon: const Icon(Icons.send, size: 14),
+                          label: const Text(
+                            "WhatsApp PDF",
+                            style: TextStyle(fontSize: 12),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF25D366),
+                            foregroundColor: Colors.white,
+                          ),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: _openSettlementForm,
+                          icon: const Icon(
+                            Icons.payment_outlined,
+                            size: 14,
+                            color: Color(0xFF27500A),
+                          ),
+                          label: const Text(
+                            "Bill Settlement",
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Color(0xFF27500A),
+                            ),
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            side: const BorderSide(color: Color(0xFF27500A)),
+                          ),
+                        ),
+                        ElevatedButton.icon(
+                          onPressed: () => _openKisaanPanel(),
+                          icon: const Icon(Icons.person_add_outlined, size: 15),
+                          label: const Text("Add Kisaan"),
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -1152,6 +1272,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
               ),
       ),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           CircleAvatar(
             radius: 16,
@@ -1177,6 +1298,8 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
                     fontWeight: FontWeight.w500,
                     color: AppColors.darkGreen,
                   ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
                 const SizedBox(height: 2),
                 Text(
@@ -1185,6 +1308,8 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
                     fontSize: 10,
                     color: AppColors.textMuted,
                   ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ],
             ),
@@ -1201,6 +1326,8 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
                       ? const Color(0xFF27500A)
                       : const Color(0xFFA32D2D),
                 ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
               Text(
                 isSettled ? "Settled" : "Balance due",
@@ -1208,30 +1335,33 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
               ),
             ],
           ),
-          const SizedBox(width: 14),
-          _smallBtn(Icons.receipt_long_outlined, "Sale", () {
-            if (k.id != null && widget.onNavigateToSale != null) {
-              widget.onNavigateToSale!(k.id!);
-            }
-          }),
-          const SizedBox(width: 5),
-          _smallBtn(
-            Icons.menu_book_outlined,
-            "Ledger",
-            () => _viewKisaanLedger(k),
-          ),
-          const SizedBox(width: 5),
-          _smallBtn(
-            Icons.edit_outlined,
-            "Edit",
-            () => _openKisaanPanel(editTarget: k),
-          ),
-          const SizedBox(width: 5),
-          _smallBtn(
-            Icons.delete_outline,
-            "Delete",
-            () => _handleDeleteKisaan(k),
-            destructive: true,
+          const SizedBox(width: 10),
+          Wrap(
+            spacing: 5,
+            runSpacing: 5,
+            children: [
+              _smallBtn(Icons.receipt_long_outlined, "Sale", () {
+                if (k.id != null && widget.onNavigateToSale != null) {
+                  widget.onNavigateToSale!(k.id!);
+                }
+              }),
+              _smallBtn(
+                Icons.menu_book_outlined,
+                "Ledger",
+                () => _viewKisaanLedger(k),
+              ),
+              _smallBtn(
+                Icons.edit_outlined,
+                "Edit",
+                () => _openKisaanPanel(editTarget: k),
+              ),
+              _smallBtn(
+                Icons.delete_outline,
+                "Delete",
+                () => _handleDeleteKisaan(k),
+                destructive: true,
+              ),
+            ],
           ),
         ],
       ),
@@ -1585,10 +1715,15 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _buildFormField(
-                      label: "Full name",
+                    AppAutoSuggestField(
                       controller: _nameController,
-                      required: true,
+                      labelText: 'Full name',
+                      isRequired: true,
+                      fetchSuggestions: (text) =>
+                          DatabaseHelper.instance.fetchNameSuggestions(
+                            KisaanTable.name,
+                            text,
+                          ),
                       validator: (val) {
                         if (val == null || val.trim().isEmpty) {
                           return 'Name is required';

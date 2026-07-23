@@ -2,6 +2,7 @@ import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Data/agri_header.dart';
 import 'package:agrikhata/Database/database_helper.dart';
 import 'package:agrikhata/Widgets/product_history_dialog.dart';
+import 'package:agrikhata/utils/pdf_generator.dart';
 import 'package:flutter/material.dart';
 
 class ProductsScreen extends StatefulWidget {
@@ -378,6 +379,58 @@ class _ProductsScreenState extends State<ProductsScreen> {
     );
   }
 
+  Future<void> _generateStockedProductsPdf() async {
+    try {
+      final stocked = await DatabaseHelper.instance.getProductsInStock();
+      if (stocked.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No stocked products to export'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+        return;
+      }
+
+      final rows = stocked
+          .map(
+            (p) => <String, dynamic>{
+              'name': p.name,
+              'brand': p.brand,
+              'product_type': p.productType,
+              'packaging_size': p.packagingSize,
+              'retail_price': p.retailPrice,
+              'available_stock': p.availableStock,
+              'uom': p.uom,
+              'expiry_date': p.expiryDate,
+              'low_stock_threshold': p.lowStockThreshold,
+              'status': p.statusLabel,
+            },
+          )
+          .toList();
+
+      final file = await PdfGenerator.saveStockedProductsToDocuments(
+        products: rows,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('PDF saved to ${file.path}'),
+          backgroundColor: AppColors.darkGreen,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to generate PDF: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final filtered = _filteredProducts;
@@ -390,6 +443,22 @@ class _ProductsScreenState extends State<ProductsScreen> {
         AgriHeader(
           breadcrumbs: const ["Inventory", "Products"],
           actions: [
+            OutlinedButton.icon(
+              onPressed: _generateStockedProductsPdf,
+              icon: const Icon(
+                Icons.picture_as_pdf_outlined,
+                size: 16,
+                color: Color(0xFF27500A),
+              ),
+              label: const Text(
+                "Generate PDF",
+                style: TextStyle(color: Color(0xFF27500A)),
+              ),
+              style: OutlinedButton.styleFrom(
+                side: const BorderSide(color: Color(0xFF27500A)),
+              ),
+            ),
+            const SizedBox(width: 8),
             ElevatedButton.icon(
               onPressed: _openAddProductPanel,
               icon: const Icon(Icons.add, size: 16),
@@ -400,65 +469,104 @@ class _ProductsScreenState extends State<ProductsScreen> {
         Expanded(
           child: _isLoading
               ? const Center(child: CircularProgressIndicator())
-              : Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      child: SingleChildScrollView(
-                        padding: const EdgeInsets.all(20),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            _buildKPICards(),
-                            const SizedBox(height: 20),
-                            _buildTabFilters(),
-                            const SizedBox(height: 14),
-                            _buildTable(filtered),
-                            const SizedBox(height: 8),
-                            Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 2,
-                              ),
-                              child: Text(
-                                "Showing ${filtered.length} of ${_products.length} products  ·  $lowStockCount low stock  ·  $expiredCount expired",
-                                style: const TextStyle(
-                                  fontSize: 11,
-                                  color: AppColors.textMuted,
-                                ),
-                              ),
+              : LayoutBuilder(
+                  builder: (context, constraints) {
+                    final showSidePanel =
+                        _selectedProduct != null || _showAddForm;
+                    final stackVertically =
+                        showSidePanel && constraints.maxWidth < 900;
+
+                    final mainScroll = SingleChildScrollView(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _buildKPICards(),
+                          const SizedBox(height: 20),
+                          _buildTabFilters(),
+                          const SizedBox(height: 14),
+                          _buildTable(filtered),
+                          const SizedBox(height: 8),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 2,
                             ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    if (_selectedProduct != null || _showAddForm)
-                      Container(
-                        width: 360,
-                        height: double.infinity,
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          border: Border(
-                            left: BorderSide(
-                              color: AppColors.border,
-                              width: 1.0,
+                            child: Text(
+                              "Showing ${filtered.length} of ${_products.length} products  ·  $lowStockCount low stock  ·  $expiredCount expired",
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: AppColors.textMuted,
+                              ),
                             ),
                           ),
-                        ),
-                        child: _showAddForm
-                            ? AddProductPanel(
-                                product: _selectedProduct,
-                                onSaved: _saveProduct,
-                                onCancel: _closePanel,
-                              )
-                            : _ProductDetailPanel(
-                                product: _selectedProduct!,
-                                onClose: () =>
-                                    setState(() => _selectedProduct = null),
-                                onEdit: () =>
-                                    _openEditProductPanel(_selectedProduct!),
-                              ),
+                        ],
                       ),
-                  ],
+                    );
+
+                    Widget? sidePanel;
+                    if (showSidePanel) {
+                      sidePanel = ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxWidth: stackVertically ? double.infinity : 360,
+                        ),
+                        child: Container(
+                          width: stackVertically ? double.infinity : 360,
+                          height: stackVertically ? null : double.infinity,
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            border: stackVertically
+                                ? Border(
+                                    top: BorderSide(
+                                      color: AppColors.border,
+                                      width: 1.0,
+                                    ),
+                                  )
+                                : Border(
+                                    left: BorderSide(
+                                      color: AppColors.border,
+                                      width: 1.0,
+                                    ),
+                                  ),
+                          ),
+                          child: _showAddForm
+                              ? AddProductPanel(
+                                  product: _selectedProduct,
+                                  onSaved: _saveProduct,
+                                  onCancel: _closePanel,
+                                )
+                              : _ProductDetailPanel(
+                                  product: _selectedProduct!,
+                                  onClose: () =>
+                                      setState(() => _selectedProduct = null),
+                                  onEdit: () =>
+                                      _openEditProductPanel(_selectedProduct!),
+                                ),
+                        ),
+                      );
+                    }
+
+                    if (stackVertically) {
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Expanded(child: mainScroll),
+                          if (sidePanel != null)
+                            Flexible(
+                              flex: 2,
+                              child: sidePanel,
+                            ),
+                        ],
+                      );
+                    }
+
+                    return Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Expanded(child: mainScroll),
+                        if (sidePanel != null) sidePanel,
+                      ],
+                    );
+                  },
                 ),
         ),
       ],
@@ -522,14 +630,20 @@ class _ProductsScreenState extends State<ProductsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 40,
-              fontWeight: FontWeight.w800,
-              color: valueColor,
-              height: 1.0,
-              letterSpacing: -1.0,
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(
+              value,
+              style: TextStyle(
+                fontSize: 40,
+                fontWeight: FontWeight.w800,
+                color: valueColor,
+                height: 1.0,
+                letterSpacing: -1.0,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
           ),
           const SizedBox(height: 10),
@@ -548,31 +662,30 @@ class _ProductsScreenState extends State<ProductsScreen> {
   }
 
   Widget _buildTabFilters() {
-    return Row(
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
       children: [
         ..._categories.map((category) {
           final isSelected = _selectedCategory == category;
-          return Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: InkWell(
-              onTap: () => setState(() => _selectedCategory = category),
-              borderRadius: BorderRadius.circular(6),
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 9,
-                ),
-                decoration: BoxDecoration(
-                  color: isSelected ? AppColors.darkGreen : Colors.transparent,
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Text(
-                  category,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                    color: isSelected ? Colors.white : AppColors.textMuted,
-                  ),
+          return InkWell(
+            onTap: () => setState(() => _selectedCategory = category),
+            borderRadius: BorderRadius.circular(6),
+            child: Container(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 16,
+                vertical: 9,
+              ),
+              decoration: BoxDecoration(
+                color: isSelected ? AppColors.darkGreen : Colors.transparent,
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                category,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: isSelected ? Colors.white : AppColors.textMuted,
                 ),
               ),
             ),
@@ -682,9 +795,19 @@ class _ProductsScreenState extends State<ProductsScreen> {
                   fontWeight: FontWeight.w500,
                   color: AppColors.darkGreen,
                 ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
-            _cell(1, Text(p.brand, style: const TextStyle(fontSize: 12))),
+            _cell(
+              1,
+              Text(
+                p.brand,
+                style: const TextStyle(fontSize: 12),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
             _cell(
               2,
               Text(p.packagingSize, style: const TextStyle(fontSize: 12)),

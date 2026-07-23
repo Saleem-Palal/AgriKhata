@@ -25,60 +25,86 @@ class AgriHeader extends StatelessWidget {
       ),
       child: Row(
         children: [
-          // Dynamic Breadcrumbs Left
-          ...breadcrumbs.asMap().entries.map((entry) {
-            int idx = entry.key;
-            String text = entry.value;
-            bool isLast = idx == breadcrumbs.length - 1;
-
-            Widget crumb = Text(
-              text,
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: isLast ? FontWeight.w400 : FontWeight.w200,
-                color: isLast ? Colors.black : AppColors.textMuted,
-              ),
-            );
-
-            if (!isLast && onBreadcrumbTap != null) {
-              crumb = MouseRegion(
-                cursor: SystemMouseCursors.click,
-                child: GestureDetector(
-                  behavior: HitTestBehavior.translucent,
-                  onTap: () => onBreadcrumbTap!(idx),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 2.0,
-                      vertical: 2.0,
-                    ),
-                    child: crumb,
-                  ),
-                ),
-              );
-            }
-
-            return Row(
+          Expanded(
+            child: Row(
               children: [
-                crumb,
-                if (!isLast)
-                  const Text(
-                    "  ›  ",
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w200),
+                for (final entry in breadcrumbs.asMap().entries) ...[
+                  Flexible(
+                    child: _breadcrumbChip(
+                      text: entry.value,
+                      isLast: entry.key == breadcrumbs.length - 1,
+                      onTap: entry.key != breadcrumbs.length - 1 &&
+                              onBreadcrumbTap != null
+                          ? () => onBreadcrumbTap!(entry.key)
+                          : null,
+                    ),
                   ),
+                  if (entry.key != breadcrumbs.length - 1)
+                    const Text(
+                      '  ›  ',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w200,
+                      ),
+                    ),
+                ],
               ],
-            );
-          }),
-
-          const Spacer(),
-
-          // Dynamic Action Buttons Right
-          ...actions.map(
-            (action) => Padding(
-              padding: const EdgeInsets.only(left: 12),
-              child: action,
             ),
           ),
+          if (actions.isNotEmpty) ...[
+            const SizedBox(width: 8),
+            Flexible(
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  reverse: true,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      for (final action in actions)
+                        Padding(
+                          padding: const EdgeInsets.only(left: 12),
+                          child: action,
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
         ],
+      ),
+    );
+  }
+
+  Widget _breadcrumbChip({
+    required String text,
+    required bool isLast,
+    VoidCallback? onTap,
+  }) {
+    Widget crumb = Text(
+      text,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        fontSize: 16,
+        fontWeight: isLast ? FontWeight.w400 : FontWeight.w200,
+        color: isLast ? Colors.black : AppColors.textMuted,
+      ),
+    );
+
+    if (onTap == null) return crumb;
+
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 2.0, vertical: 2.0),
+          child: crumb,
+        ),
       ),
     );
   }

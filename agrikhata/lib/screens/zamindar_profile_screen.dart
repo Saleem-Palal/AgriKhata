@@ -178,77 +178,144 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 18),
       color: AppColors.darkGreen,
-      child: Row(
-        children: [
-          CircleAvatar(
-            radius: 26,
-            backgroundColor: AppColors.sidebarActive,
-            child: Text(
-              initials,
-              style: const TextStyle(color: Colors.white, fontSize: 16),
-            ),
-          ),
-          const SizedBox(width: 14),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final isNarrow = constraints.maxWidth < 720;
+
+          final identitySection = Row(
             children: [
-              Text(
-                z.name,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
-                  fontWeight: FontWeight.w600,
+              CircleAvatar(
+                radius: 26,
+                backgroundColor: AppColors.sidebarActive,
+                child: Text(
+                  initials,
+                  style: const TextStyle(color: Colors.white, fontSize: 16),
                 ),
               ),
-              const SizedBox(height: 2),
-              Text(
-                z.villageDisplay,
-                style: TextStyle(color: AppColors.sidebarText, fontSize: 12),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      z.name,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      z.villageDisplay,
+                      style: TextStyle(
+                        color: AppColors.sidebarText,
+                        fontSize: 12,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
               ),
+              if (z.isOverLimit && !isNarrow) ...[
+                const SizedBox(width: 14),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFCEBEB),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: const Text(
+                    "Over credit limit",
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w500,
+                      color: Color(0xFF791F1F),
+                    ),
+                  ),
+                ),
+              ],
             ],
-          ),
-          if (z.isOverLimit) ...[
-            const SizedBox(width: 14),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                color: const Color(0xFFFCEBEB),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: const Text(
-                "Over credit limit",
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w500,
-                  color: Color(0xFF791F1F),
-                ),
-              ),
-            ),
-          ],
-          const Spacer(),
-          if (_isLoadingStats)
-            const SizedBox(
-              width: 20,
-              height: 20,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                valueColor: AlwaysStoppedAnimation<Color>(Color(0xFFB7E4C7)),
-              ),
-            )
-          else ...[
-            _bannerStat(
-              _outstandingBalanceDisplay,
-              "Total outstanding balance",
-            ),
-            const SizedBox(width: 24),
-            _bannerStat(
-              "${z.landArea.toStringAsFixed(0)} ${z.landUnit}",
-              "Total land",
-            ),
-            const SizedBox(width: 24),
-            _bannerStat("$_kisaanCount", "Kisaans"),
-          ],
-        ],
+          );
+
+          final statsSection = _isLoadingStats
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    valueColor: AlwaysStoppedAnimation<Color>(
+                      Color(0xFFB7E4C7),
+                    ),
+                  ),
+                )
+              : Wrap(
+                  spacing: 24,
+                  runSpacing: 8,
+                  alignment: isNarrow
+                      ? WrapAlignment.start
+                      : WrapAlignment.end,
+                  children: [
+                    _bannerStat(
+                      _outstandingBalanceDisplay,
+                      "Total outstanding balance",
+                    ),
+                    _bannerStat(
+                      "${z.landArea.toStringAsFixed(0)} ${z.landUnit}",
+                      "Total land",
+                    ),
+                    _bannerStat("$_kisaanCount", "Kisaans"),
+                  ],
+                );
+
+          if (isNarrow) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                identitySection,
+                if (z.isOverLimit) ...[
+                  const SizedBox(height: 10),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFCEBEB),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: const Text(
+                        "Over credit limit",
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500,
+                          color: Color(0xFF791F1F),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 12),
+                statsSection,
+              ],
+            );
+          }
+
+          return Row(
+            children: [
+              Expanded(child: identitySection),
+              statsSection,
+            ],
+          );
+        },
       ),
     );
   }
@@ -264,11 +331,15 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
             fontSize: 15,
             fontWeight: FontWeight.w600,
           ),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
         ),
         const SizedBox(height: 2),
         Text(
           label,
           style: TextStyle(color: AppColors.sidebarSection, fontSize: 10),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
         ),
       ],
     );
@@ -286,51 +357,57 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
       decoration: const BoxDecoration(
         border: Border(bottom: BorderSide(color: AppColors.border, width: 0.5)),
       ),
-      child: Row(
-        children: List.generate(_tabs.length, (i) {
-          final isActive = _selectedTab == i;
-          return InkWell(
-            onTap: () {
-              setState(() => _selectedTab = i);
-              // Refresh stats when switching tabs to ensure data is current
-              _loadLiveStats();
-            },
-            child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 4),
-              margin: const EdgeInsets.only(right: 32),
-              decoration: BoxDecoration(
-                border: Border(
-                  bottom: BorderSide(
-                    color: isActive ? AppColors.darkGreen : Colors.transparent,
-                    width: 2.5,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: List.generate(_tabs.length, (i) {
+            final isActive = _selectedTab == i;
+            return InkWell(
+              onTap: () {
+                setState(() => _selectedTab = i);
+                _loadLiveStats();
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 4),
+                margin: const EdgeInsets.only(right: 32),
+                decoration: BoxDecoration(
+                  border: Border(
+                    bottom: BorderSide(
+                      color: isActive ? AppColors.darkGreen : Colors.transparent,
+                      width: 2.5,
+                    ),
                   ),
                 ),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    tabIcons[i],
-                    size: 16,
-                    color: isActive ? AppColors.darkGreen : AppColors.textMuted,
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    _tabs[i],
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      tabIcons[i],
+                      size: 16,
                       color: isActive
                           ? AppColors.darkGreen
                           : AppColors.textMuted,
-                      letterSpacing: 0.2,
                     ),
-                  ),
-                ],
+                    const SizedBox(width: 8),
+                    Text(
+                      _tabs[i],
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
+                        color: isActive
+                            ? AppColors.darkGreen
+                            : AppColors.textMuted,
+                        letterSpacing: 0.2,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
               ),
-            ),
-          );
-        }),
+            );
+          }),
+        ),
       ),
     );
   }
@@ -406,8 +483,9 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
     ExportPdfAction action,
   ) async {
     try {
-      final allRows = await DatabaseHelper.instance.getLedgerTransactions(
-        z.id!,
+      final allRows = await DatabaseHelper.instance.getZamindarLedgerPdfRows(
+        zamindarId: z.id!,
+        seasons: selectedSeasons,
       );
       final kisaans = await DatabaseHelper.instance.getKisaansForZamindar(
         z.id!,
@@ -432,30 +510,13 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
         'mango',
       };
 
-      bool matchesSeason(Map<String, dynamic> row) {
-        if (selectedSeasons.isEmpty) return true;
-        final season = (row[LedgerTransactionTable.season] as String? ?? '')
-            .trim();
-        if (season.isEmpty) return true; // unscoped rows stay included
-        if (selectedSeasons.contains(season)) return true;
-
-        // Fuzzy family match: "Kharif 2026" ↔ selected "Kharif 2026" / "Kharif"
-        final rowFamily = season.toLowerCase().contains('rabi')
-            ? 'rabi'
-            : season.toLowerCase().contains('kharif')
-            ? 'kharif'
-            : null;
-        if (rowFamily == null) return false;
-        return selectedSeasons.any((selected) {
-          final s = selected.toLowerCase();
-          return s == season.toLowerCase() || s.contains(rowFamily);
-        });
-      }
-
       bool matchesCrops(Map<String, dynamic> row) {
         if (selectedCrops.isEmpty) return true;
 
-        final kisaanId = row[LedgerTransactionTable.kisaanId] as int?;
+        final kisaanIdRaw = row['kisaan_id'];
+        final kisaanId = kisaanIdRaw is int
+            ? kisaanIdRaw
+            : (kisaanIdRaw is num ? kisaanIdRaw.toInt() : null);
         if (kisaanId == null) return true;
 
         final cropBlob = (kisaanCropById[kisaanId] ?? '').trim();
@@ -467,7 +528,6 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
             .where((c) => c.isNotEmpty)
             .toSet();
 
-        // Non-catalog labels like "Direct Purchase" / Self are not crop filters.
         final hasCatalogCrop = kisaanCrops.any(knownCrops.contains);
         if (!hasCatalogCrop) return true;
 
@@ -475,64 +535,32 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
         return kisaanCrops.any(selected.contains);
       }
 
-      // Season is the primary ledger filter; crop is a soft secondary filter.
-      final seasonMatched = allRows.where(matchesSeason).toList();
-      var filtered = seasonMatched.where(matchesCrops).toList();
-
-      // If crop selection wiped everything, keep season-matched rows so the PDF
-      // never comes out empty when ledger data exists for the chosen seasons.
-      if (filtered.isEmpty && seasonMatched.isNotEmpty) {
-        filtered = seasonMatched;
-      }
-
-      // Last resort: if season labels somehow don't align, export full ledger.
+      var filtered = allRows.where(matchesCrops).toList();
       if (filtered.isEmpty && allRows.isNotEmpty) {
         filtered = List<Map<String, dynamic>>.from(allRows);
       }
-
-      final totalDebit = filtered
-          .where(
-            (row) =>
-                (row[LedgerTransactionTable.type] as String?) ==
-                LedgerTransactionType.debit,
-          )
-          .fold<int>(
-            0,
-            (sum, row) =>
-                sum +
-                ((row[LedgerTransactionTable.amount] as num?)?.round() ?? 0),
-          );
-      final totalCredit = filtered
-          .where(
-            (row) =>
-                (row[LedgerTransactionTable.type] as String?) ==
-                LedgerTransactionType.credit,
-          )
-          .fold<int>(
-            0,
-            (sum, row) =>
-                sum +
-                ((row[LedgerTransactionTable.amount] as num?)?.round() ?? 0),
-          );
 
       final seasonLabel = selectedSeasons.isEmpty
           ? 'All seasons'
           : selectedSeasons.join(', ');
       final cropNote = selectedCrops.isEmpty
           ? ''
-          : ' · Crops: ${selectedCrops.join(', ')}';
+          : ' - Crops: ${selectedCrops.join(', ')}';
 
       final outstanding = await DatabaseHelper.instance
           .getOutstandingBalanceString(z.id!);
+      final cumulativeRemaining = filtered.fold<double>(
+        0,
+        (sum, row) => sum + ((row['remaining'] as num?)?.toDouble() ?? 0),
+      );
 
       if (action == ExportPdfAction.print) {
         final pdf = await PdfGenerator.generateZamindarLedgerPdf(
           zamindarName: '${z.name}$cropNote',
           seasonLabel: seasonLabel,
-          transactions: filtered,
+          rows: filtered,
           outstandingBalance: outstanding,
-          totalPaymentsReceived: totalCredit,
-          totalDebit: totalDebit,
+          cumulativeRemaining: cumulativeRemaining,
         );
         await PdfGenerator.printDocument(pdf);
         return;
@@ -541,17 +569,16 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
       final file = await PdfGenerator.saveZamindarLedgerToDocuments(
         zamindarName: z.name,
         seasonLabel: seasonLabel,
-        transactions: filtered,
+        rows: filtered,
         outstandingBalance: outstanding,
-        totalPaymentsReceived: totalCredit,
-        totalDebit: totalDebit,
+        cumulativeRemaining: cumulativeRemaining,
       );
 
       if (action == ExportPdfAction.whatsapp) {
         await PdfShare.sharePdfFile(
           file: file,
           fileName: p.basename(file.path),
-          text: 'AgriKhata Ledger — ${z.name} ($seasonLabel$cropNote)',
+          text: 'AgriKhata Ledger - ${z.name} ($seasonLabel$cropNote)',
           subject: 'AgriKhata Zamindar Ledger',
         );
         return;
@@ -562,8 +589,8 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
           SnackBar(
             content: Text(
               filtered.isEmpty
-                  ? 'PDF saved (no ledger rows found) to ${file.path}'
-                  : 'PDF saved (${filtered.length} entries) to ${file.path}',
+                  ? 'PDF saved (no sales rows found) to ${file.path}'
+                  : 'PDF saved (${filtered.length} invoices) to ${file.path}',
             ),
             backgroundColor: AppColors.darkGreen,
           ),

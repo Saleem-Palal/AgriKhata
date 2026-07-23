@@ -216,6 +216,19 @@ Win32Window::MessageHandler(HWND hwnd,
     case WM_DWMCOLORIZATIONCOLORCHANGED:
       UpdateTheme(hwnd);
       return 0;
+
+    case WM_GETMINMAXINFO: {
+      // Enforce a usable minimum window size to avoid layout overflows.
+      // Logical 800x600; convert to physical pixels for the current monitor.
+      POINT origin = {0, 0};
+      HMONITOR monitor = MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY);
+      UINT dpi = FlutterDesktopGetDpiForMonitor(monitor);
+      double scale_factor = dpi / 96.0;
+      auto min_info = reinterpret_cast<MINMAXINFO*>(lparam);
+      min_info->ptMinTrackSize.x = Scale(800, scale_factor);
+      min_info->ptMinTrackSize.y = Scale(600, scale_factor);
+      return 0;
+    }
   }
 
   return DefWindowProc(window_handle_, message, wparam, lparam);

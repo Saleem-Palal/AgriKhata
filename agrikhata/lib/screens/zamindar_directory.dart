@@ -198,49 +198,86 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
   }
 
   Widget _buildSearchRow() {
-    return Row(
-      children: [
-        Expanded(
-          child: Container(
-            height: 38,
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: AppColors.sidebarBg, width: 0.5),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.search, size: 16, color: AppColors.textMuted),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: TextField(
-                    controller: _searchController,
-                    style: const TextStyle(fontSize: 12),
-                    decoration: const InputDecoration(
-                      isDense: true,
-                      border: InputBorder.none,
-                      hintText: "Search by name or village...",
-                      hintStyle: TextStyle(
-                        fontSize: 12,
-                        color: AppColors.sidebarText,
-                      ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < 600) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _buildSearchField(),
+              const SizedBox(height: 10),
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    _buildFilterDropdown(_villageOptions, _selectedVillage, (
+                      val,
+                    ) {
+                      setState(() => _selectedVillage = val!);
+                    }),
+                    const SizedBox(width: 10),
+                    _buildFilterDropdown(
+                      _balanceFilters,
+                      _selectedBalanceFilter,
+                      (val) {
+                        setState(() => _selectedBalanceFilter = val!);
+                      },
                     ),
-                  ),
+                  ],
                 ),
-              ],
+              ),
+            ],
+          );
+        }
+        return Row(
+          children: [
+            Expanded(child: _buildSearchField()),
+            const SizedBox(width: 10),
+            _buildFilterDropdown(_villageOptions, _selectedVillage, (val) {
+              setState(() => _selectedVillage = val!);
+            }),
+            const SizedBox(width: 10),
+            _buildFilterDropdown(_balanceFilters, _selectedBalanceFilter, (
+              val,
+            ) {
+              setState(() => _selectedBalanceFilter = val!);
+            }),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildSearchField() {
+    return Container(
+      height: 38,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppColors.sidebarBg, width: 0.5),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.search, size: 16, color: AppColors.textMuted),
+          const SizedBox(width: 8),
+          Expanded(
+            child: TextField(
+              controller: _searchController,
+              style: const TextStyle(fontSize: 12),
+              decoration: const InputDecoration(
+                isDense: true,
+                border: InputBorder.none,
+                hintText: "Search by name or village...",
+                hintStyle: TextStyle(
+                  fontSize: 12,
+                  color: AppColors.sidebarText,
+                ),
+              ),
             ),
           ),
-        ),
-        const SizedBox(width: 10),
-        _buildFilterDropdown(_villageOptions, _selectedVillage, (val) {
-          setState(() => _selectedVillage = val!);
-        }),
-        const SizedBox(width: 10),
-        _buildFilterDropdown(_balanceFilters, _selectedBalanceFilter, (val) {
-          setState(() => _selectedBalanceFilter = val!);
-        }),
-      ],
+        ],
+      ),
     );
   }
 
@@ -286,15 +323,34 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
         borderRadius: BorderRadius.circular(12),
         child: Material(
           color: Colors.transparent,
-          child: Column(
-            children: [
-              _buildTableHeaderRow(),
-              for (int i = 0; i < zamindars.length; i++)
-                _buildTableDataRow(
-                  zamindars[i],
-                  isLast: i == zamindars.length - 1,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              // Horizontal scroll needs a *finite* width. minWidth-only
+              // ConstrainedBox leaves maxWidth infinite, so Expanded in Rows throw.
+              const minTableWidth = 900.0;
+              final tableWidth = constraints.maxWidth.isFinite
+                  ? (constraints.maxWidth < minTableWidth
+                        ? minTableWidth
+                        : constraints.maxWidth)
+                  : minTableWidth;
+              return SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: SizedBox(
+                  width: tableWidth,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _buildTableHeaderRow(),
+                      for (int i = 0; i < zamindars.length; i++)
+                        _buildTableDataRow(
+                          zamindars[i],
+                          isLast: i == zamindars.length - 1,
+                        ),
+                    ],
+                  ),
                 ),
-            ],
+              );
+            },
           ),
         ),
       ),
@@ -317,13 +373,34 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
       ),
       child: Row(
         children: [
-          Expanded(flex: 20, child: Text("NAME", style: style)),
-          Expanded(flex: 14, child: Text("VILLAGE", style: style)),
-          Expanded(flex: 10, child: Text("TOTAL LAND", style: style)),
-          Expanded(flex: 14, child: Text("UDHAAR BALANCE", style: style)),
-          Expanded(flex: 12, child: Text("WALLET", style: style)),
-          Expanded(flex: 12, child: Text("ACTIVE KISAANS", style: style)),
-          Expanded(flex: 10, child: Text("STATUS", style: style)),
+          Expanded(
+            flex: 20,
+            child: Text("NAME", style: style, maxLines: 1, overflow: TextOverflow.ellipsis),
+          ),
+          Expanded(
+            flex: 14,
+            child: Text("VILLAGE", style: style, maxLines: 1, overflow: TextOverflow.ellipsis),
+          ),
+          Expanded(
+            flex: 10,
+            child: Text("TOTAL LAND", style: style, maxLines: 1, overflow: TextOverflow.ellipsis),
+          ),
+          Expanded(
+            flex: 14,
+            child: Text("UDHAAR BALANCE", style: style, maxLines: 1, overflow: TextOverflow.ellipsis),
+          ),
+          Expanded(
+            flex: 12,
+            child: Text("WALLET", style: style, maxLines: 1, overflow: TextOverflow.ellipsis),
+          ),
+          Expanded(
+            flex: 12,
+            child: Text("ACTIVE KISAANS", style: style, maxLines: 1, overflow: TextOverflow.ellipsis),
+          ),
+          Expanded(
+            flex: 10,
+            child: Text("STATUS", style: style, maxLines: 1, overflow: TextOverflow.ellipsis),
+          ),
           const SizedBox(width: 24),
         ],
       ),
@@ -354,6 +431,8 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
                   fontWeight: FontWeight.w500,
                   color: AppColors.darkGreen,
                 ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
             Expanded(
@@ -364,6 +443,8 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
                   fontSize: 12,
                   color: AppColors.textMuted,
                 ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
             Expanded(
@@ -371,6 +452,8 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
               child: Text(
                 "${z.totalLandAcres.toStringAsFixed(0)} ${z.landUnit}",
                 style: const TextStyle(fontSize: 12),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
             Expanded(
@@ -384,6 +467,8 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
                       ? const Color(0xFFA32D2D)
                       : const Color(0xFF27500A),
                 ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
             Expanded(
@@ -395,6 +480,8 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
                   fontWeight: FontWeight.w500,
                   color: Color(0xFF0C447C),
                 ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
             Expanded(flex: 12, child: _buildKisaanBadge(z.activeKisaans)),
@@ -437,6 +524,8 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
                 fontWeight: FontWeight.w500,
                 color: Color(0xFF27500A),
               ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
           ],
         ),
@@ -465,6 +554,8 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
                 ? const Color(0xFF27500A)
                 : const Color(0xFF633806),
           ),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
         ),
       ),
     );

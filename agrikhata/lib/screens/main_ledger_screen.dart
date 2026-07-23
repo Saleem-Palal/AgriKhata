@@ -656,63 +656,48 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
   }
 
   Widget _buildFilterRow() {
-    return Row(
-      children: [
-        Expanded(
-          child: Container(
-            height: 36,
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              border: Border.all(color: const Color(0xFFC6DEC9), width: 0.5),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.search, size: 15, color: Color(0xFF95B89A)),
-                const SizedBox(width: 7),
-                Expanded(
-                  child: TextField(
-                    controller: _searchController,
-                    decoration: InputDecoration(
-                      hintText: _tabController.index == 1
-                          ? 'Search Invoice # or Wholesaler name...'
-                          : _tabController.index == 2
-                              ? 'Search Payment ID, Invoice # or Zamindar...'
-                              : 'Search Invoice #, Zamindar or Kisaan name...',
-                      hintStyle: const TextStyle(
-                        fontSize: 12.5,
-                        color: Color(0xFF95B89A),
-                      ),
-                      border: InputBorder.none,
-                      isDense: true,
-                      contentPadding: EdgeInsets.symmetric(vertical: 8),
-                    ),
-                    style: const TextStyle(
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final searchField = Container(
+          height: 36,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            border: Border.all(color: const Color(0xFFC6DEC9), width: 0.5),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.search, size: 15, color: Color(0xFF95B89A)),
+              const SizedBox(width: 7),
+              Expanded(
+                child: TextField(
+                  controller: _searchController,
+                  decoration: InputDecoration(
+                    hintText: _tabController.index == 1
+                        ? 'Search Invoice # or Wholesaler name...'
+                        : _tabController.index == 2
+                            ? 'Search Payment ID, Invoice # or Zamindar...'
+                            : 'Search Invoice #, Zamindar or Kisaan name...',
+                    hintStyle: const TextStyle(
                       fontSize: 12.5,
-                      color: Color(0xFF1B4332),
+                      color: Color(0xFF95B89A),
                     ),
+                    border: InputBorder.none,
+                    isDense: true,
+                    contentPadding: EdgeInsets.symmetric(vertical: 8),
+                  ),
+                  style: const TextStyle(
+                    fontSize: 12.5,
+                    color: Color(0xFF1B4332),
                   ),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
-        ),
-        const SizedBox(width: 10),
-        SeasonDropdown(
-          selectedSeason: _selectedSeason,
-          availableSeasons: _availableSeasons,
-          onChanged: (season) {
-            if (season != null && season != _selectedSeason) {
-              setState(() {
-                _selectedSeason = season;
-              });
-              _loadLedgerData();
-            }
-          },
-        ),
-        const SizedBox(width: 10),
-        InkWell(
+        );
+
+        final exportButton = InkWell(
           onTap: _isExporting ? null : _handleExportStatement,
           child: Container(
             height: 36,
@@ -754,9 +739,9 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
               ],
             ),
           ),
-        ),
-        const SizedBox(width: 10),
-        InkWell(
+        );
+
+        final whatsAppButton = InkWell(
           onTap: _isExporting ? null : _handleShareViaWhatsApp,
           child: Container(
             height: 36,
@@ -785,8 +770,56 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
               ],
             ),
           ),
-        ),
-      ],
+        );
+
+        if (constraints.maxWidth < 720) {
+          return Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              SizedBox(width: constraints.maxWidth, child: searchField),
+              SeasonDropdown(
+                selectedSeason: _selectedSeason,
+                availableSeasons: _availableSeasons,
+                onChanged: (season) {
+                  if (season != null && season != _selectedSeason) {
+                    setState(() {
+                      _selectedSeason = season;
+                    });
+                    _loadLedgerData();
+                  }
+                },
+              ),
+              exportButton,
+              whatsAppButton,
+            ],
+          );
+        }
+
+        return Row(
+          children: [
+            Expanded(child: searchField),
+            const SizedBox(width: 10),
+            SeasonDropdown(
+              selectedSeason: _selectedSeason,
+              availableSeasons: _availableSeasons,
+              onChanged: (season) {
+                if (season != null && season != _selectedSeason) {
+                  setState(() {
+                    _selectedSeason = season;
+                  });
+                  _loadLedgerData();
+                }
+              },
+            ),
+            const SizedBox(width: 10),
+            exportButton,
+            const SizedBox(width: 10),
+            whatsAppButton,
+          ],
+        );
+      },
     );
   }
 
@@ -916,12 +949,18 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
             ),
           ),
           const SizedBox(height: 5),
-          Text(
-            '₨ ${NumberFormat('#,##,##0').format(value)}',
-            style: TextStyle(
-              fontSize: 19,
-              fontWeight: FontWeight.w600,
-              color: valueColor,
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(
+              '₨ ${NumberFormat('#,##,##0').format(value)}',
+              style: TextStyle(
+                fontSize: 19,
+                fontWeight: FontWeight.w600,
+                color: valueColor,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
           ),
         ],

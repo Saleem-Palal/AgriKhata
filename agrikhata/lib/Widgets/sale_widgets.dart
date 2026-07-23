@@ -615,21 +615,73 @@ class CurrencyFormatter {
 class PaymentMethodToggle extends StatelessWidget {
   final PaymentMethod selectedMethod;
   final Function(PaymentMethod) onChanged;
+  final bool compact;
 
   const PaymentMethodToggle({
     super.key,
     required this.selectedMethod,
     required this.onChanged,
+    this.compact = false,
   });
 
   @override
   Widget build(BuildContext context) {
+    if (compact) {
+      return Container(
+        padding: const EdgeInsets.all(3),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.15),
+            width: 0.5,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _buildCompactChip(PaymentMethod.credit),
+            const SizedBox(width: 3),
+            _buildCompactChip(PaymentMethod.cash),
+          ],
+        ),
+      );
+    }
+
     return Row(
       children: [
         Expanded(child: _buildButton(PaymentMethod.credit)),
         const SizedBox(width: 8),
         Expanded(child: _buildButton(PaymentMethod.cash)),
       ],
+    );
+  }
+
+  Widget _buildCompactChip(PaymentMethod method) {
+    final isActive = selectedMethod == method;
+    final label = method == PaymentMethod.credit ? 'Credit' : 'Cash';
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () => onChanged(method),
+        borderRadius: BorderRadius.circular(7),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+          decoration: BoxDecoration(
+            color: isActive ? Colors.white : Colors.transparent,
+            borderRadius: BorderRadius.circular(7),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: isActive ? SaleColors.textDark : SaleColors.textLight,
+            ),
+          ),
+        ),
+      ),
     );
   }
 

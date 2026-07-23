@@ -520,15 +520,47 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
                 ? const Center(child: CircularProgressIndicator())
                 : Padding(
                     padding: const EdgeInsets.all(20),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        SizedBox(width: 300, child: _buildLeftPanel()),
-                        const SizedBox(width: 16),
-                        Expanded(child: _buildMiddlePanel()),
-                        const SizedBox(width: 16),
-                        SizedBox(width: 280, child: _buildRightPanel()),
-                      ],
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final stackVertically = constraints.maxWidth < 1000;
+
+                        final leftPanel = SizedBox(
+                          width: stackVertically ? double.infinity : 300,
+                          child: _buildLeftPanel(),
+                        );
+                        final middlePanel = _buildMiddlePanel();
+                        final rightPanel = SizedBox(
+                          width: stackVertically ? double.infinity : 280,
+                          child: _buildRightPanel(),
+                        );
+
+                        // Use Expanded (bounded height) — never nest
+                        // SingleChildScrollView/Expanded ListViews inside an
+                        // unbounded outer scroll view (throws at runtime).
+                        if (stackVertically) {
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Expanded(flex: 2, child: leftPanel),
+                              const SizedBox(height: 12),
+                              Expanded(flex: 3, child: middlePanel),
+                              const SizedBox(height: 12),
+                              Expanded(flex: 2, child: rightPanel),
+                            ],
+                          );
+                        }
+
+                        return Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            leftPanel,
+                            const SizedBox(width: 16),
+                            Expanded(child: middlePanel),
+                            const SizedBox(width: 16),
+                            rightPanel,
+                          ],
+                        );
+                      },
                     ),
                   ),
           ),

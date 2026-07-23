@@ -24,7 +24,7 @@ class DatabaseHelper with ChangeNotifier {
   static final DatabaseHelper instance = DatabaseHelper._internal();
 
   /// Current on-disk schema version. Bump only when adding a new `_migrateToV*`.
-  static const int schemaVersion = 27;
+  static const int schemaVersion = 28;
 
   static final NumberFormat _indianCurrencyFormat = NumberFormat('#,##,##0');
 
@@ -100,6 +100,8 @@ class DatabaseHelper with ChangeNotifier {
           await db.execute(_createWholesalerLedgerTable());
           await db.execute(_createWholesalerPaymentsTable());
           await db.execute(_createExpensesTable());
+          await db.execute(_createEmployeesTable());
+          await db.execute(_createEmployeeAttendanceTable());
           await _createIndexes(db);
           await _createLedgerSyncTriggers(db);
         },
@@ -109,6 +111,7 @@ class DatabaseHelper with ChangeNotifier {
           await _ensureWholesalerLedgerSchema(db);
           await _ensureWholesalerPaymentsSchema(db);
           await _ensureExpensesSchema(db);
+          await _ensureEmployeeSchema(db);
           await _ensureSalesAdvanceSchema(db);
           await _createLedgerSyncTriggers(db);
         },
@@ -282,6 +285,12 @@ class DatabaseHelper with ChangeNotifier {
           toVersion: 27,
           description: 'full sales/purchase domain sync triggers',
           run: _migrateToV27,
+        ),
+        MigrationStep(
+          toVersion: 28,
+          description: 'employees + attendance + expense payroll link',
+          run: _migrateToV28,
+          verifyIntegrity: false,
         ),
       ],
     );
@@ -663,6 +672,11 @@ class DatabaseHelper with ChangeNotifier {
   Future<void> _migrateToV27(Database db, MigrationLog log) async {
     log.step('recreate ledger sync triggers');
     await _createLedgerSyncTriggers(db);
+  }
+
+  Future<void> _migrateToV28(Database db, MigrationLog log) async {
+    log.step('ensure employee + attendance schema');
+    await _ensureEmployeeSchema(db);
   }
 
   /// v24: cascade ledger/payments on invoice delete, add cached current_balance,
@@ -1537,6 +1551,32 @@ END
     await db.execute('''
       CREATE INDEX IF NOT EXISTS idx_expenses_expense_date
       ON ${ExpenseTable.name}(${ExpenseTable.expenseDate})
+    ''');
+  }
+
+  /// Creates employees / attendance tables and payroll link columns on expenses.
+  Future<void> _ensureEmployeeSchema(Database db) async {
+    await db.execute(_createEmployeesTable());
+    await db.execute(_createEmployeeAttendanceTable());
+    await addColumnIfMissing(
+      db,
+      table: ExpenseTable.name,
+      column: ExpenseTable.employeeId,
+      columnDefSql: '${ExpenseTable.employeeId} INTEGER',
+    );
+    await addColumnIfMissing(
+      db,
+      table: ExpenseTable.name,
+      column: ExpenseTable.payrollType,
+      columnDefSql: '${ExpenseTable.payrollType} TEXT',
+    );
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_employee_attendance_date
+      ON ${EmployeeAttendanceTable.name}(${EmployeeAttendanceTable.date})
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_expenses_employee_id
+      ON ${ExpenseTable.name}(${ExpenseTable.employeeId})
     ''');
   }
 
@@ -2685,7 +2725,37 @@ END
       ${ExpenseTable.category} TEXT NOT NULL,
       ${ExpenseTable.amount} REAL NOT NULL,
       ${ExpenseTable.remarks} TEXT,
-      ${ExpenseTable.expenseDate} TEXT NOT NULL
+      ${ExpenseTable.expenseDate} TEXT NOT NULL,
+      ${ExpenseTable.employeeId} INTEGER,
+      ${ExpenseTable.payrollType} TEXT
+    )
+  ''';
+
+  String _createEmployeesTable() =>
+      '''
+    CREATE TABLE IF NOT EXISTS ${EmployeeTable.name} (
+      ${EmployeeTable.id} INTEGER PRIMARY KEY AUTOINCREMENT,
+      ${EmployeeTable.nameColumn} TEXT NOT NULL,
+      ${EmployeeTable.phone} TEXT,
+      ${EmployeeTable.role} TEXT,
+      ${EmployeeTable.salaryType} TEXT NOT NULL,
+      ${EmployeeTable.baseSalary} REAL NOT NULL,
+      ${EmployeeTable.createdAt} TEXT NOT NULL,
+      ${EmployeeTable.isActive} INTEGER NOT NULL DEFAULT 1
+    )
+  ''';
+
+  String _createEmployeeAttendanceTable() =>
+      '''
+    CREATE TABLE IF NOT EXISTS ${EmployeeAttendanceTable.name} (
+      ${EmployeeAttendanceTable.attendanceId} INTEGER PRIMARY KEY AUTOINCREMENT,
+      ${EmployeeAttendanceTable.employeeId} INTEGER NOT NULL,
+      ${EmployeeAttendanceTable.date} TEXT NOT NULL,
+      ${EmployeeAttendanceTable.status} TEXT NOT NULL,
+      UNIQUE(${EmployeeAttendanceTable.employeeId}, ${EmployeeAttendanceTable.date}),
+      FOREIGN KEY (${EmployeeAttendanceTable.employeeId})
+        REFERENCES ${EmployeeTable.name}(${EmployeeTable.id})
+        ON DELETE CASCADE
     )
   ''';
 
@@ -3424,6 +3494,66 @@ END
         .toList();
   }
 
+  /// Product line-items issued to all Kisaans under [zamindarId].
+  ///
+  /// One row per sale_items line (invoice, date, kisaan, product, qty, uom).
+  /// Excludes cash/fuel advance placeholder lines.
+  Future<List<ZamindarProductLedgerEntry>> getZamindarProductWiseLedgerEntries(
+    int zamindarId,
+  ) async {
+    final db = await database;
+    final rows = await db.rawQuery(
+      '''
+      SELECT
+        s.${SalesTable.invoiceNumber} AS invoice_number,
+        s.${SalesTable.dateTime} AS date_time,
+        COALESCE(
+          NULLIF(TRIM(k.${KisaanTable.nameColumn}), ''),
+          'Self'
+        ) AS kisaan_name,
+        si.${SaleItemsTable.productName} AS product_name,
+        si.${SaleItemsTable.quantity} AS quantity,
+        COALESCE(NULLIF(TRIM(p.${ProductTable.uom}), ''), 'Bags') AS uom
+      FROM ${SaleItemsTable.name} si
+      INNER JOIN ${SalesTable.name} s
+        ON s.${SalesTable.invoiceNumber} = si.${SaleItemsTable.invoiceNumber}
+      LEFT JOIN ${KisaanTable.name} k
+        ON k.${KisaanTable.id} = s.${SalesTable.kisaanId}
+      LEFT JOIN ${ProductTable.name} p
+        ON p.${ProductTable.nameColumn} = si.${SaleItemsTable.productName}
+      WHERE s.${SalesTable.zamindarId} = ?
+        AND (
+          s.${SalesTable.transactionType} IS NULL
+          OR s.${SalesTable.transactionType} = ?
+        )
+        AND LOWER(TRIM(si.${SaleItemsTable.productType})) != 'advance'
+        AND TRIM(si.${SaleItemsTable.productName}) != ''
+      ORDER BY s.${SalesTable.dateTime} DESC, si.${SaleItemsTable.id} ASC
+      ''',
+      [zamindarId, SaleTransactionType.productSale],
+    );
+
+    return rows
+        .map((row) {
+          final productName =
+              (row['product_name'] as String?)?.trim() ?? '';
+          if (productName.isEmpty) return null;
+          final kisaanRaw = (row['kisaan_name'] as String?)?.trim() ?? '';
+          final uomRaw = (row['uom'] as String?)?.trim() ?? '';
+          return ZamindarProductLedgerEntry(
+            invoiceNumber:
+                (row['invoice_number'] as String?)?.trim() ?? '',
+            dateTime: _parseDateTime(row['date_time'] as String? ?? ''),
+            kisaanName: kisaanRaw.isNotEmpty ? kisaanRaw : 'Self',
+            productName: productName,
+            quantity: (row['quantity'] as num?)?.round() ?? 0,
+            uom: uomRaw.isNotEmpty ? uomRaw : 'Bags',
+          );
+        })
+        .whereType<ZamindarProductLedgerEntry>()
+        .toList();
+  }
+
   Future<int> updateProduct(ProductItem product) async {
     final db = await database;
     final result = await db.update(
@@ -4071,6 +4201,40 @@ END
     );
   }
 
+  /// Latest sale (purchase) date per Kisaan under [zamindarId].
+  /// Missing kisaans / no sales → absent from the map.
+  Future<Map<int, DateTime>> getLastPurchaseDatesForZamindar(
+    int zamindarId,
+  ) async {
+    final db = await database;
+    final rows = await db.rawQuery(
+      '''
+      SELECT
+        ${SalesTable.kisaanId} AS kisaan_id,
+        MAX(${SalesTable.dateTime}) AS last_purchase
+      FROM ${SalesTable.name}
+      WHERE ${SalesTable.zamindarId} = ?
+        AND ${SalesTable.kisaanId} IS NOT NULL
+      GROUP BY ${SalesTable.kisaanId}
+      ''',
+      [zamindarId],
+    );
+
+    final Map<int, DateTime> result = {};
+    for (final row in rows) {
+      final idRaw = row['kisaan_id'];
+      final id = idRaw is int
+          ? idRaw
+          : (idRaw is num ? idRaw.toInt() : int.tryParse('$idRaw'));
+      final raw = row['last_purchase']?.toString();
+      if (id == null || raw == null || raw.isEmpty) continue;
+      try {
+        result[id] = DateTime.parse(raw);
+      } catch (_) {}
+    }
+    return result;
+  }
+
   Future<Zamindar> enrichZamindar(Zamindar zamindar) async {
     if (zamindar.id == null) return zamindar;
 
@@ -4337,6 +4501,376 @@ END
           '${ExpenseTable.expenseDate} DESC, ${ExpenseTable.id} DESC',
     );
     return maps.map(DbExpense.fromMap).toList();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Employees & attendance
+  // ---------------------------------------------------------------------------
+
+  Future<int> insertEmployee({
+    required String name,
+    String phone = '',
+    String role = '',
+    required String salaryType,
+    required double baseSalary,
+  }) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) {
+      throw ArgumentError('Employee name is required');
+    }
+    final normalizedType = salaryType.trim().toLowerCase();
+    if (normalizedType != EmployeeSalaryType.monthly &&
+        normalizedType != EmployeeSalaryType.daily) {
+      throw ArgumentError("salary_type must be 'monthly' or 'daily'");
+    }
+    if (baseSalary < 0) {
+      throw ArgumentError('Base salary cannot be negative');
+    }
+
+    final db = await database;
+    await _ensureEmployeeSchema(db);
+    final id = await db.insert(EmployeeTable.name, {
+      EmployeeTable.nameColumn: trimmed,
+      EmployeeTable.phone: phone.trim(),
+      EmployeeTable.role: role.trim(),
+      EmployeeTable.salaryType: normalizedType,
+      EmployeeTable.baseSalary: baseSalary,
+      EmployeeTable.createdAt: _formatDateTime(DateTime.now()),
+      EmployeeTable.isActive: 1,
+    });
+    notifyListeners();
+    return id;
+  }
+
+  Future<int> updateEmployee(DbEmployee employee) async {
+    if (employee.id == null) {
+      throw ArgumentError('Employee id is required for update');
+    }
+    final db = await database;
+    await _ensureEmployeeSchema(db);
+    final result = await db.update(
+      EmployeeTable.name,
+      employee.toMap(),
+      where: '${EmployeeTable.id} = ?',
+      whereArgs: [employee.id],
+    );
+    notifyListeners();
+    return result;
+  }
+
+  Future<int> setEmployeeActive(int employeeId, bool isActive) async {
+    final db = await database;
+    await _ensureEmployeeSchema(db);
+    final result = await db.update(
+      EmployeeTable.name,
+      {EmployeeTable.isActive: isActive ? 1 : 0},
+      where: '${EmployeeTable.id} = ?',
+      whereArgs: [employeeId],
+    );
+    notifyListeners();
+    return result;
+  }
+
+  Future<List<DbEmployee>> getEmployees({bool activeOnly = true}) async {
+    final db = await database;
+    await _ensureEmployeeSchema(db);
+    final maps = await db.query(
+      EmployeeTable.name,
+      where: activeOnly ? '${EmployeeTable.isActive} = 1' : null,
+      orderBy: '${EmployeeTable.nameColumn} COLLATE NOCASE ASC',
+    );
+    return maps.map(DbEmployee.fromMap).toList();
+  }
+
+  Future<DbEmployee?> getEmployeeById(int id) async {
+    final db = await database;
+    await _ensureEmployeeSchema(db);
+    final maps = await db.query(
+      EmployeeTable.name,
+      where: '${EmployeeTable.id} = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (maps.isEmpty) return null;
+    return DbEmployee.fromMap(maps.first);
+  }
+
+  /// Upserts attendance for [date] (`YYYY-MM-DD`). Pass null [status] to clear
+  /// (Unmarked — deletes any existing row).
+  Future<void> setAttendanceStatus({
+    required int employeeId,
+    required String date,
+    String? status,
+  }) async {
+    final normalizedDate = date.trim();
+    if (!RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(normalizedDate)) {
+      throw ArgumentError('date must be YYYY-MM-DD');
+    }
+
+    final db = await database;
+    await _ensureEmployeeSchema(db);
+
+    await db.transaction((txn) async {
+      if (status == null || status.trim().isEmpty) {
+        await txn.delete(
+          EmployeeAttendanceTable.name,
+          where:
+              '${EmployeeAttendanceTable.employeeId} = ? AND ${EmployeeAttendanceTable.date} = ?',
+          whereArgs: [employeeId, normalizedDate],
+        );
+        return;
+      }
+
+      final normalizedStatus = status.trim().toUpperCase();
+      if (normalizedStatus != AttendanceStatus.present &&
+          normalizedStatus != AttendanceStatus.absent &&
+          normalizedStatus != AttendanceStatus.halfDay) {
+        throw ArgumentError(
+          "status must be PRESENT, ABSENT, HALF_DAY, or unmarked",
+        );
+      }
+
+      final existing = await txn.query(
+        EmployeeAttendanceTable.name,
+        columns: [EmployeeAttendanceTable.attendanceId],
+        where:
+            '${EmployeeAttendanceTable.employeeId} = ? AND ${EmployeeAttendanceTable.date} = ?',
+        whereArgs: [employeeId, normalizedDate],
+        limit: 1,
+      );
+
+      if (existing.isEmpty) {
+        await txn.insert(EmployeeAttendanceTable.name, {
+          EmployeeAttendanceTable.employeeId: employeeId,
+          EmployeeAttendanceTable.date: normalizedDate,
+          EmployeeAttendanceTable.status: normalizedStatus,
+        });
+      } else {
+        await txn.update(
+          EmployeeAttendanceTable.name,
+          {EmployeeAttendanceTable.status: normalizedStatus},
+          where: '${EmployeeAttendanceTable.attendanceId} = ?',
+          whereArgs: [existing.first[EmployeeAttendanceTable.attendanceId]],
+        );
+      }
+    });
+    notifyListeners();
+  }
+
+  Future<Map<int, String>> getAttendanceForDate(String date) async {
+    final db = await database;
+    await _ensureEmployeeSchema(db);
+    final rows = await db.query(
+      EmployeeAttendanceTable.name,
+      where: '${EmployeeAttendanceTable.date} = ?',
+      whereArgs: [date.trim()],
+    );
+    final map = <int, String>{};
+    for (final row in rows) {
+      final id = row[EmployeeAttendanceTable.employeeId] as int?;
+      final status = row[EmployeeAttendanceTable.status] as String?;
+      if (id != null && status != null) map[id] = status;
+    }
+    return map;
+  }
+
+  Future<List<DbAttendance>> getEmployeeAttendanceForMonth({
+    required int employeeId,
+    required int year,
+    required int month,
+  }) async {
+    final db = await database;
+    await _ensureEmployeeSchema(db);
+    final start = _formatDateOnly(DateTime(year, month, 1));
+    final endExclusive = _formatDateOnly(
+      month == 12 ? DateTime(year + 1, 1, 1) : DateTime(year, month + 1, 1),
+    );
+    final rows = await db.query(
+      EmployeeAttendanceTable.name,
+      where:
+          '${EmployeeAttendanceTable.employeeId} = ? AND ${EmployeeAttendanceTable.date} >= ? AND ${EmployeeAttendanceTable.date} < ?',
+      whereArgs: [employeeId, start, endExclusive],
+      orderBy: '${EmployeeAttendanceTable.date} ASC',
+    );
+    return rows.map(DbAttendance.fromMap).toList();
+  }
+
+  /// Records Kharchi/Advance as an expense linked to [employeeId].
+  Future<int> recordEmployeeKharchi({
+    required int employeeId,
+    required double amount,
+    String remarks = '',
+    DateTime? date,
+  }) async {
+    if (amount <= 0) {
+      throw ArgumentError('Kharchi amount must be greater than zero');
+    }
+    final employee = await getEmployeeById(employeeId);
+    if (employee == null) {
+      throw ArgumentError('Employee not found');
+    }
+
+    final db = await database;
+    await _ensureEmployeeSchema(db);
+    final note = remarks.trim().isEmpty
+        ? 'Kharchi/Advance — ${employee.name}'
+        : 'Kharchi/Advance — ${employee.name}: ${remarks.trim()}';
+    final id = await db.insert(ExpenseTable.name, {
+      ExpenseTable.category: 'Employee Salaries',
+      ExpenseTable.amount: amount,
+      ExpenseTable.remarks: note,
+      ExpenseTable.expenseDate: _formatDateTime(date ?? DateTime.now()),
+      ExpenseTable.employeeId: employeeId,
+      ExpenseTable.payrollType: ExpensePayrollType.kharchi,
+    });
+    notifyListeners();
+    return id;
+  }
+
+  /// Settles the month: logs net payable as expense and closes the balance.
+  Future<int> settleEmployeeMonthlySalary({
+    required int employeeId,
+    required int year,
+    required int month,
+  }) async {
+    final payroll = await getEmployeeMonthPayroll(
+      employeeId: employeeId,
+      year: year,
+      month: month,
+    );
+    if (payroll.isSettled) {
+      throw StateError('This month is already settled');
+    }
+
+    final net = payroll.netRemaining;
+    final employee = payroll.employee;
+    final monthLabel = DateFormat('MMM yyyy').format(DateTime(year, month));
+    final db = await database;
+    await _ensureEmployeeSchema(db);
+
+    late final int expenseId;
+    await db.transaction((txn) async {
+      // Amount can be 0 when advances already covered earnings.
+      expenseId = await txn.insert(ExpenseTable.name, {
+        ExpenseTable.category: 'Employee Salaries',
+        ExpenseTable.amount: net > 0 ? net : 0,
+        ExpenseTable.remarks:
+            'Salary settlement $monthLabel — ${employee.name}'
+            '${net <= 0 ? ' (no payout; advances covered earnings)' : ''}',
+        ExpenseTable.expenseDate: _formatDateTime(DateTime.now()),
+        ExpenseTable.employeeId: employeeId,
+        ExpenseTable.payrollType: ExpensePayrollType.settlement,
+      });
+    });
+    notifyListeners();
+    return expenseId;
+  }
+
+  Future<List<DbExpense>> getEmployeePayrollExpenses({
+    required int employeeId,
+    required int year,
+    required int month,
+  }) async {
+    final db = await database;
+    await _ensureEmployeeSchema(db);
+    final start = DateTime(year, month, 1);
+    final end = month == 12
+        ? DateTime(year + 1, 1, 1)
+        : DateTime(year, month + 1, 1);
+    final maps = await db.query(
+      ExpenseTable.name,
+      where:
+          '${ExpenseTable.employeeId} = ? AND ${ExpenseTable.expenseDate} >= ? AND ${ExpenseTable.expenseDate} < ?',
+      whereArgs: [
+        employeeId,
+        _formatDateTime(start),
+        _formatDateTime(end),
+      ],
+      orderBy:
+          '${ExpenseTable.expenseDate} DESC, ${ExpenseTable.id} DESC',
+    );
+    return maps.map(DbExpense.fromMap).toList();
+  }
+
+  Future<EmployeeMonthPayroll> getEmployeeMonthPayroll({
+    required int employeeId,
+    required int year,
+    required int month,
+  }) async {
+    final employee = await getEmployeeById(employeeId);
+    if (employee == null) {
+      throw ArgumentError('Employee not found');
+    }
+
+    final attendance = await getEmployeeAttendanceForMonth(
+      employeeId: employeeId,
+      year: year,
+      month: month,
+    );
+    final expenses = await getEmployeePayrollExpenses(
+      employeeId: employeeId,
+      year: year,
+      month: month,
+    );
+
+    var present = 0;
+    var absent = 0;
+    var half = 0;
+    for (final row in attendance) {
+      switch (row.status) {
+        case AttendanceStatus.present:
+          present++;
+          break;
+        case AttendanceStatus.absent:
+          absent++;
+          break;
+        case AttendanceStatus.halfDay:
+          half++;
+          break;
+      }
+    }
+
+    final daysInMonth = DateTime(year, month + 1, 0).day;
+    final unmarked = daysInMonth - present - absent - half;
+    final paidUnits = present + (half * 0.5);
+    final dailyRate = employee.isDaily
+        ? employee.baseSalary
+        : (daysInMonth > 0 ? employee.baseSalary / daysInMonth : 0.0);
+    final earned = paidUnits * dailyRate;
+
+    var kharchi = 0.0;
+    var settlements = 0.0;
+    var isSettled = false;
+    for (final e in expenses) {
+      if (e.payrollType == ExpensePayrollType.kharchi) {
+        kharchi += e.amount;
+      } else if (e.payrollType == ExpensePayrollType.settlement) {
+        settlements += e.amount;
+        isSettled = true;
+      }
+    }
+
+    // Before settlement: net = earned - kharchi.
+    // After settlement: remaining payable is effectively closed.
+    final net = isSettled ? 0.0 : (earned - kharchi);
+
+    return EmployeeMonthPayroll(
+      employee: employee,
+      year: year,
+      month: month,
+      presentDays: present,
+      absentDays: absent,
+      halfDays: half,
+      unmarkedDays: unmarked < 0 ? 0 : unmarked,
+      baseSalary: employee.baseSalary,
+      earnedAmount: earned,
+      kharchiTotal: kharchi,
+      settlementTotal: settlements,
+      netRemaining: net,
+      isSettled: isSettled,
+      attendance: attendance,
+      payrollExpenses: expenses,
+    );
   }
 
   /// Khata statement rows for a wholesaler, newest first.
@@ -5793,7 +6327,7 @@ END
   ///
   /// Completely wipes transactional history, operational logs, and financial
   /// records, then resets auto-increment counters. Master profiles are kept:
-  /// zamindars, kisaans, products, and wholesalers.
+  /// zamindars, kisaans, products, wholesalers, and employees.
   Future<void> truncateFullDatabase() async {
     final db = await database;
 
@@ -5810,6 +6344,7 @@ END
       PurchaseInvoicesTable.name,
       StockMovementTable.name,
       ExpenseTable.name,
+      EmployeeAttendanceTable.name,
     ];
 
     await db.execute('PRAGMA foreign_keys = OFF');
@@ -6800,6 +7335,51 @@ END
         .toList();
   }
 
+  /// Generic name auto-suggest for form fields (Zamindar / Kisaan / Wholesaler / Employee).
+  ///
+  /// Returns up to 5 distinct matching names using `WHERE name LIKE '%query%'`.
+  /// [tableName] must be a known entity table — arbitrary SQL identifiers are rejected.
+  Future<List<String>> fetchNameSuggestions(
+    String tableName,
+    String query,
+  ) async {
+    const allowedTables = <String>{
+      ZamindarTable.name,
+      KisaanTable.name,
+      WholesalerTable.name,
+      EmployeeTable.name,
+    };
+    if (!allowedTables.contains(tableName)) {
+      throw ArgumentError.value(
+        tableName,
+        'tableName',
+        'Unsupported table for name suggestions',
+      );
+    }
+
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) return const [];
+
+    final db = await database;
+    final rows = await db.rawQuery(
+      '''
+      SELECT DISTINCT TRIM(name) AS name
+      FROM $tableName
+      WHERE name IS NOT NULL
+        AND TRIM(name) != ''
+        AND name LIKE ?
+      ORDER BY name COLLATE NOCASE ASC
+      LIMIT 5
+      ''',
+      ['%$trimmed%'],
+    );
+
+    return rows
+        .map((r) => (r['name'] as String?)?.trim() ?? '')
+        .where((n) => n.isNotEmpty)
+        .toList();
+  }
+
   static String _normalizeProductCategory(String raw) {
     final lower = raw.trim().toLowerCase();
     if (lower.contains('fert')) return 'Fertilizers';
@@ -6937,6 +7517,147 @@ END
     }
 
     return salesWithDetails;
+  }
+
+  /// Flat sales rows for Zamindar Ledger PDF export.
+  ///
+  /// Each map: invoice_number, date_time, kisaan_name, products,
+  /// products_qty, cost_per_product, payment_type, total, paid, remaining.
+  Future<List<Map<String, dynamic>>> getZamindarLedgerPdfRows({
+    required int zamindarId,
+    Set<String>? seasons,
+  }) async {
+    final db = await database;
+    final salesMaps = await db.rawQuery(
+      '''
+      SELECT
+        s.${SalesTable.invoiceNumber} AS invoice_number,
+        s.${SalesTable.dateTime} AS date_time,
+        s.${SalesTable.season} AS season,
+        s.${SalesTable.paymentMethod} AS payment_method,
+        s.${SalesTable.paymentTerm} AS payment_term,
+        s.${SalesTable.totalPayable} AS total,
+        ($_sqlSaleCollectedExpr) AS paid,
+        ($_sqlSaleRemainingExpr) AS remaining,
+        COALESCE(
+          NULLIF(TRIM(k.${KisaanTable.nameColumn}), ''),
+          'Self'
+        ) AS kisaan_name,
+        s.${SalesTable.kisaanId} AS kisaan_id
+      FROM ${SalesTable.name} s
+      LEFT JOIN ${KisaanTable.name} k
+        ON k.${KisaanTable.id} = s.${SalesTable.kisaanId}
+      WHERE s.${SalesTable.zamindarId} = ?
+      ORDER BY s.${SalesTable.dateTime} DESC
+      ''',
+      [zamindarId],
+    );
+
+    final seasonFilter = seasons
+        ?.map((s) => s.trim())
+        .where((s) => s.isNotEmpty && s.toLowerCase() != 'all seasons')
+        .toSet();
+
+    final rows = <Map<String, dynamic>>[];
+    for (final sale in salesMaps) {
+      final season = (sale['season'] as String?)?.trim() ?? '';
+      if (seasonFilter != null && seasonFilter.isNotEmpty) {
+        final seasonLower = season.toLowerCase();
+        final matches = seasonFilter.any((selected) {
+          final s = selected.toLowerCase();
+          if (s == seasonLower) return true;
+          if (season.isEmpty) return true;
+          final family = seasonLower.contains('rabi')
+              ? 'rabi'
+              : seasonLower.contains('kharif')
+                  ? 'kharif'
+                  : null;
+          return family != null && s.contains(family);
+        });
+        if (!matches) continue;
+      }
+
+      final invoice =
+          (sale['invoice_number'] as String?)?.trim() ?? '';
+      if (invoice.isEmpty) continue;
+
+      final items = await db.query(
+        SaleItemsTable.name,
+        where: '${SaleItemsTable.invoiceNumber} = ?',
+        whereArgs: [invoice],
+        orderBy: '${SaleItemsTable.id} ASC',
+      );
+
+      final productNames = <String>[];
+      final qtyParts = <String>[];
+      final costParts = <String>[];
+      for (final item in items) {
+        final name =
+            (item[SaleItemsTable.productName] as String?)?.trim() ?? '';
+        if (name.isEmpty) continue;
+        final qty = (item[SaleItemsTable.quantity] as num?)?.toDouble() ?? 0;
+        final unit =
+            (item[SaleItemsTable.unitPrice] as num?)?.toDouble() ?? 0;
+        final seasonal =
+            (item[SaleItemsTable.seasonalIncrement] as num?)?.toDouble() ??
+                0;
+        final unitCost = unit + seasonal;
+        productNames.add(name);
+        qtyParts.add(
+          qty == qty.roundToDouble()
+              ? qty.toStringAsFixed(0)
+              : qty.toStringAsFixed(1),
+        );
+        costParts.add('Rs ${_formatIntMoney(unitCost)}');
+      }
+
+      final paymentMethod =
+          (sale['payment_method'] as String?)?.trim() ?? '';
+      final paymentTerm = (sale['payment_term'] as String?)?.trim() ?? '';
+      final paymentType = paymentMethod.isNotEmpty
+          ? paymentMethod
+          : (paymentTerm.isNotEmpty ? paymentTerm : '-');
+
+      DateTime? dateTime;
+      final dateRaw = sale['date_time'] as String?;
+      if (dateRaw != null && dateRaw.isNotEmpty) {
+        dateTime = DateTime.tryParse(dateRaw);
+      }
+
+      rows.add({
+        'invoice_number': invoice,
+        'date_time': dateTime ?? dateRaw,
+        'kisaan_name': (sale['kisaan_name'] as String?)?.trim() ?? 'Self',
+        'kisaan_id': sale['kisaan_id'],
+        'products':
+            productNames.isEmpty ? '-' : productNames.join(', '),
+        'products_qty': qtyParts.isEmpty ? '-' : qtyParts.join(', '),
+        'cost_per_product':
+            costParts.isEmpty ? '-' : costParts.join(', '),
+        'payment_type': paymentType,
+        'total': (sale['total'] as num?)?.toDouble() ?? 0.0,
+        'paid': (sale['paid'] as num?)?.toDouble() ?? 0.0,
+        'remaining': (sale['remaining'] as num?)?.toDouble() ?? 0.0,
+        'season': season,
+      });
+    }
+
+    return rows;
+  }
+
+  String _formatIntMoney(double value) {
+    final rounded = value.round();
+    final formatted = rounded.toString();
+    final chars = formatted.split('').reversed.toList();
+    final buffer = StringBuffer();
+    for (int i = 0; i < chars.length; i++) {
+      buffer.write(chars[i]);
+      final pos = i + 1;
+      if (pos == 3 || (pos > 3 && (pos - 3) % 2 == 0)) {
+        if (i != chars.length - 1) buffer.write(',');
+      }
+    }
+    return buffer.toString().split('').reversed.join('');
   }
 
   /// Inserts a payment settlement for a specific invoice.
@@ -7933,6 +8654,44 @@ class ExpenseTable {
   static const String amount = 'amount';
   static const String remarks = 'remarks';
   static const String expenseDate = 'expense_date';
+  static const String employeeId = 'employee_id';
+  static const String payrollType = 'payroll_type';
+}
+
+class EmployeeTable {
+  static const String name = 'employees';
+  static const String id = 'id';
+  static const String nameColumn = 'name';
+  static const String phone = 'phone';
+  static const String role = 'role';
+  static const String salaryType = 'salary_type';
+  static const String baseSalary = 'base_salary';
+  static const String createdAt = 'created_at';
+  static const String isActive = 'is_active';
+}
+
+class EmployeeAttendanceTable {
+  static const String name = 'employee_attendance';
+  static const String attendanceId = 'attendance_id';
+  static const String employeeId = 'employee_id';
+  static const String date = 'date';
+  static const String status = 'status';
+}
+
+class EmployeeSalaryType {
+  static const String monthly = 'monthly';
+  static const String daily = 'daily';
+}
+
+class AttendanceStatus {
+  static const String present = 'PRESENT';
+  static const String absent = 'ABSENT';
+  static const String halfDay = 'HALF_DAY';
+}
+
+class ExpensePayrollType {
+  static const String kharchi = 'kharchi';
+  static const String settlement = 'settlement';
 }
 
 class PurchasePaymentType {
@@ -8286,6 +9045,25 @@ class LedgerTransaction {
   }
 }
 
+/// One sale line-item row for the Zamindar product-wise ledger panel.
+class ZamindarProductLedgerEntry {
+  final String invoiceNumber;
+  final DateTime dateTime;
+  final String kisaanName;
+  final String productName;
+  final int quantity;
+  final String uom;
+
+  const ZamindarProductLedgerEntry({
+    required this.invoiceNumber,
+    required this.dateTime,
+    required this.kisaanName,
+    required this.productName,
+    required this.quantity,
+    required this.uom,
+  });
+}
+
 class ProductInventoryStatus {
   final int id;
   final String name;
@@ -8541,6 +9319,8 @@ class DbExpense {
   final double amount;
   final String remarks;
   final DateTime expenseDate;
+  final int? employeeId;
+  final String? payrollType;
 
   const DbExpense({
     this.id,
@@ -8548,6 +9328,8 @@ class DbExpense {
     required this.amount,
     required this.remarks,
     required this.expenseDate,
+    this.employeeId,
+    this.payrollType,
   });
 
   Map<String, Object?> toMap() => {
@@ -8555,6 +9337,8 @@ class DbExpense {
     ExpenseTable.amount: amount,
     ExpenseTable.remarks: remarks,
     ExpenseTable.expenseDate: DatabaseHelper._formatDateTime(expenseDate),
+    ExpenseTable.employeeId: employeeId,
+    ExpenseTable.payrollType: payrollType,
   };
 
   factory DbExpense.fromMap(Map<String, Object?> map) {
@@ -8565,8 +9349,142 @@ class DbExpense {
       amount: (map[ExpenseTable.amount] as num?)?.toDouble() ?? 0,
       remarks: map[ExpenseTable.remarks] as String? ?? '',
       expenseDate: DateTime.tryParse(rawDate) ?? DateTime.now(),
+      employeeId: map[ExpenseTable.employeeId] as int?,
+      payrollType: map[ExpenseTable.payrollType] as String?,
     );
   }
+}
+
+class DbEmployee {
+  final int? id;
+  final String name;
+  final String phone;
+  final String role;
+  final String salaryType;
+  final double baseSalary;
+  final DateTime createdAt;
+  final bool isActive;
+
+  const DbEmployee({
+    this.id,
+    required this.name,
+    this.phone = '',
+    this.role = '',
+    required this.salaryType,
+    required this.baseSalary,
+    required this.createdAt,
+    this.isActive = true,
+  });
+
+  bool get isMonthly => salaryType == EmployeeSalaryType.monthly;
+  bool get isDaily => salaryType == EmployeeSalaryType.daily;
+
+  Map<String, Object?> toMap() => {
+    EmployeeTable.nameColumn: name,
+    EmployeeTable.phone: phone,
+    EmployeeTable.role: role,
+    EmployeeTable.salaryType: salaryType,
+    EmployeeTable.baseSalary: baseSalary,
+    EmployeeTable.createdAt: DatabaseHelper._formatDateTime(createdAt),
+    EmployeeTable.isActive: isActive ? 1 : 0,
+  };
+
+  factory DbEmployee.fromMap(Map<String, Object?> map) {
+    final rawCreated = map[EmployeeTable.createdAt] as String? ?? '';
+    return DbEmployee(
+      id: map[EmployeeTable.id] as int?,
+      name: map[EmployeeTable.nameColumn] as String? ?? '',
+      phone: map[EmployeeTable.phone] as String? ?? '',
+      role: map[EmployeeTable.role] as String? ?? '',
+      salaryType:
+          map[EmployeeTable.salaryType] as String? ?? EmployeeSalaryType.monthly,
+      baseSalary: (map[EmployeeTable.baseSalary] as num?)?.toDouble() ?? 0,
+      createdAt: DateTime.tryParse(rawCreated) ?? DateTime.now(),
+      isActive: ((map[EmployeeTable.isActive] as num?)?.toInt() ?? 1) == 1,
+    );
+  }
+
+  DbEmployee copyWith({
+    int? id,
+    String? name,
+    String? phone,
+    String? role,
+    String? salaryType,
+    double? baseSalary,
+    DateTime? createdAt,
+    bool? isActive,
+  }) {
+    return DbEmployee(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      phone: phone ?? this.phone,
+      role: role ?? this.role,
+      salaryType: salaryType ?? this.salaryType,
+      baseSalary: baseSalary ?? this.baseSalary,
+      createdAt: createdAt ?? this.createdAt,
+      isActive: isActive ?? this.isActive,
+    );
+  }
+}
+
+class DbAttendance {
+  final int? attendanceId;
+  final int employeeId;
+  final String date;
+  final String status;
+
+  const DbAttendance({
+    this.attendanceId,
+    required this.employeeId,
+    required this.date,
+    required this.status,
+  });
+
+  factory DbAttendance.fromMap(Map<String, Object?> map) {
+    return DbAttendance(
+      attendanceId: map[EmployeeAttendanceTable.attendanceId] as int?,
+      employeeId: map[EmployeeAttendanceTable.employeeId] as int? ?? 0,
+      date: map[EmployeeAttendanceTable.date] as String? ?? '',
+      status: map[EmployeeAttendanceTable.status] as String? ?? '',
+    );
+  }
+}
+
+/// Monthly payroll snapshot for one employee.
+class EmployeeMonthPayroll {
+  final DbEmployee employee;
+  final int year;
+  final int month;
+  final int presentDays;
+  final int absentDays;
+  final int halfDays;
+  final int unmarkedDays;
+  final double baseSalary;
+  final double earnedAmount;
+  final double kharchiTotal;
+  final double settlementTotal;
+  final double netRemaining;
+  final bool isSettled;
+  final List<DbAttendance> attendance;
+  final List<DbExpense> payrollExpenses;
+
+  const EmployeeMonthPayroll({
+    required this.employee,
+    required this.year,
+    required this.month,
+    required this.presentDays,
+    required this.absentDays,
+    required this.halfDays,
+    required this.unmarkedDays,
+    required this.baseSalary,
+    required this.earnedAmount,
+    required this.kharchiTotal,
+    required this.settlementTotal,
+    required this.netRemaining,
+    required this.isSettled,
+    required this.attendance,
+    required this.payrollExpenses,
+  });
 }
 
 class ProductHistoryEntry {

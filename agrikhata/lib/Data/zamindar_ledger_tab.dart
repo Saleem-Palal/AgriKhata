@@ -130,47 +130,34 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
             sum + ((row[LedgerTransactionTable.amount] as num?)?.round() ?? 0),
       );
 
-  String _displayDescription(Map<String, dynamic> row) {
-    final base = row[LedgerTransactionTable.description] as String? ?? '';
-    final category = (row[LedgerTransactionTable.category] as String? ?? '')
-        .toUpperCase();
-    final invoiceNumber =
-        row[LedgerTransactionTable.invoiceNumber] as String?;
-
-    final needsItems =
-        category == 'PAYMENT' ||
-        category == 'WALLET_DEDUCTION' ||
-        category == 'CASH_PAYMENT';
-
-    if (!needsItems || invoiceNumber == null || invoiceNumber.isEmpty) {
-      return base;
-    }
-
-    final items = _invoiceItemSummaries[invoiceNumber];
-    if (items == null || items.isEmpty) return base;
-    if (base.contains('[$items]')) return base;
-    return '$base [$items]';
+  Future<List<Map<String, dynamic>>> _salesRowsForExport() async {
+    final seasons = _selectedSeason == 'All seasons'
+        ? <String>{}
+        : {_selectedSeason};
+    return DatabaseHelper.instance.getZamindarLedgerPdfRows(
+      zamindarId: widget.zamindarId,
+      seasons: seasons.isEmpty ? null : seasons,
+    );
   }
 
-  List<Map<String, dynamic>> _transactionsForExport() {
-    return _filteredTransactions.map((row) {
-      final copy = Map<String, dynamic>.from(row);
-      copy[LedgerTransactionTable.description] = _displayDescription(row);
-      return copy;
-    }).toList();
+  double _cumulativeRemaining(List<Map<String, dynamic>> rows) {
+    return rows.fold<double>(
+      0,
+      (sum, row) => sum + ((row['remaining'] as num?)?.toDouble() ?? 0),
+    );
   }
 
   Future<void> _handleExportPdf() async {
     if (_isExporting) return;
     setState(() => _isExporting = true);
     try {
+      final rows = await _salesRowsForExport();
       final file = await PdfGenerator.saveZamindarLedgerToDocuments(
         zamindarName: _zamindarName,
         seasonLabel: _selectedSeason,
-        transactions: _transactionsForExport(),
+        rows: rows,
         outstandingBalance: _outstandingBalanceDisplay,
-        totalPaymentsReceived: _totalPaymentsReceived,
-        totalDebit: _totalDebit,
+        cumulativeRemaining: _cumulativeRemaining(rows),
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -196,19 +183,19 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
     if (_isExporting) return;
     setState(() => _isExporting = true);
     try {
+      final rows = await _salesRowsForExport();
       final file = await PdfGenerator.saveZamindarLedgerToDocuments(
         zamindarName: _zamindarName,
         seasonLabel: _selectedSeason,
-        transactions: _transactionsForExport(),
+        rows: rows,
         outstandingBalance: _outstandingBalanceDisplay,
-        totalPaymentsReceived: _totalPaymentsReceived,
-        totalDebit: _totalDebit,
+        cumulativeRemaining: _cumulativeRemaining(rows),
       );
 
       await PdfShare.sharePdfFile(
         file: file,
         fileName: p.basename(file.path),
-        text: 'AgriKhata Ledger — $_zamindarName ($_selectedSeason)',
+        text: 'AgriKhata Ledger - $_zamindarName ($_selectedSeason)',
         subject: 'AgriKhata Ledger PDF',
       );
     } catch (e) {
@@ -228,13 +215,13 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
     if (_isExporting) return;
     setState(() => _isExporting = true);
     try {
+      final rows = await _salesRowsForExport();
       final pdf = await PdfGenerator.generateZamindarLedgerPdf(
         zamindarName: _zamindarName,
         seasonLabel: _selectedSeason,
-        transactions: _transactionsForExport(),
+        rows: rows,
         outstandingBalance: _outstandingBalanceDisplay,
-        totalPaymentsReceived: _totalPaymentsReceived,
-        totalDebit: _totalDebit,
+        cumulativeRemaining: _cumulativeRemaining(rows),
       );
       await PdfGenerator.printDocument(pdf);
     } catch (e) {
@@ -343,6 +330,8 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
               fontWeight: FontWeight.w600,
               color: valueColor,
             ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
           ),
         ],
       ),
@@ -350,27 +339,26 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
   }
 
   Widget _buildFilterBar() {
-    return Row(
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      crossAxisAlignment: WrapCrossAlignment.center,
       children: [
         _dropdown(
           _seasons,
           _selectedSeason,
           (val) => setState(() => _selectedSeason = val!),
         ),
-        const Spacer(),
         Text(
           "${_filteredTransactions.length} transactions",
           style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
         ),
-        const SizedBox(width: 14),
         _exportBtn(Icons.print_outlined, "Print", _handlePrint),
-        const SizedBox(width: 8),
         _exportBtn(
           Icons.chat_outlined,
           "WhatsApp PDF",
           _handleShareWhatsAppPdf,
         ),
-        const SizedBox(width: 8),
         _exportBtn(
           Icons.picture_as_pdf_outlined,
           "Export PDF",

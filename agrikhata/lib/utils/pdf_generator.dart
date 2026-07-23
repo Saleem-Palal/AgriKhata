@@ -11,18 +11,126 @@ import 'shop_settings.dart';
 class PdfGenerator {
   static final DateFormat _dateFormat = DateFormat('dd MMM yyyy');
   static final DateFormat _timeFormat = DateFormat('hh:mm a');
+  static final DateFormat _dateTimeFormat = DateFormat('dd MMM yyyy, hh:mm a');
   static final NumberFormat _currencyFormat = NumberFormat('#,##,##0');
 
-  /// Branding column used across invoice / statement / voucher headers.
+  /// Strips characters outside Latin-1 and replaces common Unicode punctuation.
+  static String _pdfSafeText(String input) {
+    if (input.isEmpty) return '';
+
+    var text = input
+        .replaceAll('\u2014', '-')
+        .replaceAll('\u2013', '-')
+        .replaceAll('\u00B7', '-')
+        .replaceAll('\u2022', '-')
+        .replaceAll('\u2018', "'")
+        .replaceAll('\u2019', "'")
+        .replaceAll('\u201C', '"')
+        .replaceAll('\u201D', '"');
+
+    final buffer = StringBuffer();
+    for (final rune in text.runes) {
+      if ((rune >= 0x20 && rune <= 0x7E) ||
+          (rune >= 0xA0 && rune <= 0xFF)) {
+        buffer.writeCharCode(rune);
+      }
+    }
+
+    final result = buffer.toString();
+    if (result.isEmpty) return '-';
+    return result;
+  }
+
+  static pw.Widget _buildHeartIcon({double size = 8, PdfColor? color}) {
+    final heartColor = color ?? PdfColor.fromHex('#E53935');
+    return pw.SizedBox(
+      width: size,
+      height: size,
+      child: pw.CustomPaint(
+        size: PdfPoint(size, size),
+        painter: (PdfGraphics canvas, PdfPoint canvasSize) {
+          // PDF Y-axis grows upward — tip at bottom, lobes at top.
+          final w = canvasSize.x;
+          final h = canvasSize.y;
+          canvas.setFillColor(heartColor);
+          canvas.moveTo(w * 0.50, h * 0.12);
+          canvas.curveTo(
+            w * -0.05,
+            h * 0.45,
+            w * 0.05,
+            h * 0.95,
+            w * 0.50,
+            h * 0.68,
+          );
+          canvas.curveTo(
+            w * 0.95,
+            h * 0.95,
+            w * 1.05,
+            h * 0.45,
+            w * 0.50,
+            h * 0.12,
+          );
+          canvas.closePath();
+          canvas.fillPath();
+        },
+      ),
+    );
+  }
+
+  static pw.Widget _buildMadeWithAgriKhata({
+    PdfColor? textColor,
+    double fontSize = 8,
+  }) {
+    final resolvedColor = textColor ?? PdfColors.grey700;
+    final style = pw.TextStyle(fontSize: fontSize, color: resolvedColor);
+    return pw.Row(
+      mainAxisSize: pw.MainAxisSize.min,
+      crossAxisAlignment: pw.CrossAxisAlignment.center,
+      children: [
+        pw.Text('Built With ', style: style),
+        _buildHeartIcon(size: fontSize, color: PdfColor.fromHex('#E53935')),
+        pw.SizedBox(width: 2),
+        pw.Text(
+          'by Saleem Palal. WhatsApp: 03331245518',
+          style: style,
+        ),
+      ],
+    );
+  }
+
+  static pw.Widget _buildDocumentFooter(
+    pw.Context context, {
+    String? docLabel,
+  }) {
+    final pageText = docLabel != null && docLabel.trim().isNotEmpty
+        ? 'Page ${context.pageNumber} of ${context.pagesCount} - ${_pdfSafeText(docLabel)}'
+        : 'Page ${context.pageNumber} of ${context.pagesCount}';
+    return pw.Container(
+      margin: const pw.EdgeInsets.only(top: 10),
+      child: pw.Row(
+        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+        crossAxisAlignment: pw.CrossAxisAlignment.center,
+        children: [
+          _buildMadeWithAgriKhata(),
+          pw.Text(
+            pageText,
+            style: const pw.TextStyle(fontSize: 9),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Branding column: AgriKhata subtitle on top, shop name bold below.
   static pw.Widget _buildBrandBlock({
     required String shopName,
-    double titleSize = 22,
-    double shopSize = 11,
-    PdfColor? titleColor,
+    double brandSize = 10,
+    double shopTitleSize = 14,
+    PdfColor? brandColor,
     PdfColor? shopColor,
     pw.CrossAxisAlignment align = pw.CrossAxisAlignment.start,
   }) {
-    final resolvedTitle = titleColor ?? PdfColors.white;
+    final resolvedBrand = brandColor ?? PdfColors.white;
     final resolvedShop = shopColor ?? PdfColors.white;
     return pw.Column(
       crossAxisAlignment: align,
@@ -30,24 +138,88 @@ class PdfGenerator {
         pw.Text(
           'AgriKhata',
           style: pw.TextStyle(
-            color: resolvedTitle,
-            fontSize: titleSize,
-            fontWeight: pw.FontWeight.bold,
+            color: resolvedBrand,
+            fontSize: brandSize,
           ),
         ),
         pw.SizedBox(height: 2),
         pw.Text(
-          shopName,
+          _pdfSafeText(shopName),
           style: pw.TextStyle(
             color: resolvedShop,
-            fontSize: shopSize,
+            fontSize: shopTitleSize,
+            fontWeight: pw.FontWeight.bold,
           ),
         ),
       ],
     );
   }
 
-  static Future<pw.Document> generateInvoicePdf(LedgerEntry entry, {bool isEdited = false}) async {
+  static Future<Directory> _resolveOutputDirectory() async {
+    try {
+      final downloads = await getDownloadsDirectory();
+      final output = downloads ?? await getApplicationDocumentsDirectory();
+      await output.create(recursive: true);
+      return output;
+    } catch (_) {
+      final output = await getApplicationDocumentsDirectory();
+      await output.create(recursive: true);
+      return output;
+    }
+  }
+
+  static Future<File> _writePdfBytes({
+    required List<int> bytes,
+    required String fileName,
+  }) async {
+    if (bytes.isEmpty) {
+      throw StateError('Generated PDF is empty.');
+    }
+    final output = await _resolveOutputDirectory();
+    final file = File(p.join(output.path, fileName));
+    await file.writeAsBytes(bytes, flush: true);
+    if (!await file.exists() || await file.length() == 0) {
+      throw StateError('Failed to write PDF to ${file.path}');
+    }
+    return file;
+  }
+
+  static String _formatMoney(num value) {
+    return 'Rs ${_currencyFormat.format(value.round())}';
+  }
+
+  static String _formatDateTimeValue(dynamic value) {
+    if (value == null) return '-';
+    if (value is DateTime) {
+      return _pdfSafeText(_dateTimeFormat.format(value));
+    }
+    final raw = value.toString().trim();
+    if (raw.isEmpty) return '-';
+    final parsed = DateTime.tryParse(raw);
+    if (parsed != null) {
+      return _pdfSafeText(_dateTimeFormat.format(parsed));
+    }
+    return _pdfSafeText(raw);
+  }
+
+  static String _formatDateValue(dynamic value) {
+    if (value == null) return '-';
+    if (value is DateTime) {
+      return _pdfSafeText(_dateFormat.format(value));
+    }
+    final raw = value.toString().trim();
+    if (raw.isEmpty) return '-';
+    final parsed = DateTime.tryParse(raw);
+    if (parsed != null) {
+      return _pdfSafeText(_dateFormat.format(parsed));
+    }
+    return _pdfSafeText(raw);
+  }
+
+  static Future<pw.Document> generateInvoicePdf(
+    LedgerEntry entry, {
+    bool isEdited = false,
+  }) async {
     final pdf = pw.Document();
     final shopName = await ShopSettings.getShopName();
 
@@ -99,16 +271,7 @@ class PdfGenerator {
             pw.SizedBox(height: 20),
           ];
         },
-        footer: (pw.Context context) {
-          return pw.Container(
-            alignment: pw.Alignment.centerRight,
-            margin: const pw.EdgeInsets.only(top: 10),
-            child: pw.Text(
-              'Page ${context.pageNumber} of ${context.pagesCount}',
-              style: const pw.TextStyle(fontSize: 10),
-            ),
-          );
-        },
+        footer: (pw.Context context) => _buildDocumentFooter(context),
       ),
     );
 
@@ -150,8 +313,8 @@ class PdfGenerator {
         children: [
           _buildBrandBlock(
             shopName: shopName,
-            titleSize: 24,
-            shopSize: 12,
+            brandSize: 11,
+            shopTitleSize: 16,
           ),
           pw.Text(
             'INVOICE',
@@ -184,13 +347,13 @@ class PdfGenerator {
             ),
             pw.SizedBox(height: 5),
             pw.Text(
-              entry.stakeholderName,
+              _pdfSafeText(entry.stakeholderName),
               style: const pw.TextStyle(fontSize: 14),
             ),
             if (entry.kisaanName != null) ...[
               pw.SizedBox(height: 3),
               pw.Text(
-                'Kisaan: ${entry.kisaanName}',
+                'Kisaan: ${_pdfSafeText(entry.kisaanName!)}',
                 style: const pw.TextStyle(fontSize: 10),
               ),
             ],
@@ -200,7 +363,7 @@ class PdfGenerator {
           crossAxisAlignment: pw.CrossAxisAlignment.end,
           children: [
             pw.Text(
-              'Invoice #: ${entry.invoiceNumber}',
+              'Invoice #: ${_pdfSafeText(entry.invoiceNumber)}',
               style: pw.TextStyle(
                 fontSize: 12,
                 fontWeight: pw.FontWeight.bold,
@@ -217,7 +380,7 @@ class PdfGenerator {
             ),
             pw.SizedBox(height: 5),
             pw.Text(
-              'Season: ${entry.season}',
+              'Season: ${_pdfSafeText(entry.season)}',
               style: const pw.TextStyle(fontSize: 10),
             ),
           ],
@@ -251,25 +414,31 @@ class PdfGenerator {
             _buildTableHeader('Total'),
           ],
         ),
-        ...items.map((item) => pw.TableRow(
-              children: [
-                _buildTableCell(item.productName),
-                _buildTableCell('${item.quantity} ${item.unit}'),
-                _buildTableCell('Rs ${_currencyFormat.format(item.unitPrice)}'),
-                _buildTableCell(
-                  item.seasonalIncrement > 0
-                      ? 'Rs ${_currencyFormat.format(item.seasonalIncrement)}'
-                      : '-',
-                ),
-                _buildTableCell(
-                  item.discount > 0
-                      ? 'Rs ${_currencyFormat.format(item.discount)}'
-                      : '-',
-                ),
-                _buildTableCell('Rs ${_currencyFormat.format(item.total)}',
-                    bold: true),
-              ],
-            )),
+        ...items.map(
+          (item) => pw.TableRow(
+            children: [
+              _buildTableCell(_pdfSafeText(item.productName)),
+              _buildTableCell(
+                '${item.quantity} ${_pdfSafeText(item.unit)}',
+              ),
+              _buildTableCell('Rs ${_currencyFormat.format(item.unitPrice)}'),
+              _buildTableCell(
+                item.seasonalIncrement > 0
+                    ? 'Rs ${_currencyFormat.format(item.seasonalIncrement)}'
+                    : '-',
+              ),
+              _buildTableCell(
+                item.discount > 0
+                    ? 'Rs ${_currencyFormat.format(item.discount)}'
+                    : '-',
+              ),
+              _buildTableCell(
+                'Rs ${_currencyFormat.format(item.total)}',
+                bold: true,
+              ),
+            ],
+          ),
+        ),
       ],
     );
   }
@@ -292,7 +461,7 @@ class PdfGenerator {
     return pw.Container(
       padding: const pw.EdgeInsets.all(8),
       child: pw.Text(
-        text,
+        _pdfSafeText(text),
         style: pw.TextStyle(
           fontSize: 9,
           fontWeight: bold ? pw.FontWeight.bold : pw.FontWeight.normal,
@@ -319,8 +488,12 @@ class PdfGenerator {
               pw.Divider(color: PdfColor.fromHex('#1B4332')),
               _buildTotalRow('Paid:', entry.paid),
               pw.Divider(color: PdfColor.fromHex('#1B4332')),
-              _buildTotalRow('Outstanding:', entry.outstanding,
-                  bold: true, highlight: entry.outstanding > 0),
+              _buildTotalRow(
+                'Outstanding:',
+                entry.outstanding,
+                bold: true,
+                highlight: entry.outstanding > 0,
+              ),
               pw.SizedBox(height: 5),
               pw.Text(
                 'Status: ${entry.status.displayName}',
@@ -399,7 +572,7 @@ class PdfGenerator {
                 ),
               ),
               pw.Text(
-                'Season: ${season.displayName}',
+                'Season: ${_pdfSafeText(season.displayName)}',
                 style: const pw.TextStyle(
                   color: PdfColors.white,
                   fontSize: 12,
@@ -409,8 +582,8 @@ class PdfGenerator {
           ),
           _buildBrandBlock(
             shopName: shopName,
-            titleSize: 16,
-            shopSize: 10,
+            brandSize: 10,
+            shopTitleSize: 14,
             align: pw.CrossAxisAlignment.end,
           ),
         ],
@@ -491,7 +664,7 @@ class PdfGenerator {
         crossAxisAlignment: pw.CrossAxisAlignment.start,
         children: [
           pw.Text(
-            formatStakeholderName(entry),
+            _pdfSafeText(formatStakeholderName(entry)),
             style: const pw.TextStyle(fontSize: 9),
           ),
           if (!entry.isWalkInCustomer &&
@@ -499,7 +672,7 @@ class PdfGenerator {
               entry.kisaanName!.trim().isNotEmpty) ...[
             pw.SizedBox(height: 2),
             pw.Text(
-              entry.kisaanName!,
+              _pdfSafeText(entry.kisaanName!),
               style: pw.TextStyle(
                 fontSize: 8,
                 color: PdfColor.fromHex('#6B8F71'),
@@ -511,7 +684,11 @@ class PdfGenerator {
     );
   }
 
-  static pw.Widget _buildSummaryCard(String label, String value, PdfColor color) {
+  static pw.Widget _buildSummaryCard(
+    String label,
+    String value,
+    PdfColor color,
+  ) {
     return pw.Expanded(
       child: pw.Container(
         margin: const pw.EdgeInsets.symmetric(horizontal: 5),
@@ -528,7 +705,7 @@ class PdfGenerator {
             ),
             pw.SizedBox(height: 5),
             pw.Text(
-              value,
+              _pdfSafeText(value),
               style: pw.TextStyle(
                 fontSize: 14,
                 fontWeight: pw.FontWeight.bold,
@@ -568,17 +745,19 @@ class PdfGenerator {
             _buildTableHeader('Status'),
           ],
         ),
-        ...entries.map((entry) => pw.TableRow(
-              children: [
-                _buildTableCell(entry.invoiceNumber),
-                _buildTableCell(_dateFormat.format(entry.date)),
-                _buildStakeholderCell(entry),
-                _buildTableCell('${entry.items.length}'),
-                _buildTableCell('Rs ${_currencyFormat.format(entry.total)}'),
-                _buildTableCell('Rs ${_currencyFormat.format(entry.paid)}'),
-                _buildTableCell(entry.status.displayName),
-              ],
-            )),
+        ...entries.map(
+          (entry) => pw.TableRow(
+            children: [
+              _buildTableCell(entry.invoiceNumber),
+              _buildTableCell(_dateFormat.format(entry.date)),
+              _buildStakeholderCell(entry),
+              _buildTableCell('${entry.items.length}'),
+              _buildTableCell('Rs ${_currencyFormat.format(entry.total)}'),
+              _buildTableCell('Rs ${_currencyFormat.format(entry.paid)}'),
+              _buildTableCell(entry.status.displayName),
+            ],
+          ),
+        ),
       ],
     );
   }
@@ -607,23 +786,32 @@ class PdfGenerator {
             'For queries, contact: +92 XXX XXXXXXX',
             style: const pw.TextStyle(fontSize: 9),
           ),
+          pw.SizedBox(height: 8),
+          _buildMadeWithAgriKhata(textColor: PdfColor.fromHex('#1B4332')),
         ],
       ),
     );
   }
 
-  static Future<void> printInvoice(LedgerEntry entry, {bool isEdited = false}) async {
+  static Future<void> printInvoice(
+    LedgerEntry entry, {
+    bool isEdited = false,
+  }) async {
     final pdf = await generateInvoicePdf(entry, isEdited: isEdited);
     await Printing.layoutPdf(
       onLayout: (PdfPageFormat format) async => pdf.save(),
     );
   }
 
-  static Future<File> saveInvoiceToFile(LedgerEntry entry, {bool isEdited = false}) async {
+  static Future<File> saveInvoiceToFile(
+    LedgerEntry entry, {
+    bool isEdited = false,
+  }) async {
     final pdf = await generateInvoicePdf(entry, isEdited: isEdited);
     final bytes = await pdf.save();
     final output = await getTemporaryDirectory();
-    final safeInvoice = entry.invoiceNumber.replaceAll(RegExp(r'[^\w\-.]'), '_');
+    final safeInvoice =
+        entry.invoiceNumber.replaceAll(RegExp(r'[^\w\-.]'), '_');
     final file = File(p.join(output.path, 'invoice_$safeInvoice.pdf'));
     await file.writeAsBytes(bytes, flush: true);
     return file;
@@ -667,16 +855,7 @@ class PdfGenerator {
             _buildPaymentsTable(paymentEntries),
           ];
         },
-        footer: (pw.Context context) {
-          return pw.Container(
-            alignment: pw.Alignment.centerRight,
-            margin: const pw.EdgeInsets.only(top: 10),
-            child: pw.Text(
-              'Page ${context.pageNumber} of ${context.pagesCount}',
-              style: const pw.TextStyle(fontSize: 10),
-            ),
-          );
-        },
+        footer: (pw.Context context) => _buildDocumentFooter(context),
       ),
     );
 
@@ -706,19 +885,19 @@ class PdfGenerator {
               ),
               pw.SizedBox(height: 6),
               pw.Text(
-                'Season: ${season.displayName}',
+                'Season: ${_pdfSafeText(season.displayName)}',
                 style: const pw.TextStyle(color: PdfColors.white, fontSize: 12),
               ),
               pw.Text(
-                'Sales · Purchases · Payments',
+                'Sales - Purchases - Payments',
                 style: const pw.TextStyle(color: PdfColors.white, fontSize: 11),
               ),
             ],
           ),
           _buildBrandBlock(
             shopName: shopName,
-            titleSize: 16,
-            shopSize: 10,
+            brandSize: 10,
+            shopTitleSize: 14,
             align: pw.CrossAxisAlignment.end,
           ),
         ],
@@ -750,15 +929,15 @@ class PdfGenerator {
                 ),
               ),
               pw.Text(
-                'Season: ${season.displayName}',
+                'Season: ${_pdfSafeText(season.displayName)}',
                 style: const pw.TextStyle(color: PdfColors.white, fontSize: 12),
               ),
             ],
           ),
           _buildBrandBlock(
             shopName: shopName,
-            titleSize: 16,
-            shopSize: 10,
+            brandSize: 10,
+            shopTitleSize: 14,
             align: pw.CrossAxisAlignment.end,
           ),
         ],
@@ -854,30 +1033,12 @@ class PdfGenerator {
       season: season,
     );
     final bytes = await pdf.save();
-    if (bytes.isEmpty) {
-      throw StateError('Generated PDF is empty.');
-    }
-
-    Directory output;
-    try {
-      final downloads = await getDownloadsDirectory();
-      output = downloads ?? await getApplicationDocumentsDirectory();
-    } catch (_) {
-      output = await getApplicationDocumentsDirectory();
-    }
-    await output.create(recursive: true);
-
     final fileName = buildExportFileName(
       prefix: 'agrikhata_ledger',
       subject: 'consolidated',
       seasonLabel: season.displayName,
     );
-    final file = File(p.join(output.path, fileName));
-    await file.writeAsBytes(bytes, flush: true);
-    if (!await file.exists() || await file.length() == 0) {
-      throw StateError('Failed to write PDF to ${file.path}');
-    }
-    return file;
+    return _writePdfBytes(bytes: bytes, fileName: fileName);
   }
 
   static String buildWhatsAppShareMessage({
@@ -887,7 +1048,7 @@ class PdfGenerator {
     required PaymentSummary paymentSummary,
     required String filePath,
   }) {
-    return 'AgriKhata Consolidated Ledger — ${season.displayName}\n\n'
+    return 'AgriKhata Consolidated Ledger - ${season.displayName}\n\n'
         'Sales Volume: Rs ${_currencyFormat.format(salesSummary.totalVolume)}\n'
         'Sales Cash Received: Rs ${_currencyFormat.format(salesSummary.totalCashReceived)}\n'
         'Sales Outstanding: Rs ${_currencyFormat.format(salesSummary.outstandingCredit)}\n\n'
@@ -925,22 +1086,15 @@ class PdfGenerator {
             child: pw.Column(
               crossAxisAlignment: pw.CrossAxisAlignment.center,
               children: [
-                pw.Text(
-                  'AgriKhata',
-                  style: pw.TextStyle(
-                    fontSize: 14,
-                    fontWeight: pw.FontWeight.bold,
+                pw.Center(
+                  child: _buildBrandBlock(
+                    shopName: resolvedShopName,
+                    brandSize: 10,
+                    shopTitleSize: 13,
+                    brandColor: PdfColors.black,
+                    shopColor: PdfColors.black,
+                    align: pw.CrossAxisAlignment.center,
                   ),
-                  textAlign: pw.TextAlign.center,
-                ),
-                pw.SizedBox(height: 2),
-                pw.Text(
-                  resolvedShopName,
-                  style: pw.TextStyle(
-                    fontSize: 12,
-                    fontWeight: pw.FontWeight.bold,
-                  ),
-                  textAlign: pw.TextAlign.center,
                 ),
                 pw.SizedBox(height: 5),
                 pw.Container(
@@ -967,7 +1121,10 @@ class PdfGenerator {
                   color: PdfColors.grey400,
                 ),
                 pw.SizedBox(height: 10),
-                _buildReceiptRow('Received From:', zamindarName),
+                _buildReceiptRow(
+                  'Received From:',
+                  _pdfSafeText(zamindarName),
+                ),
                 pw.SizedBox(height: 15),
                 pw.Container(
                   padding: const pw.EdgeInsets.all(10),
@@ -1033,6 +1190,8 @@ class PdfGenerator {
                   ),
                   textAlign: pw.TextAlign.center,
                 ),
+                pw.SizedBox(height: 6),
+                pw.Center(child: _buildMadeWithAgriKhata(fontSize: 7)),
               ],
             ),
           );
@@ -1055,7 +1214,7 @@ class PdfGenerator {
           ),
         ),
         pw.Text(
-          value,
+          _pdfSafeText(value),
           style: pw.TextStyle(
             fontSize: 9,
             fontWeight: pw.FontWeight.bold,
@@ -1083,9 +1242,247 @@ class PdfGenerator {
     );
   }
 
-  // ===== ZAMINDAR PROFILE LEDGER =====
+  // ===== SALES-INVOICE ZAMINDAR LEDGER =====
 
   static Future<pw.Document> generateZamindarLedgerPdf({
+    required String zamindarName,
+    required String seasonLabel,
+    required List<Map<String, dynamic>> rows,
+    required String outstandingBalance,
+    required double cumulativeRemaining,
+  }) async {
+    final pdf = pw.Document();
+    final shopName = await ShopSettings.getShopName();
+
+    final totalBilled = rows.fold<double>(
+      0,
+      (sum, row) => sum + ((row['total'] as num?)?.toDouble() ?? 0),
+    );
+    final totalPaid = rows.fold<double>(
+      0,
+      (sum, row) => sum + ((row['paid'] as num?)?.toDouble() ?? 0),
+    );
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4.landscape,
+        build: (pw.Context context) {
+          return [
+            pw.Container(
+              padding: const pw.EdgeInsets.all(16),
+              decoration: pw.BoxDecoration(
+                color: PdfColor.fromHex('#1B4332'),
+                borderRadius: const pw.BorderRadius.all(pw.Radius.circular(8)),
+              ),
+              child: pw.Row(
+                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                children: [
+                  pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.start,
+                    children: [
+                      pw.Text(
+                        'ZAMINDAR LEDGER',
+                        style: pw.TextStyle(
+                          color: PdfColors.white,
+                          fontSize: 20,
+                          fontWeight: pw.FontWeight.bold,
+                        ),
+                      ),
+                      pw.SizedBox(height: 4),
+                      pw.Text(
+                        _pdfSafeText(zamindarName),
+                        style: const pw.TextStyle(
+                          color: PdfColors.white,
+                          fontSize: 13,
+                        ),
+                      ),
+                      pw.Text(
+                        'Season: ${_pdfSafeText(seasonLabel)}',
+                        style: const pw.TextStyle(
+                          color: PdfColors.white,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ),
+                  _buildBrandBlock(
+                    shopName: shopName,
+                    brandSize: 10,
+                    shopTitleSize: 14,
+                    align: pw.CrossAxisAlignment.end,
+                  ),
+                ],
+              ),
+            ),
+            pw.SizedBox(height: 16),
+            pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceEvenly,
+              children: [
+                _buildSummaryCard(
+                  'Invoices',
+                  '${rows.length}',
+                  PdfColor.fromHex('#1B4332'),
+                ),
+                _buildSummaryCard(
+                  'Total Billed',
+                  _formatMoney(totalBilled),
+                  PdfColor.fromHex('#A32D2D'),
+                ),
+                _buildSummaryCard(
+                  'Total Paid',
+                  _formatMoney(totalPaid),
+                  PdfColor.fromHex('#0C447C'),
+                ),
+                _buildSummaryCard(
+                  'Cumulative Remaining',
+                  _formatMoney(cumulativeRemaining),
+                  PdfColor.fromHex('#27500A'),
+                ),
+              ],
+            ),
+            pw.SizedBox(height: 8),
+            pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.end,
+              children: [
+                pw.Text(
+                  'Outstanding: ${_pdfSafeText(outstandingBalance)}',
+                  style: pw.TextStyle(
+                    fontSize: 10,
+                    fontWeight: pw.FontWeight.bold,
+                    color: PdfColor.fromHex('#27500A'),
+                  ),
+                ),
+              ],
+            ),
+            pw.SizedBox(height: 16),
+            if (rows.isEmpty)
+              pw.Text(
+                'No ledger entries for this filter.',
+                style: const pw.TextStyle(fontSize: 11),
+              )
+            else
+              _buildSalesInvoiceLedgerTable(
+                rows: rows,
+                totalBilled: totalBilled,
+                totalPaid: totalPaid,
+                cumulativeRemaining: cumulativeRemaining,
+              ),
+          ];
+        },
+        footer: (pw.Context context) => _buildDocumentFooter(
+          context,
+          docLabel: 'AgriKhata Zamindar Ledger',
+        ),
+      ),
+    );
+
+    return pdf;
+  }
+
+  static pw.Widget _buildSalesInvoiceLedgerTable({
+    required List<Map<String, dynamic>> rows,
+    required double totalBilled,
+    required double totalPaid,
+    required double cumulativeRemaining,
+  }) {
+    return pw.Table(
+      border: pw.TableBorder.all(color: PdfColor.fromHex('#E0E0E0')),
+      columnWidths: {
+        0: const pw.FlexColumnWidth(1.0),
+        1: const pw.FlexColumnWidth(1.4),
+        2: const pw.FlexColumnWidth(1.2),
+        3: const pw.FlexColumnWidth(1.8),
+        4: const pw.FlexColumnWidth(1.0),
+        5: const pw.FlexColumnWidth(1.2),
+        6: const pw.FlexColumnWidth(0.9),
+        7: const pw.FlexColumnWidth(0.9),
+        8: const pw.FlexColumnWidth(0.9),
+        9: const pw.FlexColumnWidth(0.9),
+      },
+      children: [
+        pw.TableRow(
+          decoration: pw.BoxDecoration(
+            color: PdfColor.fromHex('#E8F4EA'),
+          ),
+          children: [
+            _buildTableHeader('Inv-No'),
+            _buildTableHeader('Date/Time'),
+            _buildTableHeader('Kisaan'),
+            _buildTableHeader('Products'),
+            _buildTableHeader('Products Qty'),
+            _buildTableHeader('Cost / Product'),
+            _buildTableHeader('Payment'),
+            _buildTableHeader('Total'),
+            _buildTableHeader('Paid'),
+            _buildTableHeader('Remaining'),
+          ],
+        ),
+        ...rows.map((row) {
+          final total = (row['total'] as num?)?.toDouble() ?? 0;
+          final paid = (row['paid'] as num?)?.toDouble() ?? 0;
+          final remaining = (row['remaining'] as num?)?.toDouble() ?? 0;
+          return pw.TableRow(
+            children: [
+              _buildTableCell(row['invoice_number']?.toString() ?? '-'),
+              _buildTableCell(_formatDateTimeValue(row['date_time'])),
+              _buildTableCell(row['kisaan_name']?.toString() ?? '-'),
+              _buildTableCell(row['products']?.toString() ?? '-'),
+              _buildTableCell(row['products_qty']?.toString() ?? '-'),
+              _buildTableCell(row['cost_per_product']?.toString() ?? '-'),
+              _buildTableCell(row['payment_type']?.toString() ?? '-'),
+              _buildTableCell(_formatMoney(total), bold: true),
+              _buildTableCell(_formatMoney(paid)),
+              _buildTableCell(_formatMoney(remaining)),
+            ],
+          );
+        }),
+        pw.TableRow(
+          decoration: pw.BoxDecoration(
+            color: PdfColor.fromHex('#F7F9F4'),
+          ),
+          children: [
+            _buildTableCell('Cumulative', bold: true),
+            _buildTableCell(''),
+            _buildTableCell(''),
+            _buildTableCell(''),
+            _buildTableCell(''),
+            _buildTableCell(''),
+            _buildTableCell(''),
+            _buildTableCell(_formatMoney(totalBilled), bold: true),
+            _buildTableCell(_formatMoney(totalPaid), bold: true),
+            _buildTableCell(_formatMoney(cumulativeRemaining), bold: true),
+          ],
+        ),
+      ],
+    );
+  }
+
+  static Future<File> saveZamindarLedgerToDocuments({
+    required String zamindarName,
+    required String seasonLabel,
+    required List<Map<String, dynamic>> rows,
+    required String outstandingBalance,
+    required double cumulativeRemaining,
+  }) async {
+    final pdf = await generateZamindarLedgerPdf(
+      zamindarName: zamindarName,
+      seasonLabel: seasonLabel,
+      rows: rows,
+      outstandingBalance: outstandingBalance,
+      cumulativeRemaining: cumulativeRemaining,
+    );
+    final bytes = await pdf.save();
+    final fileName = buildExportFileName(
+      prefix: 'agrikhata_ledger',
+      subject: zamindarName,
+      seasonLabel: seasonLabel,
+    );
+    return _writePdfBytes(bytes: bytes, fileName: fileName);
+  }
+
+  // ===== TRANSACTION-STYLE ZAMINDAR LEDGER =====
+
+  static Future<pw.Document> generateZamindarTransactionLedgerPdf({
     required String zamindarName,
     required String seasonLabel,
     required List<Map<String, dynamic>> transactions,
@@ -1123,14 +1520,14 @@ class PdfGenerator {
                       ),
                       pw.SizedBox(height: 4),
                       pw.Text(
-                        zamindarName,
+                        _pdfSafeText(zamindarName),
                         style: const pw.TextStyle(
                           color: PdfColors.white,
                           fontSize: 13,
                         ),
                       ),
                       pw.Text(
-                        'Season: $seasonLabel',
+                        'Season: ${_pdfSafeText(seasonLabel)}',
                         style: const pw.TextStyle(
                           color: PdfColors.white,
                           fontSize: 11,
@@ -1140,8 +1537,8 @@ class PdfGenerator {
                   ),
                   _buildBrandBlock(
                     shopName: shopName,
-                    titleSize: 14,
-                    shopSize: 9,
+                    brandSize: 10,
+                    shopTitleSize: 14,
                     align: pw.CrossAxisAlignment.end,
                   ),
                 ],
@@ -1153,17 +1550,17 @@ class PdfGenerator {
               children: [
                 _buildSummaryCard(
                   'Total Sales (Debit)',
-                  'Rs ${_currencyFormat.format(totalDebit)}',
+                  _formatMoney(totalDebit),
                   PdfColor.fromHex('#A32D2D'),
                 ),
                 _buildSummaryCard(
                   'Payments Received',
-                  'Rs ${_currencyFormat.format(totalPaymentsReceived)}',
+                  _formatMoney(totalPaymentsReceived),
                   PdfColor.fromHex('#0C447C'),
                 ),
                 _buildSummaryCard(
                   'Outstanding',
-                  outstandingBalance,
+                  _pdfSafeText(outstandingBalance),
                   PdfColor.fromHex('#27500A'),
                 ),
               ],
@@ -1221,13 +1618,13 @@ class PdfGenerator {
                       children: [
                         _buildTableCell(dateLabel),
                         _buildTableCell(
-                          kisaanName.isEmpty ? '—' : kisaanName,
+                          kisaanName.isEmpty ? '-' : kisaanName,
                         ),
                         _buildTableCell(description),
                         _buildTableCell(category),
                         _buildTableCell(type.toUpperCase()),
                         _buildTableCell(
-                          'Rs ${_currencyFormat.format(amount)}',
+                          _formatMoney(amount),
                           bold: true,
                         ),
                       ],
@@ -1237,23 +1634,17 @@ class PdfGenerator {
               ),
           ];
         },
-        footer: (pw.Context context) {
-          return pw.Container(
-            alignment: pw.Alignment.centerRight,
-            margin: const pw.EdgeInsets.only(top: 10),
-            child: pw.Text(
-              'Page ${context.pageNumber} of ${context.pagesCount}',
-              style: const pw.TextStyle(fontSize: 10),
-            ),
-          );
-        },
+        footer: (pw.Context context) => _buildDocumentFooter(
+          context,
+          docLabel: 'AgriKhata Transaction Ledger',
+        ),
       ),
     );
 
     return pdf;
   }
 
-  static Future<File> saveZamindarLedgerToDocuments({
+  static Future<File> saveZamindarTransactionLedgerToDocuments({
     required String zamindarName,
     required String seasonLabel,
     required List<Map<String, dynamic>> transactions,
@@ -1261,7 +1652,7 @@ class PdfGenerator {
     required int totalPaymentsReceived,
     required int totalDebit,
   }) async {
-    final pdf = await generateZamindarLedgerPdf(
+    final pdf = await generateZamindarTransactionLedgerPdf(
       zamindarName: zamindarName,
       seasonLabel: seasonLabel,
       transactions: transactions,
@@ -1270,33 +1661,514 @@ class PdfGenerator {
       totalDebit: totalDebit,
     );
     final bytes = await pdf.save();
-    if (bytes.isEmpty) {
-      throw StateError('Generated PDF is empty.');
-    }
-
-    // Prefer Downloads when available so the file is easy to find on Windows.
-    Directory output;
-    try {
-      final downloads = await getDownloadsDirectory();
-      output = downloads ?? await getApplicationDocumentsDirectory();
-    } catch (_) {
-      output = await getApplicationDocumentsDirectory();
-    }
-    await output.create(recursive: true);
-
     final fileName = buildExportFileName(
       prefix: 'agrikhata_ledger',
       subject: zamindarName,
       seasonLabel: seasonLabel,
     );
-    final filePath = p.join(output.path, fileName);
-    final file = File(filePath);
-    await file.writeAsBytes(bytes, flush: true);
+    return _writePdfBytes(bytes: bytes, fileName: fileName);
+  }
 
-    if (!await file.exists() || await file.length() == 0) {
-      throw StateError('Failed to write PDF to ${file.path}');
-    }
-    return file;
+  // ===== KISAAN SUMMARY PDF =====
+
+  static Future<pw.Document> generateKisaanSummaryPdf({
+    required String zamindarName,
+    required List<Map<String, dynamic>> rows,
+  }) async {
+    final pdf = pw.Document();
+    final shopName = await ShopSettings.getShopName();
+    final shopAddress = await ShopSettings.getShopAddress();
+    final shopPhone = await ShopSettings.getShopPhone();
+
+    final cumulativeTotal = rows.fold<double>(
+      0,
+      (sum, row) => sum + ((row['balance_due'] as num?)?.toDouble() ?? 0),
+    );
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4.landscape,
+        build: (pw.Context context) {
+          return [
+            pw.Container(
+              padding: const pw.EdgeInsets.all(16),
+              decoration: pw.BoxDecoration(
+                color: PdfColor.fromHex('#1B4332'),
+                borderRadius: const pw.BorderRadius.all(pw.Radius.circular(8)),
+              ),
+              child: pw.Row(
+                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                children: [
+                  pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.start,
+                    children: [
+                      pw.Text(
+                        'KISAAN SUMMARY',
+                        style: pw.TextStyle(
+                          color: PdfColors.white,
+                          fontSize: 20,
+                          fontWeight: pw.FontWeight.bold,
+                        ),
+                      ),
+                      pw.SizedBox(height: 4),
+                      pw.Text(
+                        _pdfSafeText(zamindarName),
+                        style: const pw.TextStyle(
+                          color: PdfColors.white,
+                          fontSize: 13,
+                        ),
+                      ),
+                      if (shopAddress.trim().isNotEmpty) ...[
+                        pw.SizedBox(height: 4),
+                        pw.Text(
+                          _pdfSafeText(shopAddress),
+                          style: const pw.TextStyle(
+                            color: PdfColors.white,
+                            fontSize: 9,
+                          ),
+                        ),
+                      ],
+                      if (shopPhone.trim().isNotEmpty)
+                        pw.Text(
+                          'Phone: ${_pdfSafeText(shopPhone)}',
+                          style: const pw.TextStyle(
+                            color: PdfColors.white,
+                            fontSize: 9,
+                          ),
+                        ),
+                    ],
+                  ),
+                  _buildBrandBlock(
+                    shopName: shopName,
+                    brandSize: 10,
+                    shopTitleSize: 14,
+                    align: pw.CrossAxisAlignment.end,
+                  ),
+                ],
+              ),
+            ),
+            pw.SizedBox(height: 16),
+            pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceEvenly,
+              children: [
+                _buildSummaryCard(
+                  'Total Kisaans',
+                  '${rows.length}',
+                  PdfColor.fromHex('#1B4332'),
+                ),
+                _buildSummaryCard(
+                  'Cumulative Balance Due',
+                  _formatMoney(cumulativeTotal),
+                  PdfColor.fromHex('#DC3545'),
+                ),
+              ],
+            ),
+            pw.SizedBox(height: 16),
+            if (rows.isEmpty)
+              pw.Text(
+                'No kisaans to include in this summary.',
+                style: const pw.TextStyle(fontSize: 11),
+              )
+            else
+              pw.Table(
+                border: pw.TableBorder.all(color: PdfColor.fromHex('#E0E0E0')),
+                columnWidths: {
+                  0: const pw.FlexColumnWidth(2),
+                  1: const pw.FlexColumnWidth(1.5),
+                  2: const pw.FlexColumnWidth(1),
+                  3: const pw.FlexColumnWidth(1.5),
+                  4: const pw.FlexColumnWidth(1.5),
+                  5: const pw.FlexColumnWidth(1.2),
+                },
+                children: [
+                  pw.TableRow(
+                    decoration: pw.BoxDecoration(
+                      color: PdfColor.fromHex('#E8F4EA'),
+                    ),
+                    children: [
+                      _buildTableHeader('Kisaan Name'),
+                      _buildTableHeader('Plot Location'),
+                      _buildTableHeader('Athaas'),
+                      _buildTableHeader('Current Crop'),
+                      _buildTableHeader('Last Purchase'),
+                      _buildTableHeader('Balance Due'),
+                    ],
+                  ),
+                  ...rows.map((row) {
+                    final balance =
+                        (row['balance_due'] as num?)?.toDouble() ?? 0;
+                    return pw.TableRow(
+                      children: [
+                        _buildTableCell(row['name']?.toString() ?? '-'),
+                        _buildTableCell(row['village']?.toString() ?? '-'),
+                        _buildTableCell(row['athaas']?.toString() ?? '-'),
+                        _buildTableCell(row['current_crop']?.toString() ?? '-'),
+                        _buildTableCell(
+                          _formatDateValue(row['last_purchase_date']),
+                        ),
+                        _buildTableCell(_formatMoney(balance), bold: true),
+                      ],
+                    );
+                  }),
+                  pw.TableRow(
+                    decoration: pw.BoxDecoration(
+                      color: PdfColor.fromHex('#F7F9F4'),
+                    ),
+                    children: [
+                      _buildTableCell('Cumulative Total', bold: true),
+                      _buildTableCell(''),
+                      _buildTableCell(''),
+                      _buildTableCell(''),
+                      _buildTableCell(''),
+                      _buildTableCell(
+                        _formatMoney(cumulativeTotal),
+                        bold: true,
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+          ];
+        },
+        footer: (pw.Context context) => _buildDocumentFooter(
+          context,
+          docLabel: 'AgriKhata Kisaan Summary',
+        ),
+      ),
+    );
+
+    return pdf;
+  }
+
+  static Future<File> saveKisaanSummaryToDocuments({
+    required String zamindarName,
+    required List<Map<String, dynamic>> rows,
+  }) async {
+    final pdf = await generateKisaanSummaryPdf(
+      zamindarName: zamindarName,
+      rows: rows,
+    );
+    final bytes = await pdf.save();
+    final fileName = buildExportFileName(
+      prefix: 'agrikhata_kisaan_summary',
+      subject: zamindarName,
+      seasonLabel: 'All',
+    );
+    return _writePdfBytes(bytes: bytes, fileName: fileName);
+  }
+
+  // ===== PRODUCT-WISE LEDGER PDF =====
+
+  static Future<pw.Document> generateProductWiseLedgerPdf({
+    required String zamindarName,
+    required List<Map<String, dynamic>> rows,
+    String filterLabel = 'All products',
+    int totalQuantity = 0,
+    String totalUom = 'units',
+  }) async {
+    final pdf = pw.Document();
+    final shopName = await ShopSettings.getShopName();
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4.landscape,
+        build: (pw.Context context) {
+          return [
+            pw.Container(
+              padding: const pw.EdgeInsets.all(16),
+              decoration: pw.BoxDecoration(
+                color: PdfColor.fromHex('#1B4332'),
+                borderRadius: const pw.BorderRadius.all(pw.Radius.circular(8)),
+              ),
+              child: pw.Row(
+                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                children: [
+                  pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.start,
+                    children: [
+                      pw.Text(
+                        'PRODUCT-WISE LEDGER',
+                        style: pw.TextStyle(
+                          color: PdfColors.white,
+                          fontSize: 20,
+                          fontWeight: pw.FontWeight.bold,
+                        ),
+                      ),
+                      pw.SizedBox(height: 4),
+                      pw.Text(
+                        _pdfSafeText(zamindarName),
+                        style: const pw.TextStyle(
+                          color: PdfColors.white,
+                          fontSize: 13,
+                        ),
+                      ),
+                      pw.Text(
+                        'Filter: ${_pdfSafeText(filterLabel)}',
+                        style: const pw.TextStyle(
+                          color: PdfColors.white,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ),
+                  _buildBrandBlock(
+                    shopName: shopName,
+                    brandSize: 10,
+                    shopTitleSize: 14,
+                    align: pw.CrossAxisAlignment.end,
+                  ),
+                ],
+              ),
+            ),
+            pw.SizedBox(height: 16),
+            pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.end,
+              children: [
+                pw.Text(
+                  'Total Quantity: $totalQuantity ${_pdfSafeText(totalUom)}',
+                  style: pw.TextStyle(
+                    fontSize: 11,
+                    fontWeight: pw.FontWeight.bold,
+                    color: PdfColor.fromHex('#1B4332'),
+                  ),
+                ),
+              ],
+            ),
+            pw.SizedBox(height: 12),
+            if (rows.isEmpty)
+              pw.Text(
+                'No product ledger rows to export.',
+                style: const pw.TextStyle(fontSize: 11),
+              )
+            else
+              pw.Table(
+                border: pw.TableBorder.all(color: PdfColor.fromHex('#E0E0E0')),
+                columnWidths: {
+                  0: const pw.FlexColumnWidth(1.2),
+                  1: const pw.FlexColumnWidth(1.6),
+                  2: const pw.FlexColumnWidth(1.6),
+                  3: const pw.FlexColumnWidth(2),
+                  4: const pw.FlexColumnWidth(1),
+                },
+                children: [
+                  pw.TableRow(
+                    decoration: pw.BoxDecoration(
+                      color: PdfColor.fromHex('#E8F4EA'),
+                    ),
+                    children: [
+                      _buildTableHeader('Invoice No'),
+                      _buildTableHeader('Date/Time'),
+                      _buildTableHeader('Kisaan Name'),
+                      _buildTableHeader('Product Name'),
+                      _buildTableHeader('Quantity'),
+                    ],
+                  ),
+                  ...rows.map((row) {
+                    final qty = row['quantity'];
+                    final uom = row['uom']?.toString() ?? '';
+                    final qtyLabel = qty == null
+                        ? '-'
+                        : '$qty${uom.isNotEmpty ? ' $uom' : ''}';
+                    return pw.TableRow(
+                      children: [
+                        _buildTableCell(
+                          row['invoice_number']?.toString() ?? '-',
+                        ),
+                        _buildTableCell(
+                          _formatDateTimeValue(row['date_time']),
+                        ),
+                        _buildTableCell(row['kisaan_name']?.toString() ?? '-'),
+                        _buildTableCell(
+                          row['product_name']?.toString() ?? '-',
+                        ),
+                        _buildTableCell(qtyLabel),
+                      ],
+                    );
+                  }),
+                ],
+              ),
+          ];
+        },
+        footer: (pw.Context context) => _buildDocumentFooter(
+          context,
+          docLabel: 'AgriKhata Product Ledger',
+        ),
+      ),
+    );
+
+    return pdf;
+  }
+
+  static Future<File> saveProductWiseLedgerToDocuments({
+    required String zamindarName,
+    required List<Map<String, dynamic>> rows,
+    String filterLabel = 'All products',
+    int totalQuantity = 0,
+    String totalUom = 'units',
+  }) async {
+    final pdf = await generateProductWiseLedgerPdf(
+      zamindarName: zamindarName,
+      rows: rows,
+      filterLabel: filterLabel,
+      totalQuantity: totalQuantity,
+      totalUom: totalUom,
+    );
+    final bytes = await pdf.save();
+    final fileName = buildExportFileName(
+      prefix: 'agrikhata_product_ledger',
+      subject: zamindarName,
+      seasonLabel: filterLabel,
+    );
+    return _writePdfBytes(bytes: bytes, fileName: fileName);
+  }
+
+  // ===== STOCKED PRODUCTS PDF =====
+
+  static Future<pw.Document> generateStockedProductsPdf({
+    required List<Map<String, dynamic>> products,
+  }) async {
+    final pdf = pw.Document();
+    final shopName = await ShopSettings.getShopName();
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4.landscape,
+        build: (pw.Context context) {
+          return [
+            pw.Container(
+              padding: const pw.EdgeInsets.all(16),
+              decoration: pw.BoxDecoration(
+                color: PdfColor.fromHex('#1B4332'),
+                borderRadius: const pw.BorderRadius.all(pw.Radius.circular(8)),
+              ),
+              child: pw.Row(
+                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                children: [
+                  pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.start,
+                    children: [
+                      pw.Text(
+                        'STOCKED PRODUCTS',
+                        style: pw.TextStyle(
+                          color: PdfColors.white,
+                          fontSize: 20,
+                          fontWeight: pw.FontWeight.bold,
+                        ),
+                      ),
+                      pw.SizedBox(height: 4),
+                      pw.Text(
+                        '${products.length} products in stock',
+                        style: const pw.TextStyle(
+                          color: PdfColors.white,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ),
+                  _buildBrandBlock(
+                    shopName: shopName,
+                    brandSize: 10,
+                    shopTitleSize: 14,
+                    align: pw.CrossAxisAlignment.end,
+                  ),
+                ],
+              ),
+            ),
+            pw.SizedBox(height: 16),
+            if (products.isEmpty)
+              pw.Text(
+                'No stocked products to export.',
+                style: const pw.TextStyle(fontSize: 11),
+              )
+            else
+              pw.Table(
+                border: pw.TableBorder.all(color: PdfColor.fromHex('#E0E0E0')),
+                columnWidths: {
+                  0: const pw.FlexColumnWidth(2),
+                  1: const pw.FlexColumnWidth(1.2),
+                  2: const pw.FlexColumnWidth(1.2),
+                  3: const pw.FlexColumnWidth(1),
+                  4: const pw.FlexColumnWidth(1),
+                  5: const pw.FlexColumnWidth(0.8),
+                  6: const pw.FlexColumnWidth(0.7),
+                  7: const pw.FlexColumnWidth(1),
+                  8: const pw.FlexColumnWidth(0.8),
+                  9: const pw.FlexColumnWidth(0.9),
+                },
+                children: [
+                  pw.TableRow(
+                    decoration: pw.BoxDecoration(
+                      color: PdfColor.fromHex('#E8F4EA'),
+                    ),
+                    children: [
+                      _buildTableHeader('Product Name'),
+                      _buildTableHeader('Brand'),
+                      _buildTableHeader('Type'),
+                      _buildTableHeader('Pack Size'),
+                      _buildTableHeader('Retail Price'),
+                      _buildTableHeader('Stock'),
+                      _buildTableHeader('UOM'),
+                      _buildTableHeader('Expiry'),
+                      _buildTableHeader('Threshold'),
+                      _buildTableHeader('Status'),
+                    ],
+                  ),
+                  ...products.map((product) {
+                    final retailPrice =
+                        (product['retail_price'] as num?)?.toDouble();
+                    final stock = product['available_stock'];
+                    final threshold = product['low_stock_threshold'];
+                    return pw.TableRow(
+                      children: [
+                        _buildTableCell(product['name']?.toString() ?? '-'),
+                        _buildTableCell(product['brand']?.toString() ?? '-'),
+                        _buildTableCell(
+                          product['product_type']?.toString() ?? '-',
+                        ),
+                        _buildTableCell(
+                          product['packaging_size']?.toString() ?? '-',
+                        ),
+                        _buildTableCell(
+                          retailPrice != null
+                              ? _formatMoney(retailPrice)
+                              : '-',
+                        ),
+                        _buildTableCell(stock?.toString() ?? '-'),
+                        _buildTableCell(product['uom']?.toString() ?? '-'),
+                        _buildTableCell(
+                          _formatDateValue(product['expiry_date']),
+                        ),
+                        _buildTableCell(threshold?.toString() ?? '-'),
+                        _buildTableCell(product['status']?.toString() ?? '-'),
+                      ],
+                    );
+                  }),
+                ],
+              ),
+          ];
+        },
+        footer: (pw.Context context) => _buildDocumentFooter(
+          context,
+          docLabel: 'AgriKhata Stock Report',
+        ),
+      ),
+    );
+
+    return pdf;
+  }
+
+  static Future<File> saveStockedProductsToDocuments({
+    required List<Map<String, dynamic>> products,
+  }) async {
+    final pdf = await generateStockedProductsPdf(products: products);
+    final bytes = await pdf.save();
+    final fileName = buildExportFileName(
+      prefix: 'agrikhata_stock',
+      subject: 'products',
+      seasonLabel: 'All',
+    );
+    return _writePdfBytes(bytes: bytes, fileName: fileName);
   }
 
   /// Example: agrikhata_ledger_Atta_Muhammad_Kharif 2026_1_52_AM_7_11_26.pdf

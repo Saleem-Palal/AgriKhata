@@ -54,6 +54,10 @@ class Product {
   final ProductType type;
   final double basePrice;
   final String unit;
+  final String brand;
+  final double costPrice;
+  final int availableStock;
+  final double seasonalIncrement;
 
   Product({
     required this.id,
@@ -61,7 +65,13 @@ class Product {
     required this.type,
     required this.basePrice,
     required this.unit,
+    this.brand = '',
+    this.costPrice = 0,
+    this.availableStock = 0,
+    this.seasonalIncrement = 0,
   });
+
+  bool get hasSeasonalIncrement => seasonalIncrement > 0;
 }
 
 enum ProductType {

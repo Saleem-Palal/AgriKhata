@@ -1,6 +1,7 @@
 import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Data/agri_header.dart';
 import 'package:agrikhata/Database/database_helper.dart';
+import 'package:agrikhata/Widgets/app_auto_suggest_field.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -606,7 +607,9 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                         ],
                       ),
                       const SizedBox(height: 16),
-                      Row(
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
                         children: [
                           ElevatedButton.icon(
                             onPressed: () => _showRecordPaymentDialog(w),
@@ -632,7 +635,6 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                               ),
                             ),
                           ),
-                          const SizedBox(width: 8),
                           OutlinedButton.icon(
                             onPressed: () {
                               ScaffoldMessenger.of(context).showSnackBar(
@@ -1391,18 +1393,18 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          _modalLabel('Wholesaler / Shop Name *'),
-                          TextField(
+                          AppAutoSuggestField(
                             controller: nameController,
+                            labelText: 'Wholesaler / Shop Name',
+                            hintText: 'e.g. Khan Traders',
+                            isRequired: true,
                             autofocus: true,
-                            style: const TextStyle(
-                              fontSize: 12.5,
-                              color: _primary,
-                            ),
-                            decoration: _modalFieldDecoration(
-                              hint: 'e.g. Khan Traders',
-                            ),
                             textInputAction: TextInputAction.next,
+                            fetchSuggestions: (text) =>
+                                DatabaseHelper.instance.fetchNameSuggestions(
+                                  WholesalerTable.name,
+                                  text,
+                                ),
                           ),
                           const SizedBox(height: 12),
                           _modalLabel('Mobile Phone Number *'),
@@ -2099,6 +2101,8 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
         child: Text(
           text,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
           style: TextStyle(
             fontSize: small ? 11 : 12,
             fontWeight: bold
@@ -2249,6 +2253,8 @@ class _DirectoryRowState extends State<_DirectoryRow> {
                     fontWeight: FontWeight.w500,
                     color: _primary,
                   ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
             ),
@@ -2265,6 +2271,8 @@ class _DirectoryRowState extends State<_DirectoryRow> {
                     fontSize: 12,
                     color: AppColors.textMuted,
                   ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
             ),
@@ -2281,6 +2289,8 @@ class _DirectoryRowState extends State<_DirectoryRow> {
                     fontSize: 12,
                     color: AppColors.textMuted,
                   ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
             ),
@@ -2298,6 +2308,8 @@ class _DirectoryRowState extends State<_DirectoryRow> {
                     fontWeight: FontWeight.w600,
                     color: owed ? _balanceRed : _secondary,
                   ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
             ),

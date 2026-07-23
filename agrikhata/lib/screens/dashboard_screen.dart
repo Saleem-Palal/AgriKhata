@@ -294,13 +294,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
           children: [
             _buildKpiRow(),
             const SizedBox(height: 12),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(child: _buildLeftColumn()),
-                const SizedBox(width: 12),
-                Expanded(child: _buildRightColumn()),
-              ],
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final maxW = constraints.maxWidth;
+                if (!maxW.isFinite || maxW < 900) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _buildLeftColumn(),
+                      const SizedBox(height: 12),
+                      _buildRightColumn(),
+                    ],
+                  );
+                }
+                final half = (maxW - 12) / 2;
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(width: half, child: _buildLeftColumn()),
+                    const SizedBox(width: 12),
+                    SizedBox(width: half, child: _buildRightColumn()),
+                  ],
+                );
+              },
             ),
           ],
         ),
@@ -313,69 +329,86 @@ class _DashboardScreenState extends State<DashboardScreen> {
   // ---------------------------------------------------------------------------
 
   Widget _buildKpiRow() {
-    return Row(
-      children: [
-        Expanded(
-          child: _KpiCard(
-            emoji: '🟢',
-            title: 'You Will Get',
-            titleColor: AppColors.mediumGreen,
-            value: _formatRs(_metrics.totalReceivables),
-            valueColor: AppColors.textPrimary,
-            subtext: 'Lene Hain (Zamindar Udhaar)',
-            subtextColor: const Color(0xFF4C8067),
-            backgroundColor: AppColors.tagGreenBg,
-            borderColor: const Color(0xFFBEE3CC),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _KpiCard(
-            emoji: '🔴',
-            title: 'You Will Give',
-            titleColor: const Color(0xFFA32D2D),
-            value: _formatRs(_metrics.totalPayables),
-            valueColor: AppColors.tagRedText,
-            subtext: 'Dene Hain (Wholesalers)',
-            subtextColor: const Color(0xFFA85B5B),
-            backgroundColor: AppColors.tagRedBg,
-            borderColor: const Color(0xFFF3C6C6),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _KpiCard(
-            emoji: '💵',
-            title: 'Cash in Hand',
-            titleColor: AppColors.tagBlueText,
-            value: _formatRs(_metrics.cashInHand),
-            valueColor: AppColors.tagBlueText,
-            subtext: "Today's Drawer Cash",
-            subtextColor: const Color(0xFF5B84AA),
-            backgroundColor: AppColors.tagBlueBg,
-            borderColor: const Color(0xFFC3D9F0),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _KpiCard(
-            emoji: '👥',
-            title: 'Active Accounts',
-            titleColor: const Color(0xFF4B5A50),
-            value: _currency.format(_metrics.activeAccounts),
-            valueColor: AppColors.textPrimary,
-            subtext:
-                'Zamindars: ${_metrics.activeZamindars} | Wholesalers: ${_metrics.activeWholesalers}',
-            subtextColor: AppColors.textMuted,
-            backgroundColor: Color.lerp(
-              AppColors.cardSurface,
-              AppColors.textMuted,
-              0.10,
-            )!,
-            borderColor: const Color(0xFFDCE2DE),
-          ),
-        ),
-      ],
+    final cards = [
+      _KpiCard(
+        emoji: '🟢',
+        title: 'You Will Get',
+        titleColor: AppColors.mediumGreen,
+        value: _formatRs(_metrics.totalReceivables),
+        valueColor: AppColors.textPrimary,
+        subtext: 'Lene Hain (Zamindar Udhaar)',
+        subtextColor: const Color(0xFF4C8067),
+        backgroundColor: AppColors.tagGreenBg,
+        borderColor: const Color(0xFFBEE3CC),
+      ),
+      _KpiCard(
+        emoji: '🔴',
+        title: 'You Will Give',
+        titleColor: const Color(0xFFA32D2D),
+        value: _formatRs(_metrics.totalPayables),
+        valueColor: AppColors.tagRedText,
+        subtext: 'Dene Hain (Wholesalers)',
+        subtextColor: const Color(0xFFA85B5B),
+        backgroundColor: AppColors.tagRedBg,
+        borderColor: const Color(0xFFF3C6C6),
+      ),
+      _KpiCard(
+        emoji: '💵',
+        title: 'Cash in Hand',
+        titleColor: AppColors.tagBlueText,
+        value: _formatRs(_metrics.cashInHand),
+        valueColor: AppColors.tagBlueText,
+        subtext: "Today's Drawer Cash",
+        subtextColor: const Color(0xFF5B84AA),
+        backgroundColor: AppColors.tagBlueBg,
+        borderColor: const Color(0xFFC3D9F0),
+      ),
+      _KpiCard(
+        emoji: '👥',
+        title: 'Active Accounts',
+        titleColor: const Color(0xFF4B5A50),
+        value: _currency.format(_metrics.activeAccounts),
+        valueColor: AppColors.textPrimary,
+        subtext:
+            'Zamindars: ${_metrics.activeZamindars} | Wholesalers: ${_metrics.activeWholesalers}',
+        subtextColor: AppColors.textMuted,
+        backgroundColor: Color.lerp(
+          AppColors.cardSurface,
+          AppColors.textMuted,
+          0.10,
+        )!,
+        borderColor: const Color(0xFFDCE2DE),
+      ),
+    ];
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final maxW = constraints.maxWidth;
+        if (!maxW.isFinite || maxW < 700) {
+          final cardW = maxW.isFinite
+              ? ((maxW - 12) / 2).clamp(140.0, maxW)
+              : 200.0;
+          return Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              for (final card in cards)
+                SizedBox(
+                  width: cardW,
+                  child: card,
+                ),
+            ],
+          );
+        }
+        return Row(
+          children: [
+            for (var i = 0; i < cards.length; i++) ...[
+              if (i > 0) const SizedBox(width: 12),
+              Expanded(child: cards[i]),
+            ],
+          ],
+        );
+      },
     );
   }
 
@@ -526,11 +559,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  Text(
-                    '${cashPct.round()}% Cash / ${creditPct.round()}% Credit',
-                    style: const TextStyle(
-                      fontSize: 9.5,
-                      color: AppColors.textHint,
+                  Flexible(
+                    child: Text(
+                      '${cashPct.round()}% Cash / ${creditPct.round()}% Credit',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 9.5,
+                        color: AppColors.textHint,
+                      ),
                     ),
                   ),
                 ],
@@ -692,6 +729,8 @@ class _KpiCard extends StatelessWidget {
         children: [
           Text(
             '$emoji $title',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: TextStyle(
               fontSize: 11,
               fontWeight: FontWeight.w500,

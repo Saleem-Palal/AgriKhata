@@ -4,6 +4,7 @@ import 'package:agrikhata/Widgets/ledger_widgets.dart';
 import 'package:agrikhata/utils/pdf_generator.dart';
 import 'package:agrikhata/utils/season_utils.dart';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 
 class ZamindarOverviewTab extends StatefulWidget {
   final Zamindar zamindar;
@@ -26,9 +27,14 @@ class ZamindarOverviewTab extends StatefulWidget {
 }
 
 class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
+  static final _productLedgerDateFormat = DateFormat('dd MMM yyyy');
+  static final _productLedgerTimeFormat = DateFormat('hh:mm a');
+
   String _outstandingBalanceDisplay = "Rs. 0";
   bool _isLoading = true;
   int _advanceBalance = 0;
+  List<ZamindarProductLedgerEntry> _productLedgerEntries = const [];
+  Set<String> _selectedProducts = {};
 
   @override
   void initState() {
@@ -69,11 +75,19 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
       final advBalance = await DatabaseHelper.instance.getAdvanceBalance(
         widget.zamindar.id!,
       );
+      final productLedger = await DatabaseHelper.instance
+          .getZamindarProductWiseLedgerEntries(widget.zamindar.id!);
 
       if (!mounted) return;
       setState(() {
         _outstandingBalanceDisplay = outstandingBalance;
         _advanceBalance = advBalance;
+        _productLedgerEntries = productLedger;
+        // Drop selections for products that no longer appear in the ledger.
+        final available = productLedger.map((e) => e.productName).toSet();
+        _selectedProducts = _selectedProducts
+            .where(available.contains)
+            .toSet();
         _isLoading = false;
       });
     } catch (e) {
@@ -88,40 +102,61 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
       return const Center(child: CircularProgressIndicator());
     }
 
+    final mainColumn = Column(
+      children: [
+        _buildLandCreditCard(),
+        const SizedBox(height: 14),
+        _buildProductWiseLedgerCard(),
+        const SizedBox(height: 14),
+        _buildRecentTransactionsCard(),
+      ],
+    );
+
+    final sidebarColumn = Column(
+      children: [
+        _buildQuickActionsCard(context),
+        const SizedBox(height: 14),
+        _buildCropsCard(),
+        const SizedBox(height: 14),
+        _buildPaymentTermsCard(),
+        const SizedBox(height: 14),
+        _buildAdvancePaymentCard(),
+      ],
+    );
+
     return Material(
       color: Colors.transparent,
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              flex: 2,
-              child: Column(
-                children: [
-                  _buildLandCreditCard(),
-                  const SizedBox(height: 14),
-                  _buildCropsCard(),
-                  const SizedBox(height: 14),
-                  _buildRecentTransactionsCard(),
-                ],
-              ),
-            ),
-            const SizedBox(width: 14),
-            SizedBox(
-              width: 220,
-              child: Column(
-                children: [
-                  _buildQuickActionsCard(context),
-                  const SizedBox(height: 14),
-                  _buildPaymentTermsCard(),
-                  const SizedBox(height: 14),
-                  _buildAdvancePaymentCard(),
-                ],
-              ),
-            ),
-          ],
-        ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          const pad = 20.0;
+          final maxW = constraints.maxWidth - (pad * 2);
+          final stack = maxW < 720;
+          final content = stack
+              ? Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    mainColumn,
+                    const SizedBox(height: 14),
+                    sidebarColumn,
+                  ],
+                )
+              : Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(
+                      width: (maxW - 234).clamp(200.0, double.infinity),
+                      child: mainColumn,
+                    ),
+                    const SizedBox(width: 14),
+                    SizedBox(width: 220, child: sidebarColumn),
+                  ],
+                );
+
+          return SingleChildScrollView(
+            padding: const EdgeInsets.all(pad),
+            child: content,
+          );
+        },
       ),
     );
   }
@@ -159,9 +194,11 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
                       fontWeight: FontWeight.w500,
                       color: AppColors.darkGreen,
                     ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                ?trailing,
+                if (trailing != null) Flexible(child: trailing),
               ],
             ),
           ),
@@ -272,6 +309,8 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
               color: valueColor ?? AppColors.darkGreen,
               letterSpacing: -0.2,
             ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
           ),
           if (sub.isNotEmpty) ...[
             const SizedBox(height: 4),
@@ -297,27 +336,62 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
       title: "Seasons & crops",
       child: seasons.isEmpty && crops.isEmpty
           ? const Text(
-              'No seasons or crops configured',
+              'None configured',
               style: TextStyle(fontSize: 11, color: AppColors.textMuted),
             )
-          : Wrap(
-              spacing: 6,
-              runSpacing: 6,
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                ...seasons.map(
-                  (s) => _chip(
-                    s,
-                    const Color(0xFFFAEEDA),
-                    const Color(0xFF633806),
+                if (seasons.isNotEmpty) ...[
+                  const Text(
+                    'Seasons',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textMuted,
+                    ),
                   ),
-                ),
-                ...crops.map(
-                  (c) => _chip(
-                    c,
-                    const Color(0xFFEAF3DE),
-                    const Color(0xFF27500A),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 5,
+                    runSpacing: 5,
+                    children: seasons
+                        .map(
+                          (s) => _chip(
+                            s,
+                            const Color(0xFFFAEEDA),
+                            const Color(0xFF633806),
+                          ),
+                        )
+                        .toList(),
                   ),
-                ),
+                ],
+                if (seasons.isNotEmpty && crops.isNotEmpty)
+                  const SizedBox(height: 10),
+                if (crops.isNotEmpty) ...[
+                  const Text(
+                    'Crops',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textMuted,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 5,
+                    runSpacing: 5,
+                    children: crops
+                        .map(
+                          (c) => _chip(
+                            c,
+                            const Color(0xFFEAF3DE),
+                            const Color(0xFF27500A),
+                          ),
+                        )
+                        .toList(),
+                  ),
+                ],
               ],
             ),
     );
@@ -325,17 +399,466 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
 
   Widget _chip(String text, Color bg, Color fg) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(20),
       ),
       child: Text(
         text,
-        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: fg),
+        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w500, color: fg),
       ),
     );
   }
+
+  List<String> get _distinctProducts {
+    final names = _productLedgerEntries
+        .map((e) => e.productName)
+        .where((n) => n.trim().isNotEmpty)
+        .toSet()
+        .toList();
+    names.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    return names;
+  }
+
+  List<ZamindarProductLedgerEntry> get _filteredProductLedger {
+    if (_selectedProducts.isEmpty) return _productLedgerEntries;
+    return _productLedgerEntries
+        .where((e) => _selectedProducts.contains(e.productName))
+        .toList();
+  }
+
+  int get _filteredProductTotalQty =>
+      _filteredProductLedger.fold<int>(0, (sum, item) => sum + item.quantity);
+
+  String get _filteredProductTotalUom {
+    final uoms = _filteredProductLedger.map((e) => e.uom).toSet();
+    if (uoms.length == 1) return uoms.first;
+    return 'units';
+  }
+
+  Future<void> _generateProductWiseLedgerPdf() async {
+    final filtered = _filteredProductLedger;
+    if (filtered.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No product ledger rows to export'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    try {
+      final filterLabel = _selectedProducts.isEmpty
+          ? 'All products'
+          : _selectedProducts.join(', ');
+      final rows = filtered
+          .map(
+            (e) => <String, dynamic>{
+              'invoice_number': e.invoiceNumber,
+              'date_time': e.dateTime,
+              'kisaan_name': e.kisaanName,
+              'product_name': e.productName,
+              'quantity': e.quantity,
+              'uom': e.uom,
+            },
+          )
+          .toList();
+
+      final file = await PdfGenerator.saveProductWiseLedgerToDocuments(
+        zamindarName: widget.zamindar.name,
+        rows: rows,
+        filterLabel: filterLabel,
+        totalQuantity: _filteredProductTotalQty,
+        totalUom: _filteredProductTotalUom,
+      );
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('PDF saved to ${file.path}'),
+          backgroundColor: AppColors.darkGreen,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to generate PDF: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  Widget _buildProductWiseLedgerCard() {
+    final products = _distinctProducts;
+    final filtered = _filteredProductLedger;
+    final totalQty = _filteredProductTotalQty;
+    final totalUom = _filteredProductTotalUom;
+    final hasSelection = _selectedProducts.isNotEmpty;
+
+    return _card(
+      title: "Product-wise ledger",
+      padChild: false,
+      trailing: OutlinedButton.icon(
+        onPressed: _generateProductWiseLedgerPdf,
+        icon: const Icon(
+          Icons.picture_as_pdf_outlined,
+          size: 14,
+          color: Color(0xFF27500A),
+        ),
+        label: const Text(
+          "Generate PDF",
+          style: TextStyle(fontSize: 11, color: Color(0xFF27500A)),
+        ),
+        style: OutlinedButton.styleFrom(
+          side: const BorderSide(color: Color(0xFF27500A)),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          minimumSize: Size.zero,
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (products.isNotEmpty) ...[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+              child: SizedBox(
+                height: 34,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: products.length,
+                  separatorBuilder: (_, _) => const SizedBox(width: 6),
+                  itemBuilder: (context, index) {
+                    final name = products[index];
+                    final selected = _selectedProducts.contains(name);
+                    return FilterChip(
+                      label: Text(name),
+                      selected: selected,
+                      showCheckmark: false,
+                      visualDensity: VisualDensity.compact,
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      padding: const EdgeInsets.symmetric(horizontal: 2),
+                      labelPadding: const EdgeInsets.symmetric(horizontal: 8),
+                      onSelected: (isSelected) {
+                        setState(() {
+                          if (isSelected) {
+                            _selectedProducts = {..._selectedProducts, name};
+                          } else {
+                            _selectedProducts = {..._selectedProducts}
+                              ..remove(name);
+                          }
+                        });
+                      },
+                      labelStyle: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
+                        color: selected
+                            ? AppColors.tagGreenText
+                            : AppColors.textMuted,
+                      ),
+                      selectedColor: AppColors.tagGreenBg,
+                      backgroundColor: const Color(0xFFEEF3EC),
+                      side: BorderSide(
+                        color: selected
+                            ? AppColors.accentGreen
+                            : AppColors.border,
+                        width: 0.5,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEEF3EC),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: AppColors.border.withValues(alpha: 0.6),
+                    width: 1,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: AppColors.border, width: 0.5),
+                      ),
+                      child: const Icon(
+                        Icons.inventory_2_outlined,
+                        size: 18,
+                        color: AppColors.darkGreen,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            hasSelection
+                                ? 'Selected product total'
+                                : 'Total quantity issued',
+                            style: const TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.textMuted,
+                              letterSpacing: 0.2,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            '$totalQty $totalUom',
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.darkGreen,
+                              letterSpacing: -0.3,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (hasSelection)
+                      TextButton(
+                        onPressed: () =>
+                            setState(() => _selectedProducts = {}),
+                        style: TextButton.styleFrom(
+                          foregroundColor: AppColors.accentGreen,
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        child: const Text(
+                          'Clear',
+                          style: TextStyle(fontSize: 11),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+          if (_productLedgerEntries.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(14),
+              child: Text(
+                'No product purchases yet',
+                style: TextStyle(fontSize: 11, color: AppColors.textMuted),
+              ),
+            )
+          else if (filtered.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(14),
+              child: Text(
+                'No rows match the selected products',
+                style: TextStyle(fontSize: 11, color: AppColors.textMuted),
+              ),
+            )
+          else
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final width =
+                    constraints.maxWidth < 720 ? 720.0 : constraints.maxWidth;
+                return SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: SizedBox(
+                    width: width,
+                    child: Column(
+                      children: [
+                        _buildProductLedgerHeader(),
+                        ...List.generate(filtered.length, (index) {
+                          return _buildProductLedgerRow(
+                            filtered[index],
+                            index.isOdd,
+                          );
+                        }),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProductLedgerHeader() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+      decoration: const BoxDecoration(
+        color: Color(0xFFEEF3EC),
+        border: Border(
+          top: BorderSide(color: AppColors.border, width: 0.5),
+          bottom: BorderSide(color: AppColors.border, width: 0.5),
+        ),
+      ),
+      child: const Row(
+        children: [
+          SizedBox(
+            width: 110,
+            child: Text(
+              'INVOICE NO',
+              style: _productLedgerHeaderStyle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          SizedBox(
+            width: 140,
+            child: Text(
+              'DATE / TIME',
+              style: _productLedgerHeaderStyle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              'KISAAN NAME',
+              style: _productLedgerHeaderStyle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              'PRODUCT NAME',
+              style: _productLedgerHeaderStyle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          SizedBox(
+            width: 100,
+            child: Text(
+              'QUANTITY',
+              textAlign: TextAlign.right,
+              style: _productLedgerHeaderStyle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProductLedgerRow(
+    ZamindarProductLedgerEntry entry,
+    bool highlight,
+  ) {
+    final dateLabel =
+        '${_productLedgerDateFormat.format(entry.dateTime)} · '
+        '${_productLedgerTimeFormat.format(entry.dateTime)}';
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: highlight
+            ? const Color(0xFFEEF3EC).withValues(alpha: 0.45)
+            : Colors.white,
+        border: const Border(
+          bottom: BorderSide(color: AppColors.border, width: 0.5),
+        ),
+      ),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 110,
+            child: Text(
+              entry.invoiceNumber.isEmpty ? '—' : entry.invoiceNumber,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: AppColors.darkGreen,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          SizedBox(
+            width: 140,
+            child: Text(
+              dateLabel,
+              style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              entry.kisaanName,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: AppColors.darkGreen,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              entry.productName,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: AppColors.darkGreen,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          SizedBox(
+            width: 100,
+            child: Text(
+              '${entry.quantity} ${entry.uom}',
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: AppColors.darkGreen,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static const _productLedgerHeaderStyle = TextStyle(
+    fontSize: 10,
+    fontWeight: FontWeight.w600,
+    color: AppColors.textMuted,
+    letterSpacing: 0.4,
+  );
 
   Widget _buildRecentTransactionsCard() {
     return _card(

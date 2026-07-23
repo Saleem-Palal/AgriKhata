@@ -1,9 +1,17 @@
 import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Data/agri_header.dart';
 import 'package:agrikhata/Database/database_helper.dart';
+import 'package:agrikhata/screens/attendance_screen.dart';
+import 'package:agrikhata/screens/employees_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
+
+// ---------------------------------------------------------------------------
+// Hub navigation (Expenses › Employees / Attendance)
+// ---------------------------------------------------------------------------
+
+enum _ExpenseHubView { ledger, employees, attendance }
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -144,6 +152,11 @@ class _ExpenseScreenState extends State<ExpenseScreen> {
   final _amountController = TextEditingController();
   final _remarksController = TextEditingController();
   final _customCategoryController = TextEditingController();
+  final _employeesKey = GlobalKey<EmployeesScreenState>();
+
+  _ExpenseHubView _hubView = _ExpenseHubView.ledger;
+  DbEmployee? _profileEmployee;
+  bool _employeesOnProfile = false;
 
   _ExpenseFilter _filter = _ExpenseFilter.today;
   String _selectedCategory = 'Chai/Pani';
@@ -169,6 +182,23 @@ class _ExpenseScreenState extends State<ExpenseScreen> {
     _remarksController.dispose();
     _customCategoryController.dispose();
     super.dispose();
+  }
+
+  void _goHub(_ExpenseHubView view) {
+    setState(() {
+      _hubView = view;
+      if (view != _ExpenseHubView.employees) {
+        _employeesOnProfile = false;
+        _profileEmployee = null;
+      }
+    });
+  }
+
+  void _onEmployeesViewChanged(EmployeesView view, DbEmployee? employee) {
+    setState(() {
+      _employeesOnProfile = view == EmployeesView.profile;
+      _profileEmployee = employee;
+    });
   }
 
   void _onDbChanged() => _loadExpenses(silent: true);
@@ -275,37 +305,133 @@ class _ExpenseScreenState extends State<ExpenseScreen> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           AgriHeader(
-            breadcrumbs: const ['Finance', 'Expenses'],
+            breadcrumbs: _hubBreadcrumbs,
+            onBreadcrumbTap: _onBreadcrumbTap,
             actions: [
-              Text(
-                _headerDate.format(now),
-                style: const TextStyle(
-                  fontSize: 11,
-                  color: AppColors.textHint,
+              if (_hubView == _ExpenseHubView.ledger) ...[
+                _hubActionButton(
+                  icon: Icons.badge_outlined,
+                  label: 'Employees',
+                  onPressed: () => _goHub(_ExpenseHubView.employees),
                 ),
-              ),
+                _hubActionButton(
+                  icon: Icons.fact_check_outlined,
+                  label: 'Attendance',
+                  onPressed: () => _goHub(_ExpenseHubView.attendance),
+                ),
+                Text(
+                  _headerDate.format(now),
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: AppColors.textHint,
+                  ),
+                ),
+              ] else if (_hubView == _ExpenseHubView.employees &&
+                  !_employeesOnProfile)
+                _hubActionButton(
+                  icon: Icons.fact_check_outlined,
+                  label: 'Attendance',
+                  onPressed: () => _goHub(_ExpenseHubView.attendance),
+                )
+              else if (_hubView == _ExpenseHubView.attendance)
+                _hubActionButton(
+                  icon: Icons.badge_outlined,
+                  label: 'Employees',
+                  onPressed: () => _goHub(_ExpenseHubView.employees),
+                ),
             ],
           ),
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    flex: 7,
-                    child: _buildLedgerCard(),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    flex: 3,
-                    child: _buildFormPanel(now),
-                  ),
-                ],
-              ),
-            ),
-          ),
+          Expanded(child: _buildHubBody(now)),
         ],
+      ),
+    );
+  }
+
+  List<String> get _hubBreadcrumbs {
+    switch (_hubView) {
+      case _ExpenseHubView.ledger:
+        return const ['Finance', 'Expenses'];
+      case _ExpenseHubView.employees:
+        return [
+          'Finance',
+          'Expenses',
+          'Employees',
+          if (_employeesOnProfile && _profileEmployee != null)
+            _profileEmployee!.name,
+        ];
+      case _ExpenseHubView.attendance:
+        return const ['Finance', 'Expenses', 'Attendance'];
+    }
+  }
+
+  void _onBreadcrumbTap(int index) {
+    if (_hubView == _ExpenseHubView.ledger) return;
+    if (index <= 1) {
+      _goHub(_ExpenseHubView.ledger);
+      return;
+    }
+    if (_hubView == _ExpenseHubView.employees &&
+        _employeesOnProfile &&
+        index == 2) {
+      _employeesKey.currentState?.backToDirectory();
+    }
+  }
+
+  Widget _buildHubBody(DateTime now) {
+    switch (_hubView) {
+      case _ExpenseHubView.ledger:
+        return Padding(
+          padding: const EdgeInsets.all(16),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              // Bound height with Expanded so ledger Expanded/ListView and
+              // form SingleChildScrollView never see infinite constraints.
+              if (constraints.maxWidth < 800) {
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Expanded(flex: 5, child: _buildLedgerCard()),
+                    const SizedBox(height: 12),
+                    Expanded(flex: 4, child: _buildFormPanel(now)),
+                  ],
+                );
+              }
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(flex: 7, child: _buildLedgerCard()),
+                  const SizedBox(width: 12),
+                  Expanded(flex: 3, child: _buildFormPanel(now)),
+                ],
+              );
+            },
+          ),
+        );
+      case _ExpenseHubView.employees:
+        return EmployeesScreen(
+          key: _employeesKey,
+          onViewChanged: _onEmployeesViewChanged,
+        );
+      case _ExpenseHubView.attendance:
+        return const AttendanceScreen();
+    }
+  }
+
+  Widget _hubActionButton({
+    required IconData icon,
+    required String label,
+    required VoidCallback onPressed,
+  }) {
+    return OutlinedButton.icon(
+      onPressed: onPressed,
+      icon: Icon(icon, size: 15),
+      label: Text(label),
+      style: OutlinedButton.styleFrom(
+        foregroundColor: AppColors.darkGreen,
+        side: const BorderSide(color: AppColors.inputBorder),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       ),
     );
   }
@@ -479,144 +605,172 @@ class _ExpenseScreenState extends State<ExpenseScreen> {
   }
 
   Widget _buildExpenseTable() {
-    return Column(
-      children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: const BoxDecoration(
-            border: Border(
-              bottom: BorderSide(color: AppColors.border, width: 0.5),
+    const minTableWidth = 560.0;
+
+    Widget buildTableContent() {
+      return Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: const BoxDecoration(
+              border: Border(
+                bottom: BorderSide(color: AppColors.border, width: 0.5),
+              ),
+            ),
+            child: const Row(
+              children: [
+                SizedBox(
+                  width: 96,
+                  child: Text(
+                    'DATE',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textMuted,
+                      letterSpacing: 0.3,
+                    ),
+                  ),
+                ),
+                Expanded(
+                  flex: 2,
+                  child: Text(
+                    'CATEGORY',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textMuted,
+                      letterSpacing: 0.3,
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 110,
+                  child: Text(
+                    'AMOUNT (₨)',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textMuted,
+                      letterSpacing: 0.3,
+                    ),
+                  ),
+                ),
+                Expanded(
+                  flex: 5,
+                  child: Text(
+                    'REMARKS / DETAILS',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textMuted,
+                      letterSpacing: 0.3,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
-          child: const Row(
-            children: [
-              SizedBox(
-                width: 96,
-                child: Text(
-                  'DATE',
-                  style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textMuted,
-                    letterSpacing: 0.3,
+          Expanded(
+            child: ListView.builder(
+              itemCount: _expenses.length,
+              itemBuilder: (context, index) {
+                final expense = _expenses[index];
+                final odd = index.isEven;
+                return Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 9,
                   ),
-                ),
-              ),
-              Expanded(
-                flex: 2,
-                child: Text(
-                  'CATEGORY',
-                  style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textMuted,
-                    letterSpacing: 0.3,
+                  decoration: BoxDecoration(
+                    color: odd ? const Color(0xFFFAFBF8) : Colors.white,
+                    border: Border(
+                      bottom: BorderSide(
+                        color: index == _expenses.length - 1
+                            ? Colors.transparent
+                            : const Color(0xFFEEF3EC),
+                        width: 0.5,
+                      ),
+                    ),
                   ),
-                ),
-              ),
-              SizedBox(
-                width: 110,
-                child: Text(
-                  'AMOUNT (₨)',
-                  style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textMuted,
-                    letterSpacing: 0.3,
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      SizedBox(
+                        width: 96,
+                        child: Text(
+                          _displayDate.format(expense.expenseDate),
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: AppColors.textMuted,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      Expanded(
+                        flex: 2,
+                        child: Text(
+                          _categoryLabel(expense.category),
+                          style: const TextStyle(
+                            fontSize: 11.5,
+                            color: AppColors.textPrimary,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                          maxLines: 1,
+                        ),
+                      ),
+                      SizedBox(
+                        width: 110,
+                        child: Text(
+                          _formatPkr(expense.amount),
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.textPrimary,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      Expanded(
+                        flex: 5,
+                        child: Text(
+                          expense.remarks.isEmpty ? '—' : expense.remarks,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Color(0xFF4B5A50),
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                          maxLines: 2,
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-              ),
-              Expanded(
-                flex: 5,
-                child: Text(
-                  'REMARKS / DETAILS',
-                  style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textMuted,
-                    letterSpacing: 0.3,
-                  ),
-                ),
-              ),
-            ],
+                );
+              },
+            ),
           ),
-        ),
-        Expanded(
-          child: ListView.builder(
-            itemCount: _expenses.length,
-            itemBuilder: (context, index) {
-              final expense = _expenses[index];
-              final odd = index.isEven;
-              return Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 9,
-                ),
-                decoration: BoxDecoration(
-                  color: odd ? const Color(0xFFFAFBF8) : Colors.white,
-                  border: Border(
-                    bottom: BorderSide(
-                      color: index == _expenses.length - 1
-                          ? Colors.transparent
-                          : const Color(0xFFEEF3EC),
-                      width: 0.5,
-                    ),
-                  ),
-                ),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    SizedBox(
-                      width: 96,
-                      child: Text(
-                        _displayDate.format(expense.expenseDate),
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: AppColors.textMuted,
-                        ),
-                      ),
-                    ),
-                    Expanded(
-                      flex: 2,
-                      child: Text(
-                        _categoryLabel(expense.category),
-                        style: const TextStyle(
-                          fontSize: 11.5,
-                          color: AppColors.textPrimary,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    SizedBox(
-                      width: 110,
-                      child: Text(
-                        _formatPkr(expense.amount),
-                        style: const TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.textPrimary,
-                        ),
-                      ),
-                    ),
-                    Expanded(
-                      flex: 5,
-                      child: Text(
-                        expense.remarks.isEmpty ? '—' : expense.remarks,
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: Color(0xFF4B5A50),
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                        maxLines: 2,
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            },
+        ],
+      );
+    }
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final table = buildTableContent();
+        if (constraints.maxWidth >= minTableWidth) {
+          return table;
+        }
+        return SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: SizedBox(
+            width: minTableWidth,
+            height: constraints.maxHeight.isFinite
+                ? constraints.maxHeight
+                : null,
+            child: table,
           ),
-        ),
-      ],
+        );
+      },
     );
   }
 

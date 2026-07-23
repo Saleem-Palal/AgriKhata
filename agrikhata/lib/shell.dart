@@ -299,9 +299,11 @@ class _ShellState extends State<Shell> {
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    // App logo pinned at top
                     _buildHeader(),
+                    // Middle nav scrolls when window height shrinks
                     Expanded(
-                      child: Padding(
+                      child: SingleChildScrollView(
                         padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -348,6 +350,7 @@ class _ShellState extends State<Shell> {
                         ),
                       ),
                     ),
+                    // User profile pinned at bottom
                     _buildFooter(),
                   ],
                 ),
@@ -381,14 +384,18 @@ class _ShellState extends State<Shell> {
                 color: AppColors.sidebarAccentBar,
               ),
               const SizedBox(width: 7),
-              const Text(
-                'AgriKhata',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.2,
-                  height: 1.15,
+              const Expanded(
+                child: Text(
+                  'AgriKhata',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.2,
+                    height: 1.15,
+                  ),
                 ),
               ),
             ],
@@ -512,6 +519,8 @@ class _ShellState extends State<Shell> {
                   children: [
                     Text(
                       'Atta Muhammad',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         color: Colors.white,
                         fontSize: 12.5,
@@ -520,6 +529,8 @@ class _ShellState extends State<Shell> {
                     ),
                     Text(
                       'Owner',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(color: Color(0xFF8FBA9A), fontSize: 10),
                     ),
                   ],
@@ -650,6 +661,8 @@ class _SidebarNavItemState extends State<_SidebarNavItem> {
                   Expanded(
                     child: Text(
                       widget.label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         color: isSelected || showHover
                             ? Colors.white

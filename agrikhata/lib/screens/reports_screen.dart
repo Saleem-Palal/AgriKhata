@@ -652,13 +652,19 @@ class _KpiValue extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Text(
-      text,
-      style: TextStyle(
-        fontSize: 22,
-        fontWeight: bold ? FontWeight.w700 : FontWeight.w600,
-        color: AppColors.textPrimary,
-        height: 1.2,
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      alignment: Alignment.centerLeft,
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 22,
+          fontWeight: bold ? FontWeight.w700 : FontWeight.w600,
+          color: AppColors.textPrimary,
+          height: 1.2,
+        ),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
       ),
     );
   }
@@ -1250,46 +1256,57 @@ class _CreditDirectoryCard extends StatelessWidget {
             ),
           ),
           const Divider(height: 0.5, thickness: 0.5, color: AppColors.border),
-          const _CreditTableHeader(),
-          if (isLoading)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 28),
-              child: Center(
-                child: SizedBox(
-                  width: 22,
-                  height: 22,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2.2,
-                    color: AppColors.darkGreen,
-                  ),
-                ),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: SizedBox(
+              width: 920,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const _CreditTableHeader(),
+                  if (isLoading)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 28),
+                      child: Center(
+                        child: SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.2,
+                            color: AppColors.darkGreen,
+                          ),
+                        ),
+                      ),
+                    )
+                  else if (rows.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Center(
+                        child: Text(
+                          'No matching zamindars found.',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: AppColors.textHint,
+                          ),
+                        ),
+                      ),
+                    )
+                  else
+                    for (var i = 0; i < rows.length; i++)
+                      _CreditTableRow(
+                        row: rows[i],
+                        isLast: i == rows.length - 1,
+                        onSendReminder: () => onSendReminder(rows[i]),
+                        onPrintStatement: () => onPrintStatement(rows[i]),
+                        onViewLedger: () => onViewLedger(rows[i]),
+                        whatsAppGreen: whatsAppGreen,
+                        whatsAppGreenHover: whatsAppGreenHover,
+                        highRisk: highRisk,
+                      ),
+                ],
               ),
-            )
-          else if (rows.isEmpty)
-            const Padding(
-              padding: EdgeInsets.all(16),
-              child: Center(
-                child: Text(
-                  'No matching zamindars found.',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: AppColors.textHint,
-                  ),
-                ),
-              ),
-            )
-          else
-            for (var i = 0; i < rows.length; i++)
-              _CreditTableRow(
-                row: rows[i],
-                isLast: i == rows.length - 1,
-                onSendReminder: () => onSendReminder(rows[i]),
-                onPrintStatement: () => onPrintStatement(rows[i]),
-                onViewLedger: () => onViewLedger(rows[i]),
-                whatsAppGreen: whatsAppGreen,
-                whatsAppGreenHover: whatsAppGreenHover,
-                highRisk: highRisk,
-              ),
+            ),
+          ),
         ],
       ),
     );
@@ -1386,19 +1403,25 @@ class _FilterBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      crossAxisAlignment: WrapCrossAlignment.center,
       children: [
-        Expanded(
-          child: TextField(
-            controller: searchController,
-            style: const TextStyle(
-              fontSize: 12.5,
-              color: AppColors.textPrimary,
+        ConstrainedBox(
+          constraints: const BoxConstraints(minWidth: 200, maxWidth: 480),
+          child: SizedBox(
+            width: 320,
+            child: TextField(
+              controller: searchController,
+              style: const TextStyle(
+                fontSize: 12.5,
+                color: AppColors.textPrimary,
+              ),
+              decoration: _searchDecoration(),
             ),
-            decoration: _searchDecoration(),
           ),
         ),
-        const SizedBox(width: 8),
         _styledDropdown(
           value: selectedVillage,
           width: 170,
@@ -1411,7 +1434,6 @@ class _FilterBar extends StatelessWidget {
             if (v != null) onVillageChanged(v);
           },
         ),
-        const SizedBox(width: 8),
         _styledDropdown(
           value: selectedTerms,
           width: 200,
@@ -1525,6 +1547,8 @@ class _CreditTableRowState extends State<_CreditTableRow> {
                   fontWeight: FontWeight.w500,
                   color: AppColors.textPrimary,
                 ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
             Expanded(
@@ -1535,6 +1559,8 @@ class _CreditTableRowState extends State<_CreditTableRow> {
                   fontSize: 12,
                   color: AppColors.textMuted,
                 ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
             Expanded(
@@ -1548,6 +1574,8 @@ class _CreditTableRowState extends State<_CreditTableRow> {
                       ? widget.highRisk
                       : AppColors.textPrimary,
                 ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
             Expanded(
@@ -1568,24 +1596,27 @@ class _CreditTableRowState extends State<_CreditTableRow> {
                   fontSize: 11,
                   color: AppColors.textHint,
                 ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
             Expanded(
               flex: 22,
-              child: Row(
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   _WhatsAppReminderButton(
                     color: widget.whatsAppGreen,
                     hoverColor: widget.whatsAppGreenHover,
                     onTap: widget.onSendReminder,
                   ),
-                  const SizedBox(width: 8),
                   _IconActionButton(
                     icon: Icons.print_outlined,
                     tooltip: 'Print Statement',
                     onTap: widget.onPrintStatement,
                   ),
-                  const SizedBox(width: 6),
                   _IconActionButton(
                     icon: Icons.menu_book_outlined,
                     tooltip: 'View Ledger',
@@ -1726,23 +1757,45 @@ class _ActionFooter extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _ReportCard(
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.end,
-        children: [
-          _FooterButton(
-            label: 'Print Seasonal Summary',
-            icon: Icons.print_outlined,
-            filled: false,
-            onTap: onPrintSummary,
-          ),
-          const SizedBox(width: 8),
-          _FooterButton(
-            label: 'Export Complete Credit Ledger (PDF)',
-            icon: Icons.picture_as_pdf_outlined,
-            filled: true,
-            onTap: onExportPdf,
-          ),
-        ],
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final buttons = [
+            _FooterButton(
+              label: 'Print Seasonal Summary',
+              icon: Icons.print_outlined,
+              filled: false,
+              onTap: onPrintSummary,
+            ),
+            _FooterButton(
+              label: 'Export Complete Credit Ledger (PDF)',
+              icon: Icons.picture_as_pdf_outlined,
+              filled: true,
+              onTap: onExportPdf,
+            ),
+          ];
+
+          if (constraints.maxWidth < 520) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (var i = 0; i < buttons.length; i++) ...[
+                  if (i > 0) const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: buttons[i],
+                  ),
+                ],
+              ],
+            );
+          }
+
+          return Wrap(
+            alignment: WrapAlignment.end,
+            spacing: 8,
+            runSpacing: 8,
+            children: buttons,
+          );
+        },
       ),
     );
   }
