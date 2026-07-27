@@ -3,6 +3,9 @@ import 'dart:async';
 import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Data/agri_header.dart';
 import 'package:agrikhata/Database/database_helper.dart';
+import 'package:agrikhata/services/whatsapp_urdu_service.dart';
+import 'package:agrikhata/theme/theme.dart';
+import 'package:agrikhata/utils/shop_settings.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
@@ -392,77 +395,75 @@ class _ReportsScreenState extends State<ReportsScreen> {
     _toastEntry = null;
   }
 
-  void _sendReminder(OutstandingCreditRow row) {
-    final message =
-        'Dear ${row.name}, your outstanding balance at Atta Muhammad & Sons is '
-        '${row.balanceLabel} under terms: ${row.termsLabel}. '
-        'Please arrange for payment at your earliest convenience. Thank you.';
+  Future<void> _sendReminder(OutstandingCreditRow row) async {
+    final phone = row.whatsappNumber?.trim() ?? '';
+    if (WhatsAppUrduService.normalizePhone(phone) == null) {
+      if (!mounted) return;
+      AppToast.showError(context, 'No WhatsApp number on file for ${row.name}.');
+      return;
+    }
 
-    _toastTimer?.cancel();
-    _removeToast();
+    try {
+      final shopName = await ShopSettings.getShopName();
+      final message = WhatsAppUrduService.buildUrduReminderText(
+        zamindarName: row.name,
+        shopName: shopName,
+        amount: row.balance,
+      );
 
-    final overlay = Overlay.of(context);
-    _toastEntry = OverlayEntry(
-      builder: (context) => _WhatsAppReminderToast(
-        name: row.name,
-        message: message,
-        onDismiss: () {
-          _toastTimer?.cancel();
-          _removeToast();
-        },
-      ),
-    );
-    overlay.insert(_toastEntry!);
+      final launched = await WhatsAppUrduService.sendUrduReminder(
+        phone: phone,
+        zamindarName: row.name,
+        shopName: shopName,
+        amount: row.balance,
+      );
 
-    _toastTimer = Timer(const Duration(milliseconds: 4500), _removeToast);
+      if (!mounted) return;
+
+      if (!launched) {
+        AppToast.showError(context, 'Could not open WhatsApp.');
+        return;
+      }
+
+      _toastTimer?.cancel();
+      _removeToast();
+
+      final overlay = Overlay.of(context);
+      _toastEntry = OverlayEntry(
+        builder: (context) => _WhatsAppReminderToast(
+          name: row.name,
+          message: message,
+          onDismiss: () {
+            _toastTimer?.cancel();
+            _removeToast();
+          },
+        ),
+      );
+      overlay.insert(_toastEntry!);
+      _toastTimer = Timer(const Duration(milliseconds: 4500), _removeToast);
+    } catch (e) {
+      if (mounted) {
+        AppToast.showError(context, 'Could not send WhatsApp reminder: $e');
+      }
+    }
   }
 
   void _onPrintStatement(OutstandingCreditRow row) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Printing statement for ${row.name}…'),
-        backgroundColor: AppColors.darkGreen,
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 2),
-      ),
-    );
+    AppToast.showSuccess(context, 'Printing statement for ${row.name}…');
   }
 
   void _onViewLedger(OutstandingCreditRow row) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Opening ledger for ${row.name}…'),
-        backgroundColor: AppColors.darkGreen,
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 2),
-      ),
-    );
+    AppToast.showSuccess(context, 'Opening ledger for ${row.name}…');
   }
 
   void _onPrintSeasonalSummary() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          _metrics.season.isEmpty
+    AppToast.showSuccess(context, _metrics.season.isEmpty
               ? 'Preparing seasonal summary for print…'
-              : 'Preparing ${_metrics.season} summary for print…',
-        ),
-        backgroundColor: AppColors.darkGreen,
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 2),
-      ),
-    );
+              : 'Preparing ${_metrics.season} summary for print…',);
   }
 
   void _onExportCreditLedger() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Exporting complete credit ledger (PDF)…'),
-        backgroundColor: AppColors.darkGreen,
-        behavior: SnackBarBehavior.floating,
-        duration: Duration(seconds: 2),
-      ),
-    );
+    AppToast.showSuccess(context, 'Exporting complete credit ledger (PDF)…');
   }
 
   @override
@@ -1256,57 +1257,110 @@ class _CreditDirectoryCard extends StatelessWidget {
             ),
           ),
           const Divider(height: 0.5, thickness: 0.5, color: AppColors.border),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: SizedBox(
-              width: 920,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const _CreditTableHeader(),
-                  if (isLoading)
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 28),
-                      child: Center(
-                        child: SizedBox(
-                          width: 22,
-                          height: 22,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2.2,
-                            color: AppColors.darkGreen,
-                          ),
-                        ),
-                      ),
-                    )
-                  else if (rows.isEmpty)
-                    const Padding(
-                      padding: EdgeInsets.all(16),
-                      child: Center(
-                        child: Text(
-                          'No matching zamindars found.',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: AppColors.textHint,
-                          ),
-                        ),
-                      ),
-                    )
-                  else
-                    for (var i = 0; i < rows.length; i++)
-                      _CreditTableRow(
-                        row: rows[i],
-                        isLast: i == rows.length - 1,
-                        onSendReminder: () => onSendReminder(rows[i]),
-                        onPrintStatement: () => onPrintStatement(rows[i]),
-                        onViewLedger: () => onViewLedger(rows[i]),
-                        whatsAppGreen: whatsAppGreen,
-                        whatsAppGreenHover: whatsAppGreenHover,
-                        highRisk: highRisk,
-                      ),
-                ],
+          if (isLoading)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 28),
+              child: Center(
+                child: SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.2,
+                    color: AppColors.darkGreen,
+                  ),
+                ),
               ),
+            )
+          else
+            AppDataTable(
+              showCardChrome: false,
+              minWidth: 920,
+              empty: const Padding(
+                padding: EdgeInsets.all(16),
+                child: Center(
+                  child: Text(
+                    'No matching zamindars found.',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: AppColors.textHint,
+                    ),
+                  ),
+                ),
+              ),
+              columns: const [
+                AppDataColumn(title: 'Zamindar Name', flex: 20),
+                AppDataColumn(title: 'Village', flex: 14),
+                AppDataColumn(title: 'Outstanding Balance', flex: 16),
+                AppDataColumn(title: 'Payment Terms', flex: 16),
+                AppDataColumn(title: 'Last Active', flex: 12),
+                AppDataColumn(title: 'Recovery Actions', flex: 22),
+              ],
+              rows: [
+                for (final row in rows)
+                  AppDataRow(
+                    cells: [
+                      AppTableCellText(
+                        row.name,
+                        style: AppTextStyles.bodySmall.copyWith(
+                          fontWeight: FontWeight.w500,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                      AppTableCellText(
+                        row.village,
+                        style: AppTextStyles.bodySmall.copyWith(
+                          color: AppColors.textMuted,
+                        ),
+                      ),
+                      AppTableCellText(
+                        row.balanceLabel,
+                        style: AppTextStyles.bodySmall.copyWith(
+                          fontWeight: FontWeight.w500,
+                          color: row.balanceIsCritical
+                              ? highRisk
+                              : AppColors.textPrimary,
+                        ),
+                      ),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: _StatusBadge(
+                          label: row.termsLabel,
+                          tone: row.tone,
+                        ),
+                      ),
+                      AppTableCellText(
+                        row.lastActive,
+                        style: AppTextStyles.bodySmall.copyWith(
+                          fontSize: 11,
+                          color: AppColors.textHint,
+                        ),
+                      ),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 6,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          _WhatsAppReminderButton(
+                            color: whatsAppGreen,
+                            hoverColor: whatsAppGreenHover,
+                            onTap: () => onSendReminder(row),
+                          ),
+                          _IconActionButton(
+                            icon: Icons.print_outlined,
+                            tooltip: 'Print Statement',
+                            onTap: () => onPrintStatement(row),
+                          ),
+                          _IconActionButton(
+                            icon: Icons.menu_book_outlined,
+                            tooltip: 'View Ledger',
+                            onTap: () => onViewLedger(row),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+              ],
             ),
-          ),
         ],
       ),
     );
@@ -1450,188 +1504,6 @@ class _FilterBar extends StatelessWidget {
   }
 }
 
-class _CreditTableHeader extends StatelessWidget {
-  const _CreditTableHeader();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      color: AppColors.background,
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-      child: const Row(
-        children: [
-          Expanded(flex: 20, child: _HeaderCell('ZAMINDAR NAME')),
-          Expanded(flex: 14, child: _HeaderCell('VILLAGE')),
-          Expanded(flex: 16, child: _HeaderCell('OUTSTANDING BALANCE')),
-          Expanded(flex: 16, child: _HeaderCell('PAYMENT TERMS')),
-          Expanded(flex: 12, child: _HeaderCell('LAST ACTIVE')),
-          Expanded(flex: 22, child: _HeaderCell('RECOVERY ACTIONS')),
-        ],
-      ),
-    );
-  }
-}
-
-class _HeaderCell extends StatelessWidget {
-  const _HeaderCell(this.label);
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Text(
-      label,
-      style: const TextStyle(
-        fontSize: 10,
-        fontWeight: FontWeight.w500,
-        color: AppColors.textMuted,
-        letterSpacing: 0.3,
-      ),
-    );
-  }
-}
-
-class _CreditTableRow extends StatefulWidget {
-  const _CreditTableRow({
-    required this.row,
-    required this.isLast,
-    required this.onSendReminder,
-    required this.onPrintStatement,
-    required this.onViewLedger,
-    required this.whatsAppGreen,
-    required this.whatsAppGreenHover,
-    required this.highRisk,
-  });
-
-  final OutstandingCreditRow row;
-  final bool isLast;
-  final VoidCallback onSendReminder;
-  final VoidCallback onPrintStatement;
-  final VoidCallback onViewLedger;
-  final Color whatsAppGreen;
-  final Color whatsAppGreenHover;
-  final Color highRisk;
-
-  @override
-  State<_CreditTableRow> createState() => _CreditTableRowState();
-}
-
-class _CreditTableRowState extends State<_CreditTableRow> {
-  bool _hovered = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final row = widget.row;
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 120),
-        decoration: BoxDecoration(
-          color: _hovered ? const Color(0xFFF5F9F2) : Colors.white,
-          border: widget.isLast
-              ? null
-              : const Border(
-                  bottom: BorderSide(color: AppColors.border, width: 0.5),
-                ),
-        ),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-        child: Row(
-          children: [
-            Expanded(
-              flex: 20,
-              child: Text(
-                row.name,
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                  color: AppColors.textPrimary,
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            Expanded(
-              flex: 14,
-              child: Text(
-                row.village,
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: AppColors.textMuted,
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            Expanded(
-              flex: 16,
-              child: Text(
-                row.balanceLabel,
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                  color: row.balanceIsCritical
-                      ? widget.highRisk
-                      : AppColors.textPrimary,
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            Expanded(
-              flex: 16,
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: _StatusBadge(
-                  label: row.termsLabel,
-                  tone: row.tone,
-                ),
-              ),
-            ),
-            Expanded(
-              flex: 12,
-              child: Text(
-                row.lastActive,
-                style: const TextStyle(
-                  fontSize: 11,
-                  color: AppColors.textHint,
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            Expanded(
-              flex: 22,
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 6,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  _WhatsAppReminderButton(
-                    color: widget.whatsAppGreen,
-                    hoverColor: widget.whatsAppGreenHover,
-                    onTap: widget.onSendReminder,
-                  ),
-                  _IconActionButton(
-                    icon: Icons.print_outlined,
-                    tooltip: 'Print Statement',
-                    onTap: widget.onPrintStatement,
-                  ),
-                  _IconActionButton(
-                    icon: Icons.menu_book_outlined,
-                    tooltip: 'View Ledger',
-                    onTap: widget.onViewLedger,
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 class _WhatsAppReminderButton extends StatefulWidget {
   const _WhatsAppReminderButton({
     required this.color,
@@ -1653,33 +1525,36 @@ class _WhatsAppReminderButtonState extends State<_WhatsAppReminderButton> {
 
   @override
   Widget build(BuildContext context) {
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      cursor: SystemMouseCursors.click,
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 120),
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-          decoration: BoxDecoration(
-            color: _hovered ? widget.hoverColor : widget.color,
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: const Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.chat_bubble_outline, size: 13, color: Colors.white),
-              SizedBox(width: 6),
-              Text(
-                'Send Reminder',
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w500,
-                  color: Colors.white,
+    return Tooltip(
+      message: 'Share via WhatsApp',
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _hovered = true),
+        onExit: (_) => setState(() => _hovered = false),
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          onTap: widget.onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 120),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+            decoration: BoxDecoration(
+              color: _hovered ? widget.hoverColor : widget.color,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.chat_bubble_outline, size: 13, color: Colors.white),
+                SizedBox(width: 6),
+                Text(
+                  'Send Reminder',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
+                    color: Colors.white,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

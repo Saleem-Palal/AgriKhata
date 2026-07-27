@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:intl/intl.dart';
 import '../models/ledger_models.dart';
+import 'receipt_acknowledgment.dart';
 import 'shop_settings.dart';
 
 class PdfGenerator {
@@ -239,6 +240,8 @@ class PdfGenerator {
               pw.SizedBox(height: 20),
               _buildTotalSection(entry),
               pw.Spacer(),
+              ReceiptAcknowledgment.buildA4Block(),
+              pw.SizedBox(height: 12),
               _buildFooter(),
             ],
           );
@@ -269,6 +272,7 @@ class PdfGenerator {
             pw.SizedBox(height: 20),
             _buildLedgerTable(entries),
             pw.SizedBox(height: 20),
+            ReceiptAcknowledgment.buildA4Block(),
           ];
         },
         footer: (pw.Context context) => _buildDocumentFooter(context),
@@ -383,6 +387,18 @@ class PdfGenerator {
               'Season: ${_pdfSafeText(entry.season)}',
               style: const pw.TextStyle(fontSize: 10),
             ),
+            if (entry.createdByUserName != null &&
+                entry.createdByUserName!.trim().isNotEmpty) ...[
+              pw.SizedBox(height: 5),
+              pw.Text(
+                'Recorded By: ${_pdfSafeText(entry.createdByUserName!.trim())}',
+                style: pw.TextStyle(
+                  fontSize: 10,
+                  fontWeight: pw.FontWeight.bold,
+                  color: PdfColor.fromHex('#1B4332'),
+                ),
+              ),
+            ],
           ],
         ),
       ],
@@ -1067,18 +1083,22 @@ class PdfGenerator {
     required String zamindarName,
     required int amount,
     required DateTime date,
+    String? servedBy,
   }) async {
     final pdf = pw.Document();
     final resolvedShopName =
         (shopName == null || shopName.trim().isEmpty)
             ? await ShopSettings.getShopName()
             : shopName.trim();
+    final showThumb =
+        await ShopSettings.getShowThumbprintBlockOnThermal();
+    final pageHeightMm = showThumb ? 220.0 : 145.0;
 
     pdf.addPage(
       pw.Page(
         pageFormat: PdfPageFormat(
           80 * PdfPageFormat.mm,
-          120 * PdfPageFormat.mm,
+          pageHeightMm * PdfPageFormat.mm,
         ),
         build: (pw.Context context) {
           return pw.Container(
@@ -1125,6 +1145,13 @@ class PdfGenerator {
                   'Received From:',
                   _pdfSafeText(zamindarName),
                 ),
+                if (servedBy != null && servedBy.trim().isNotEmpty) ...[
+                  pw.SizedBox(height: 6),
+                  _buildReceiptRow(
+                    'Recorded By:',
+                    _pdfSafeText(servedBy.trim()),
+                  ),
+                ],
                 pw.SizedBox(height: 15),
                 pw.Container(
                   padding: const pw.EdgeInsets.all(10),
@@ -1175,6 +1202,10 @@ class PdfGenerator {
                   ),
                   textAlign: pw.TextAlign.center,
                 ),
+                if (showThumb) ...[
+                  pw.SizedBox(height: 12),
+                  ReceiptAcknowledgment.buildThermalBlock(),
+                ],
                 pw.Spacer(),
                 pw.Container(
                   width: double.infinity,
@@ -1190,8 +1221,7 @@ class PdfGenerator {
                   ),
                   textAlign: pw.TextAlign.center,
                 ),
-                pw.SizedBox(height: 6),
-                pw.Center(child: _buildMadeWithAgriKhata(fontSize: 7)),
+                ReceiptAcknowledgment.buildThermalPromoFooter(),
               ],
             ),
           );
@@ -1229,6 +1259,7 @@ class PdfGenerator {
     required String zamindarName,
     required int amount,
     required DateTime date,
+    String? servedBy,
   }) async {
     final resolvedShopName = shopName ?? await ShopSettings.getShopName();
     final pdf = await generateAdvancePaymentReceiptPdf(
@@ -1236,6 +1267,7 @@ class PdfGenerator {
       zamindarName: zamindarName,
       amount: amount,
       date: date,
+      servedBy: servedBy,
     );
     await Printing.layoutPdf(
       onLayout: (PdfPageFormat format) async => pdf.save(),
@@ -1367,6 +1399,7 @@ class PdfGenerator {
                 totalPaid: totalPaid,
                 cumulativeRemaining: cumulativeRemaining,
               ),
+            ReceiptAcknowledgment.buildA4Block(),
           ];
         },
         footer: (pw.Context context) => _buildDocumentFooter(
@@ -1632,6 +1665,7 @@ class PdfGenerator {
                   }),
                 ],
               ),
+            ReceiptAcknowledgment.buildA4Block(),
           ];
         },
         footer: (pw.Context context) => _buildDocumentFooter(
@@ -1866,6 +1900,7 @@ class PdfGenerator {
     String filterLabel = 'All products',
     int totalQuantity = 0,
     String totalUom = 'units',
+    int totalValue = 0,
   }) async {
     final pdf = pw.Document();
     final shopName = await ShopSettings.getShopName();
@@ -1926,7 +1961,8 @@ class PdfGenerator {
               mainAxisAlignment: pw.MainAxisAlignment.end,
               children: [
                 pw.Text(
-                  'Total Quantity: $totalQuantity ${_pdfSafeText(totalUom)}',
+                  'Total Quantity: $totalQuantity ${_pdfSafeText(totalUom)}'
+                  '  ·  Total Value: ${_formatMoney(totalValue)}',
                   style: pw.TextStyle(
                     fontSize: 11,
                     fontWeight: pw.FontWeight.bold,
@@ -1946,10 +1982,12 @@ class PdfGenerator {
                 border: pw.TableBorder.all(color: PdfColor.fromHex('#E0E0E0')),
                 columnWidths: {
                   0: const pw.FlexColumnWidth(1.2),
-                  1: const pw.FlexColumnWidth(1.6),
-                  2: const pw.FlexColumnWidth(1.6),
-                  3: const pw.FlexColumnWidth(2),
+                  1: const pw.FlexColumnWidth(1.5),
+                  2: const pw.FlexColumnWidth(1.5),
+                  3: const pw.FlexColumnWidth(1.8),
                   4: const pw.FlexColumnWidth(1),
+                  5: const pw.FlexColumnWidth(1.1),
+                  6: const pw.FlexColumnWidth(1.2),
                 },
                 children: [
                   pw.TableRow(
@@ -1962,6 +2000,8 @@ class PdfGenerator {
                       _buildTableHeader('Kisaan Name'),
                       _buildTableHeader('Product Name'),
                       _buildTableHeader('Quantity'),
+                      _buildTableHeader('Product Price'),
+                      _buildTableHeader('Total Price'),
                     ],
                   ),
                   ...rows.map((row) {
@@ -1970,6 +2010,10 @@ class PdfGenerator {
                     final qtyLabel = qty == null
                         ? '-'
                         : '$qty${uom.isNotEmpty ? ' $uom' : ''}';
+                    final unitPrice =
+                        (row['unit_price'] as num?)?.toDouble() ?? 0;
+                    final lineTotal =
+                        (row['line_total'] as num?)?.toDouble() ?? 0;
                     return pw.TableRow(
                       children: [
                         _buildTableCell(
@@ -1983,6 +2027,8 @@ class PdfGenerator {
                           row['product_name']?.toString() ?? '-',
                         ),
                         _buildTableCell(qtyLabel),
+                        _buildTableCell(_formatMoney(unitPrice)),
+                        _buildTableCell(_formatMoney(lineTotal)),
                       ],
                     );
                   }),
@@ -2006,6 +2052,7 @@ class PdfGenerator {
     String filterLabel = 'All products',
     int totalQuantity = 0,
     String totalUom = 'units',
+    int totalValue = 0,
   }) async {
     final pdf = await generateProductWiseLedgerPdf(
       zamindarName: zamindarName,
@@ -2013,6 +2060,7 @@ class PdfGenerator {
       filterLabel: filterLabel,
       totalQuantity: totalQuantity,
       totalUom: totalUom,
+      totalValue: totalValue,
     );
     final bytes = await pdf.save();
     final fileName = buildExportFileName(

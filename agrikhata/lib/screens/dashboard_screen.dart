@@ -3,10 +3,12 @@ import 'dart:math' as math;
 import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Data/agri_header.dart';
 import 'package:agrikhata/Database/database_helper.dart';
+import 'package:agrikhata/services/whatsapp_urdu_service.dart';
+import 'package:agrikhata/theme/theme.dart';
 import 'package:agrikhata/utils/season_utils.dart';
+import 'package:agrikhata/utils/shop_settings.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 /// Shop-counter home screen — layout aligned to `Extra/dashboard (1).html`.
 class DashboardScreen extends StatefulWidget {
@@ -130,57 +132,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _openWhatsAppReminder(DashboardRecoveryRow row) async {
-    final phone = _normalizeWhatsAppNumber(row.whatsappNumber);
-    if (phone == null) {
+    final phone = row.whatsappNumber?.trim() ?? '';
+    if (WhatsAppUrduService.normalizePhone(phone) == null) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('No WhatsApp number on file for ${row.name}.'),
-          backgroundColor: AppColors.dangerText,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      AppToast.showError(context, 'No WhatsApp number on file for ${row.name}.');
       return;
     }
 
-    final balanceLabel = _formatRs(row.outstandingBalance);
-    final message =
-        'Dear ${row.name}, your outstanding balance at Atta Muhammad & Sons '
-        'is $balanceLabel'
-        '${row.paymentTerm.isNotEmpty ? ' under terms: ${row.paymentTerm}' : ''}. '
-        'Please arrange for payment at your earliest convenience. Thank you.';
-
-    final uri = Uri.parse(
-      'https://wa.me/$phone?text=${Uri.encodeComponent(message)}',
-    );
-
-    final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
-    if (!launched && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Could not open WhatsApp.'),
-          backgroundColor: AppColors.dangerText,
-          behavior: SnackBarBehavior.floating,
-        ),
+    try {
+      final shopName = await ShopSettings.getShopName();
+      final launched = await WhatsAppUrduService.sendUrduReminder(
+        phone: phone,
+        zamindarName: row.name,
+        shopName: shopName,
+        amount: row.outstandingBalance,
       );
+      if (!launched && mounted) {
+        AppToast.showError(context, 'Could not open WhatsApp.');
+      }
+    } catch (e) {
+      if (mounted) {
+        AppToast.showError(context, 'Could not open WhatsApp: $e');
+      }
     }
-  }
-
-  /// Strips formatting and normalizes Pakistani mobile numbers for wa.me.
-  static String? _normalizeWhatsAppNumber(String? raw) {
-    if (raw == null) return null;
-    var digits = raw.replaceAll(RegExp(r'\D'), '');
-    if (digits.isEmpty) return null;
-    if (digits.startsWith('00')) {
-      digits = digits.substring(2);
-    }
-    if (digits.startsWith('0') && digits.length == 11) {
-      digits = '92${digits.substring(1)}';
-    } else if (digits.length == 10 && digits.startsWith('3')) {
-      digits = '92$digits';
-    }
-    if (digits.length < 10) return null;
-    return digits;
   }
 
   @override
@@ -1189,55 +1163,14 @@ class _RecoveriesTable extends StatelessWidget {
   }
 }
 
-class _WhatsAppLink extends StatefulWidget {
+class _WhatsAppLink extends StatelessWidget {
   const _WhatsAppLink({required this.onTap});
 
   final VoidCallback onTap;
 
   @override
-  State<_WhatsAppLink> createState() => _WhatsAppLinkState();
-}
-
-class _WhatsAppLinkState extends State<_WhatsAppLink> {
-  bool _hovered = false;
-
-  static const Color _waGreen = Color(0xFF059669);
-  static const Color _waHoverBg = Color(0xFFECFDF5);
-
-  @override
   Widget build(BuildContext context) {
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      cursor: SystemMouseCursors.click,
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 120),
-          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-          decoration: BoxDecoration(
-            color: _hovered ? _waHoverBg : Colors.transparent,
-            borderRadius: BorderRadius.circular(7),
-            border: Border.all(color: _waGreen, width: 1),
-          ),
-          child: const Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.chat, size: 11, color: _waGreen),
-              SizedBox(width: 4),
-              Text(
-                'WhatsApp',
-                style: TextStyle(
-                  fontSize: 10.5,
-                  fontWeight: FontWeight.w500,
-                  color: _waGreen,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
+    return AppWhatsAppIconButton(onPressed: onTap);
   }
 }
 

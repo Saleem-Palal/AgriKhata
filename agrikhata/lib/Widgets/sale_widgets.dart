@@ -1,19 +1,20 @@
 import 'package:flutter/material.dart';
 import '../models/sale_models.dart';
+import '../theme/app_theme.dart';
 
-// Color constants matching the design
+// Sale-domain aliases → design-system tokens
 class SaleColors {
-  static const darkGreen = Color(0xFF1B4332);
-  static const midGreen = Color(0xFF2D6A4F);
-  static const accentGreen = Color(0xFF40916C);
+  static const darkGreen = AppColors.primary;
+  static const midGreen = AppColors.mediumGreen;
+  static const accentGreen = AppColors.accentGreen;
   static const lightGreenBg = Color(0xFFEAF3DE);
-  static const canvasBg = Color(0xFFF7F9F4);
-  static const cardBg = Color(0xFFFFFFFF);
-  static const borderLight = Color(0xFFE2EBE0);
-  static const borderMid = Color(0xFFC6DEC9);
-  static const textDark = Color(0xFF1B4332);
-  static const textMuted = Color(0xFF6B8F71);
-  static const textLight = Color(0xFF95B89A);
+  static const canvasBg = AppColors.surface;
+  static const cardBg = AppColors.cardSurface;
+  static const borderLight = AppColors.border;
+  static const borderMid = AppColors.inputBorder;
+  static const textDark = AppColors.textPrimary;
+  static const textMuted = AppColors.textMuted;
+  static const textLight = AppColors.textHint;
   static const paleGreen = Color(0xFFD8F3DC);
   static const lightGreen = Color(0xFFB7E4C7);
   static const recBoxBg = Color(0xFFEAF3DE);

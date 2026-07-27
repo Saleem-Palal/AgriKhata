@@ -100,10 +100,17 @@ class LedgerEntry {
   final PaymentStatus status;
   final String season;
   final bool isWalkInCustomer;
+
   /// Purchase payment terms label: Cash / Udhaar / Partial (purchases only).
   final String? purchaseTerms;
+
   /// Invoice-level summary (purchases only).
   final String? description;
+
+  /// Permanent actor snapshot from the invoice row (never a live user lookup).
+  final String? createdByUserId;
+  final String? createdByUserName;
+  final DateTime? createdAt;
 
   LedgerEntry({
     required this.id,
@@ -119,6 +126,9 @@ class LedgerEntry {
     this.isWalkInCustomer = false,
     this.purchaseTerms,
     this.description,
+    this.createdByUserId,
+    this.createdByUserName,
+    this.createdAt,
   });
 
   double get outstanding => total - paid;
@@ -223,8 +233,7 @@ class PaymentLedgerEntry {
 
   bool get isAdvanceCollection => invoiceNumber == null;
   bool get isWalletDeduction => paymentMethod == 'Advance Wallet Deduction';
-  bool get isAdvanceSummary =>
-      itemsSummary == 'N/A (Advance Collection)';
+  bool get isAdvanceSummary => itemsSummary == 'N/A (Advance Collection)';
 
   factory PaymentLedgerEntry.fromMap(Map<String, dynamic> map) {
     return PaymentLedgerEntry(

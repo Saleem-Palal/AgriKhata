@@ -2,6 +2,7 @@ import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Data/agri_header.dart';
 import 'package:agrikhata/Database/database_helper.dart';
 import 'package:agrikhata/Widgets/product_history_dialog.dart';
+import 'package:agrikhata/theme/theme.dart';
 import 'package:agrikhata/utils/pdf_generator.dart';
 import 'package:flutter/material.dart';
 
@@ -20,19 +21,6 @@ class _ProductsScreenState extends State<ProductsScreen> {
 
   List<ProductItem> _products = [];
   bool _isLoading = true;
-
-  final List<double> _colWidths = [
-    170, // Product Name
-    90, // Brand
-    90, // Pack Size
-    100, // Cost Price
-    100, // Retail Price
-    110, // Available Stock
-    80, // UOM
-    110, // Expiry Date
-    100, // Status
-    220, // Actions (Edit, Restock, History, Delete)
-  ];
 
   final List<String> _categories = [
     "All",
@@ -145,14 +133,7 @@ class _ProductsScreenState extends State<ProductsScreen> {
     } catch (e) {
       debugPrint('Error saving product: $e');
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(
-          SnackBar(
-            content: Text('Error saving product: $e'),
-            duration: const Duration(minutes: 1),
-          ),
-        );
+        AppToast.showError(context, 'Error saving product: $e');
       }
     }
   }
@@ -192,24 +173,12 @@ class _ProductsScreenState extends State<ProductsScreen> {
         await DatabaseHelper.instance.deleteProduct(product.id!);
         await _loadProducts();
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Product deleted successfully'),
-              duration: Duration(minutes: 1),
-            ),
-          );
+          AppToast.showSuccess(context, 'Product deleted successfully');
         }
       } catch (e) {
         debugPrint('Error deleting product: $e');
         if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(
-            SnackBar(
-              content: Text('Error deleting product: $e'),
-              duration: const Duration(minutes: 1),
-            ),
-          );
+          AppToast.showError(context, 'Error deleting product: $e');
         }
       }
     }
@@ -336,34 +305,17 @@ class _ProductsScreenState extends State<ProductsScreen> {
           );
           await _loadProducts();
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(
-                  'Added $addQty ${product.uom} to stock · Cost price updated to Rs $newCostPrice',
-                ),
-                duration: const Duration(minutes: 1),
-              ),
-            );
+            AppToast.showSuccess(context, 'Added $addQty ${product.uom} to stock · Cost price updated to Rs $newCostPrice',);
           }
         } catch (e) {
           debugPrint('Error restocking product: $e');
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('Error restocking product: $e'),
-                duration: const Duration(minutes: 1),
-              ),
-            );
+            AppToast.showError(context, 'Error restocking product: $e');
           }
         }
       } else {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Please enter valid quantity and cost price'),
-              duration: Duration(minutes: 1),
-            ),
-          );
+          AppToast.showError(context, 'Please enter valid quantity and cost price');
         }
       }
     }
@@ -384,12 +336,7 @@ class _ProductsScreenState extends State<ProductsScreen> {
       final stocked = await DatabaseHelper.instance.getProductsInStock();
       if (stocked.isEmpty) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('No stocked products to export'),
-            backgroundColor: Colors.orange,
-          ),
-        );
+        AppToast.showWarning(context, 'No stocked products to export');
         return;
       }
 
@@ -414,20 +361,10 @@ class _ProductsScreenState extends State<ProductsScreen> {
         products: rows,
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('PDF saved to ${file.path}'),
-          backgroundColor: AppColors.darkGreen,
-        ),
-      );
+      AppToast.showSuccess(context, 'PDF saved to ${file.path}');
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to generate PDF: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      AppToast.showError(context, 'Failed to generate PDF: $e');
     }
   }
 
@@ -443,26 +380,13 @@ class _ProductsScreenState extends State<ProductsScreen> {
         AgriHeader(
           breadcrumbs: const ["Inventory", "Products"],
           actions: [
-            OutlinedButton.icon(
+            AppButton.pdf(
               onPressed: _generateStockedProductsPdf,
-              icon: const Icon(
-                Icons.picture_as_pdf_outlined,
-                size: 16,
-                color: Color(0xFF27500A),
-              ),
-              label: const Text(
-                "Generate PDF",
-                style: TextStyle(color: Color(0xFF27500A)),
-              ),
-              style: OutlinedButton.styleFrom(
-                side: const BorderSide(color: Color(0xFF27500A)),
-              ),
             ),
-            const SizedBox(width: 8),
-            ElevatedButton.icon(
+            AppButton.primary(
+              label: 'Add New Product',
+              icon: Icons.add,
               onPressed: _openAddProductPanel,
-              icon: const Icon(Icons.add, size: 16),
-              label: const Text("Add New Product"),
             ),
           ],
         ),
@@ -662,192 +586,95 @@ class _ProductsScreenState extends State<ProductsScreen> {
   }
 
   Widget _buildTabFilters() {
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        ..._categories.map((category) {
-          final isSelected = _selectedCategory == category;
-          return InkWell(
-            onTap: () => setState(() => _selectedCategory = category),
-            borderRadius: BorderRadius.circular(6),
-            child: Container(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: 9,
-              ),
-              decoration: BoxDecoration(
-                color: isSelected ? AppColors.darkGreen : Colors.transparent,
+        AppSearchBar(
+          controller: _searchController,
+          hintText: 'Search by product name or brand...',
+        ),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            ..._categories.map((category) {
+              final isSelected = _selectedCategory == category;
+              return InkWell(
+                onTap: () => setState(() => _selectedCategory = category),
                 borderRadius: BorderRadius.circular(6),
-              ),
-              child: Text(
-                category,
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                  color: isSelected ? Colors.white : AppColors.textMuted,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 9,
+                  ),
+                  decoration: BoxDecoration(
+                    color:
+                        isSelected ? AppColors.darkGreen : Colors.transparent,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    category,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: isSelected ? Colors.white : AppColors.textMuted,
+                    ),
+                  ),
                 ),
-              ),
-            ),
-          );
-        }),
+              );
+            }),
+          ],
+        ),
       ],
     );
   }
 
   Widget _buildTable(List<ProductItem> products) {
-    // Row containers use horizontal padding of 14px on each side (28px total).
-    // The SizedBox below must include that, or the Row content overflows by
-    // exactly that amount (which is what was happening before this fix).
-    final totalWidth = _colWidths.fold(0.0, (sum, w) => sum + w) + 28;
-
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.border, width: 0.5),
-      ),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: SizedBox(
-          width: totalWidth,
-          child: Column(
-            children: [
-              _buildHeaderRow(),
-              for (int i = 0; i < products.length; i++)
-                _buildDataRow(products[i], isLast: i == products.length - 1),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _cell(int index, Widget child) {
-    return SizedBox(
-      width: _colWidths[index],
-      child: Align(alignment: Alignment.centerLeft, child: child),
-    );
-  }
-
-  Widget _buildHeaderRow() {
-    final titles = [
-      "PRODUCT NAME",
-      "BRAND",
-      "PACK SIZE",
-      "COST PRICE",
-      "RETAIL PRICE",
-      "AVAILABLE STOCK",
-      "UOM",
-      "EXPIRY DATE",
-      "STATUS",
-      "",
-    ];
-    final style = const TextStyle(
-      fontSize: 10,
-      fontWeight: FontWeight.w600,
-      color: AppColors.textMuted,
-      letterSpacing: 0.3,
-    );
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-      decoration: const BoxDecoration(
-        color: Color(0xFFF7F9F4),
-        border: Border(
-          bottom: BorderSide(color: Color(0xFFC6DEC9), width: 1.0),
-        ),
-      ),
-      child: Row(
-        children: List.generate(
-          titles.length,
-          (i) => _cell(i, Text(titles[i], style: style)),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDataRow(ProductItem p, {required bool isLast}) {
-    final isSelected = _selectedProduct?.id == p.id;
-    return InkWell(
-      onTap: () => setState(() {
-        _selectedProduct = p;
-        _showAddForm = false;
-      }),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-        decoration: BoxDecoration(
-          color: isSelected ? const Color(0xFFEAF3DE) : Colors.transparent,
-          border: isLast
-              ? null
-              : const Border(
-                  bottom: BorderSide(color: Color(0xFFC6DEC9), width: 1.0),
-                ),
-        ),
-        child: Row(
-          children: [
-            _cell(
-              0,
-              Text(
+    return AppDataTable(
+      minWidth: 1200,
+      columns: const [
+        AppDataColumn(title: 'Product Name', flex: 16),
+        AppDataColumn(title: 'Brand', flex: 8),
+        AppDataColumn(title: 'Pack Size', flex: 8),
+        AppDataColumn(title: 'Cost Price', flex: 9),
+        AppDataColumn(title: 'Retail Price', flex: 9),
+        AppDataColumn(title: 'Seasonal Inc', flex: 9),
+        AppDataColumn(title: 'Available Stock', flex: 10),
+        AppDataColumn(title: 'UOM', flex: 7),
+        AppDataColumn(title: 'Expiry Date', flex: 10),
+        AppDataColumn(title: 'Status', flex: 9),
+        AppDataColumn(title: 'Actions', flex: 20),
+      ],
+      rows: [
+        for (final p in products)
+          AppDataRow(
+            onTap: () => setState(() {
+              _selectedProduct = p;
+              _showAddForm = false;
+            }),
+            backgroundColor: _selectedProduct?.id == p.id
+                ? const Color(0xFFEAF3DE)
+                : null,
+            cells: [
+              AppTableCellText(
                 p.name,
-                style: const TextStyle(
-                  fontSize: 12,
+                style: AppTextStyles.bodySmall.copyWith(
                   fontWeight: FontWeight.w500,
                   color: AppColors.darkGreen,
                 ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
               ),
-            ),
-            _cell(
-              1,
-              Text(
-                p.brand,
-                style: const TextStyle(fontSize: 12),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+              p.brand,
+              p.packagingSize,
+              'Rs ${_fmt(p.costPrice.toDouble())}',
+              'Rs ${_fmt(p.retailPrice.toDouble())}',
+              'Rs ${_fmt(p.seasonalIncrement.toDouble())}',
+              p.availableStock.toStringAsFixed(
+                p.availableStock.truncateToDouble() == p.availableStock ? 0 : 1,
               ),
-            ),
-            _cell(
-              2,
-              Text(p.packagingSize, style: const TextStyle(fontSize: 12)),
-            ),
-            _cell(
-              3,
-              Text(
-                "Rs ${_fmt(p.costPrice.toDouble())}",
-                style: const TextStyle(fontSize: 12),
-              ),
-            ),
-            _cell(
-              4,
-              Text(
-                "Rs ${_fmt(p.retailPrice.toDouble())}",
-                style: const TextStyle(fontSize: 12),
-              ),
-            ),
-            _cell(
-              5,
-              Text(
-                p.availableStock.toStringAsFixed(
-                  p.availableStock.truncateToDouble() == p.availableStock
-                      ? 0
-                      : 1,
-                ),
-                style: const TextStyle(fontSize: 12),
-              ),
-            ),
-            _cell(6, Text(p.uom, style: const TextStyle(fontSize: 12))),
-            _cell(
-              7,
-              Text(
-                _formatDate(p.expiryDate),
-                style: const TextStyle(fontSize: 12),
-              ),
-            ),
-            _cell(8, _buildStatusBadge(p)),
-            _cell(
-              9,
+              p.uom,
+              _formatDate(p.expiryDate),
+              _buildStatusBadge(p),
               Row(
                 children: [
                   _actionButton(
@@ -879,10 +706,9 @@ class _ProductsScreenState extends State<ProductsScreen> {
                   ),
                 ],
               ),
-            ),
-          ],
-        ),
-      ),
+            ],
+          ),
+      ],
     );
   }
 
@@ -1109,6 +935,10 @@ class _ProductDetailPanel extends StatelessWidget {
                   _buildInfoRow(
                     "Cost Price",
                     "Rs ${_fmt(product.costPrice.toDouble())}",
+                  ),
+                  _buildInfoRow(
+                    "Seasonal Inc",
+                    "Rs ${_fmt(product.seasonalIncrement.toDouble())}",
                   ),
                   _buildInfoRow("Pack Size", product.packagingSize),
                   _buildInfoRow("Unit of Measure", product.uom),

@@ -2,6 +2,7 @@ import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Data/agri_header.dart';
 import 'package:agrikhata/Database/database_helper.dart';
 import 'package:agrikhata/Widgets/app_auto_suggest_field.dart';
+import 'package:agrikhata/theme/theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -219,12 +220,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
         _activeLedger = [];
         _ledgerLoading = false;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Could not load khata ledger: $e'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      AppToast.showError(context, 'Could not load khata ledger: $e');
     }
   }
 
@@ -366,26 +362,10 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                   },
             actions: isDirectory
                 ? [
-                    ElevatedButton.icon(
+                    AppButton.primary(
+                      label: 'Add New Wholesaler',
+                      icon: Icons.add,
                       onPressed: _showAddWholesalerDialog,
-                      icon: const Icon(Icons.add, size: 16),
-                      label: const Text('Add New Wholesaler'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: _primary,
-                        foregroundColor: Colors.white,
-                        elevation: 0,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 12,
-                        ),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(9),
-                        ),
-                        textStyle: const TextStyle(
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
                     ),
                   ]
                 : const [],
@@ -479,16 +459,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
               ),
             ),
 
-            // Table header
-            _tableHeaderRow(const [
-              _ColSpec('Wholesaler / Shop Name', flex: 26),
-              _ColSpec('Mobile Phone', flex: 16),
-              _ColSpec('City', flex: 18),
-              _ColSpec('Current Owed Balance', flex: 20),
-              _ColSpec('Actions', flex: 20),
-            ]),
-
-            // Rows
+            // Full-width striped directory table
             Expanded(
               child: rows.isEmpty
                   ? const Center(
@@ -500,15 +471,69 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                         ),
                       ),
                     )
-                  : ListView.builder(
-                      itemCount: rows.length,
-                      itemBuilder: (context, index) {
-                        final w = rows[index];
-                        return _DirectoryRow(
-                          wholesaler: w,
-                          onOpenKhata: () => _openProfile(w),
-                        );
-                      },
+                  : SingleChildScrollView(
+                      child: AppDataTable(
+                        showCardChrome: false,
+                        minWidth: 900,
+                        columns: const [
+                          AppDataColumn(
+                            title: 'Wholesaler / Shop Name',
+                            flex: 26,
+                          ),
+                          AppDataColumn(title: 'Mobile Phone', flex: 16),
+                          AppDataColumn(title: 'City', flex: 18),
+                          AppDataColumn(
+                            title: 'Current Owed Balance',
+                            flex: 20,
+                          ),
+                          AppDataColumn(title: 'Actions', flex: 20),
+                        ],
+                        rows: [
+                          for (final w in rows)
+                            AppDataRow(
+                              onTap: () => _openProfile(w),
+                              cells: [
+                                AppTableCellText(
+                                  w.name,
+                                  style: AppTextStyles.bodySmall.copyWith(
+                                    fontWeight: FontWeight.w500,
+                                    color: AppColors.primary,
+                                  ),
+                                ),
+                                AppTableCellText(
+                                  w.phone,
+                                  style: AppTextStyles.bodySmall.copyWith(
+                                    color: AppColors.textMuted,
+                                  ),
+                                ),
+                                AppTableCellText(
+                                  w.city,
+                                  style: AppTextStyles.bodySmall.copyWith(
+                                    color: AppColors.textMuted,
+                                  ),
+                                ),
+                                AppTableCellText(
+                                  formatPKR(w.balance),
+                                  style: AppTextStyles.bodySmall.copyWith(
+                                    fontWeight: FontWeight.w600,
+                                    color: w.balance > 0
+                                        ? const Color(0xFFA32D2D)
+                                        : AppColors.mediumGreen,
+                                  ),
+                                ),
+                                Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: AppButton.secondary(
+                                    label: 'Open Khata',
+                                    icon: Icons.menu_book_outlined,
+                                    compact: true,
+                                    onPressed: () => _openProfile(w),
+                                  ),
+                                ),
+                              ],
+                            ),
+                        ],
+                      ),
                     ),
             ),
           ],
@@ -637,14 +662,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                           ),
                           OutlinedButton.icon(
                             onPressed: () {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text(
-                                    'Print Statement would open here.',
-                                  ),
-                                  behavior: SnackBarBehavior.floating,
-                                ),
-                              );
+                              AppToast.showInfo(context, 'Print Statement would open here.',);
                             },
                             icon: const Icon(Icons.print_outlined, size: 15),
                             label: const Text('Print Statement'),
@@ -1623,12 +1641,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to save wholesaler: $e'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      AppToast.showError(context, 'Failed to save wholesaler: $e');
     }
   }
 
@@ -1836,39 +1849,18 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                                 amountController.text.trim(),
                               );
                               if (amount == null || amount <= 0) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text(
-                                      'Please enter a valid payment amount.',
-                                    ),
-                                    behavior: SnackBarBehavior.floating,
-                                  ),
-                                );
+                                AppToast.showError(context, 'Please enter a valid payment amount.',);
                                 return;
                               }
                               if (outstandingOwed <= 0) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text(
-                                      'This wholesaler has no outstanding '
-                                      'balance to settle.',
-                                    ),
-                                    behavior: SnackBarBehavior.floating,
-                                  ),
-                                );
+                                AppToast.showInfo(context, 'This wholesaler has no outstanding '
+                                      'balance to settle.',);
                                 return;
                               }
                               if (amount > outstandingOwed + 0.01) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text(
-                                      'Payment amount cannot exceed the '
+                                AppToast.showError(context, 'Payment amount cannot exceed the '
                                       'outstanding owed balance of '
-                                      '${formatPKR(outstandingOwed)}.',
-                                    ),
-                                    behavior: SnackBarBehavior.floating,
-                                  ),
-                                );
+                                      '${formatPKR(outstandingOwed)}.',);
                                 return;
                               }
                               Navigator.of(ctx).pop(true);
@@ -1932,12 +1924,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to record payment: $e'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      AppToast.showError(context, 'Failed to record payment: $e');
       return;
     }
 
@@ -2047,8 +2034,9 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
 
   Widget _tableHeaderRow(List<_ColSpec> cols) {
     return Container(
+      constraints: const BoxConstraints(minHeight: 40),
       decoration: const BoxDecoration(
-        color: _bg,
+        color: Color(0xFFF0F4EE),
         border: Border(bottom: BorderSide(color: _border, width: 0.5)),
       ),
       child: Row(
@@ -2064,10 +2052,10 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                   child: Text(
                     c.label.toUpperCase(),
                     style: const TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w500,
-                      letterSpacing: 0.3,
-                      color: AppColors.textMuted,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.4,
+                      color: AppColors.mediumGreen,
                     ),
                   ),
                 ),
@@ -2080,6 +2068,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
 
   Widget _dataRow(List<Widget> cells) {
     return Container(
+      constraints: const BoxConstraints(minHeight: 42),
       decoration: const BoxDecoration(
         border: Border(bottom: BorderSide(color: _border, width: 0.5)),
       ),

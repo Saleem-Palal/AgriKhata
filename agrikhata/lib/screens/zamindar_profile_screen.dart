@@ -5,10 +5,11 @@ import 'package:agrikhata/Data/zamindar_ledger_tab.dart';
 import 'package:agrikhata/Data/zamindar_overview_tab.dart';
 import 'package:agrikhata/Database/database_helper.dart';
 import 'package:agrikhata/screens/add_zamindar_screen.dart';
+import 'package:agrikhata/theme/theme.dart';
+import 'package:agrikhata/services/whatsapp_urdu_service.dart';
 import 'package:agrikhata/utils/pdf_generator.dart';
-import 'package:agrikhata/utils/pdf_share.dart';
+import 'package:agrikhata/utils/shop_settings.dart';
 import 'package:flutter/material.dart';
-import 'package:path/path.dart' as p;
 
 class ZamindarProfileScreen extends StatefulWidget {
   final Zamindar zamindar;
@@ -113,14 +114,14 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
               }
             },
             actions: [
-              OutlinedButton.icon(
+              AppButton.secondary(
+                label: 'Edit',
+                icon: Icons.edit_outlined,
                 onPressed: () {
-                  // If parent provided an edit handler (Shell inline flow), use it.
                   if (widget.onEdit != null) {
                     widget.onEdit!.call();
                     return;
                   }
-                  // Otherwise push the AddZamindarScreen route for standalone flow.
                   Navigator.of(context).push(
                     MaterialPageRoute(
                       builder: (ctx) => AddZamindarScreen(
@@ -131,30 +132,15 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
                     ),
                   );
                 },
-                icon: const Icon(Icons.edit_outlined, size: 15),
-                label: const Text("Edit"),
               ),
-              const SizedBox(width: 8),
-              OutlinedButton.icon(
+              AppButton.pdf(
+                label: 'Export PDF',
                 onPressed: () => _showExportPdfDialog(z),
-                icon: const Icon(Icons.file_download_outlined, size: 15),
-                label: const Text("Export PDF"),
               ),
-              const SizedBox(width: 8),
-              OutlinedButton.icon(
+              AppButton.danger(
+                label: 'Delete',
+                icon: Icons.delete_outline,
                 onPressed: () => _confirmDelete(z),
-                icon: const Icon(
-                  Icons.delete_outline,
-                  size: 15,
-                  color: Color(0xFFA32D2D),
-                ),
-                label: const Text(
-                  "Delete",
-                  style: TextStyle(color: Color(0xFFA32D2D)),
-                ),
-                style: OutlinedButton.styleFrom(
-                  side: const BorderSide(color: Color(0xFFF09595)),
-                ),
               ),
             ],
           ),
@@ -575,35 +561,34 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
       );
 
       if (action == ExportPdfAction.whatsapp) {
-        await PdfShare.sharePdfFile(
-          file: file,
-          fileName: p.basename(file.path),
-          text: 'AgriKhata Ledger - ${z.name} ($seasonLabel$cropNote)',
+        final shopName = await ShopSettings.getShopName();
+        final balances =
+            await DatabaseHelper.instance.getZamindarBalancesSafe(z.id!);
+        final amount =
+            (balances?['outstandingBalance'] as num?)?.toDouble() ?? 0;
+        await WhatsAppUrduService.sharePdfWithUrduCaption(
+          phone: z.whatsappNumber,
+          zamindarName: z.name,
+          shopName: shopName,
+          amount: amount,
+          pdfPath: file.path,
+          detailLines: [
+            if (seasonLabel.isNotEmpty) 'موسم: $seasonLabel',
+            if (cropNote.isNotEmpty) cropNote.trim(),
+          ],
           subject: 'AgriKhata Zamindar Ledger',
         );
         return;
       }
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              filtered.isEmpty
+        AppToast.showSuccess(context, filtered.isEmpty
                   ? 'PDF saved (no sales rows found) to ${file.path}'
-                  : 'PDF saved (${filtered.length} invoices) to ${file.path}',
-            ),
-            backgroundColor: AppColors.darkGreen,
-          ),
-        );
+                  : 'PDF saved (${filtered.length} invoices) to ${file.path}',);
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Export failed: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        AppToast.showError(context, 'Export failed: $e');
       }
     }
   }
@@ -648,9 +633,7 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
       await DatabaseHelper.instance.deleteZamindar(id);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error deleting zamindar: $e')));
+        AppToast.showError(context, 'Error deleting zamindar: $e');
       }
     }
   }

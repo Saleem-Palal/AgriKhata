@@ -7,6 +7,10 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import '../models/audit_log_model.dart';
+import '../models/partner_model.dart';
+import '../models/user_model.dart';
+import '../services/session_context.dart';
 import '../utils/season_utils.dart';
 import 'migration_framework.dart';
 
@@ -24,7 +28,7 @@ class DatabaseHelper with ChangeNotifier {
   static final DatabaseHelper instance = DatabaseHelper._internal();
 
   /// Current on-disk schema version. Bump only when adding a new `_migrateToV*`.
-  static const int schemaVersion = 28;
+  static const int schemaVersion = 31;
 
   static final NumberFormat _indianCurrencyFormat = NumberFormat('#,##,##0');
 
@@ -69,12 +73,25 @@ class DatabaseHelper with ChangeNotifier {
     }
   }
 
+  /// Absolute path to the on-disk SQLite file (`agrikhata.db`).
+  Future<String> get databaseFilePath async {
+    final supportDir = await getApplicationSupportDirectory();
+    await supportDir.create(recursive: true);
+    return p.join(supportDir.path, 'agrikhata.db');
+  }
+
+  /// Re-opens the database after an external file replace (cloud restore).
+  Future<Database> reopenAfterRestore() async {
+    await close();
+    final db = await database;
+    notifyListeners();
+    return db;
+  }
+
   Future<Database> _initDatabase() async {
     // Use Application Support (writable under MSIX); getDatabasesPath() can
     // resolve inside the read-only package and cause SQLITE_CANTOPEN (14).
-    final supportDir = await getApplicationSupportDirectory();
-    await supportDir.create(recursive: true);
-    final path = p.join(supportDir.path, 'agrikhata.db');
+    final path = await databaseFilePath;
 
     return databaseFactory.openDatabase(
       path,
@@ -102,6 +119,10 @@ class DatabaseHelper with ChangeNotifier {
           await db.execute(_createExpensesTable());
           await db.execute(_createEmployeesTable());
           await db.execute(_createEmployeeAttendanceTable());
+          await db.execute(_createPartnersTable());
+          await db.execute(_createPartnerDrawingsTable());
+          await db.execute(_createUsersTable());
+          await db.execute(_createAuditLogsTable());
           await _createIndexes(db);
           await _createLedgerSyncTriggers(db);
         },
@@ -113,6 +134,8 @@ class DatabaseHelper with ChangeNotifier {
           await _ensureExpensesSchema(db);
           await _ensureEmployeeSchema(db);
           await _ensureSalesAdvanceSchema(db);
+          await _ensurePartnerSchema(db);
+          await _ensureUserAuthSchema(db);
           await _createLedgerSyncTriggers(db);
         },
         onUpgrade: (db, oldVersion, newVersion) async {
@@ -290,6 +313,24 @@ class DatabaseHelper with ChangeNotifier {
           toVersion: 28,
           description: 'employees + attendance + expense payroll link',
           run: _migrateToV28,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 29,
+          description: 'partners + partner_drawings equity tables',
+          run: _migrateToV29,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 30,
+          description: 'users + audit_logs + created_by actor stamps',
+          run: _migrateToV30,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 31,
+          description: 'immutable created_at footprint on transactional tables',
+          run: _migrateToV31,
           verifyIntegrity: false,
         ),
       ],
@@ -677,6 +718,21 @@ class DatabaseHelper with ChangeNotifier {
   Future<void> _migrateToV28(Database db, MigrationLog log) async {
     log.step('ensure employee + attendance schema');
     await _ensureEmployeeSchema(db);
+  }
+
+  Future<void> _migrateToV29(Database db, MigrationLog log) async {
+    log.step('ensure partners + partner_drawings schema');
+    await _ensurePartnerSchema(db);
+  }
+
+  Future<void> _migrateToV30(Database db, MigrationLog log) async {
+    log.step('ensure users + audit_logs + created_by columns');
+    await _ensureUserAuthSchema(db);
+  }
+
+  Future<void> _migrateToV31(Database db, MigrationLog log) async {
+    log.step('ensure created_at actor footprint columns');
+    await _ensureUserAuthSchema(db);
   }
 
   /// v24: cascade ledger/payments on invoice delete, add cached current_balance,
@@ -1580,6 +1636,111 @@ END
     ''');
   }
 
+  /// Creates partners / partner_drawings tables (idempotent).
+  Future<void> _ensurePartnerSchema(Database db) async {
+    await db.execute(_createPartnersTable());
+    await db.execute(_createPartnerDrawingsTable());
+    await addColumnIfMissing(
+      db,
+      table: PartnerTable.name,
+      column: PartnerTable.createdAt,
+      columnDefSql: "${PartnerTable.createdAt} TEXT NOT NULL DEFAULT ''",
+    );
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_partners_active
+      ON ${PartnerTable.name}(${PartnerTable.isActive})
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_partner_drawings_partner
+      ON ${PartnerDrawingTable.name}(${PartnerDrawingTable.partnerId})
+    ''');
+  }
+
+  /// Creates users / audit_logs and actor stamp columns (idempotent).
+  Future<void> _ensureUserAuthSchema(Database db) async {
+    await db.execute(_createUsersTable());
+    await db.execute(_createAuditLogsTable());
+
+    Future<void> addActorCols(String table) async {
+      await addColumnIfMissing(
+        db,
+        table: table,
+        column: ActorColumns.createdByUserId,
+        columnDefSql: '${ActorColumns.createdByUserId} TEXT',
+      );
+      await addColumnIfMissing(
+        db,
+        table: table,
+        column: ActorColumns.createdByUserName,
+        columnDefSql: '${ActorColumns.createdByUserName} TEXT',
+      );
+      await addColumnIfMissing(
+        db,
+        table: table,
+        column: ActorColumns.createdAt,
+        columnDefSql: '${ActorColumns.createdAt} TEXT',
+      );
+    }
+
+    await addActorCols(SalesTable.name);
+    await addActorCols(PurchaseInvoicesTable.name);
+    await addActorCols(ProductTable.name);
+    await addActorCols(ExpenseTable.name);
+    await addActorCols(PartnerDrawingTable.name);
+    await addActorCols(StockMovementTable.name);
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_users_role
+      ON ${UserTable.name}(${UserTable.role})
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_users_pin
+      ON ${UserTable.name}(${UserTable.pinCode})
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_user
+      ON ${AuditLogTable.name}(${AuditLogTable.userId}, ${AuditLogTable.timestamp})
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_ref
+      ON ${AuditLogTable.name}(${AuditLogTable.actionType}, ${AuditLogTable.referenceId})
+    ''');
+  }
+
+  /// Hardcodes an immutable actor footprint into an INSERT payload.
+  ///
+  /// Stores `id`, `"Name (Role)"`, and write-time `created_at` — never a live
+  /// lookup key for historical display.
+  void _applyActorStamp(Map<String, Object?> row) {
+    row[ActorColumns.createdAt] = _formatDateTime(DateTime.now());
+    final user = SessionContext.currentUser;
+    if (user == null) return;
+    row[ActorColumns.createdByUserId] = user.id;
+    row[ActorColumns.createdByUserName] = user.footprintLabel;
+  }
+
+  Future<void> _writeAuditLog({
+    required String actionType,
+    required String referenceId,
+    required String description,
+    DatabaseExecutor? executor,
+  }) async {
+    final user = SessionContext.currentUser;
+    if (user == null) return;
+    final db = executor ?? await database;
+    final id =
+        'a_${DateTime.now().microsecondsSinceEpoch}_${Random().nextInt(99999)}';
+    await db.insert(AuditLogTable.name, {
+      AuditLogTable.id: id,
+      AuditLogTable.userId: user.id,
+      AuditLogTable.userName: user.footprintLabel,
+      AuditLogTable.actionType: actionType,
+      AuditLogTable.referenceId: referenceId,
+      AuditLogTable.description: description,
+      AuditLogTable.timestamp: DateTime.now().toIso8601String(),
+    });
+  }
+
   /// Adds Cash/Fuel Advance columns on [SalesTable] (idempotent).
   /// Called from onOpen and v25 — must stay quiet when columns already exist.
   Future<void> _ensureSalesAdvanceSchema(Database db) async {
@@ -2033,6 +2194,16 @@ END
     await db.execute('''
       CREATE INDEX IF NOT EXISTS idx_payments_zamindar_id
       ON ${PaymentsTable.name}(${PaymentsTable.zamindarId})
+    ''');
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_partners_active
+      ON ${PartnerTable.name}(${PartnerTable.isActive})
+    ''');
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_partner_drawings_partner
+      ON ${PartnerDrawingTable.name}(${PartnerDrawingTable.partnerId})
     ''');
   }
 
@@ -2528,7 +2699,10 @@ END
       ${ProductTable.uom} TEXT NOT NULL,
       ${ProductTable.expiryDate} TEXT NOT NULL,
       ${ProductTable.lowStockThreshold} INTEGER NOT NULL DEFAULT 10,
-      ${ProductTable.description} TEXT
+      ${ProductTable.description} TEXT,
+      ${ActorColumns.createdByUserId} TEXT,
+      ${ActorColumns.createdByUserName} TEXT,
+      ${ActorColumns.createdAt} TEXT
     )
   ''';
   String _createLedgerTransactionsTable() =>
@@ -2577,6 +2751,9 @@ END
       ${SalesTable.remarks} TEXT,
       ${SalesTable.zamindarId} INTEGER,
       ${SalesTable.kisaanId} INTEGER,
+      ${ActorColumns.createdByUserId} TEXT,
+      ${ActorColumns.createdByUserName} TEXT,
+      ${ActorColumns.createdAt} TEXT,
       FOREIGN KEY (${SalesTable.zamindarId}) REFERENCES ${ZamindarTable.name}(${ZamindarTable.id})
         ON DELETE RESTRICT,
       FOREIGN KEY (${SalesTable.kisaanId}) REFERENCES ${KisaanTable.name}(${KisaanTable.id})
@@ -2633,6 +2810,9 @@ END
       ${StockMovementTable.referenceId} TEXT,
       ${StockMovementTable.dateTime} TEXT NOT NULL,
       ${StockMovementTable.notes} TEXT,
+      ${ActorColumns.createdByUserId} TEXT,
+      ${ActorColumns.createdByUserName} TEXT,
+      ${ActorColumns.createdAt} TEXT,
       FOREIGN KEY (${StockMovementTable.productId}) REFERENCES ${ProductTable.name}(${ProductTable.id})
         ON DELETE CASCADE
     )
@@ -2662,6 +2842,9 @@ END
       ${PurchaseInvoicesTable.amountPaid} INTEGER NOT NULL DEFAULT 0,
       ${PurchaseInvoicesTable.outstanding} INTEGER NOT NULL DEFAULT 0,
       ${PurchaseInvoicesTable.description} TEXT,
+      ${ActorColumns.createdByUserId} TEXT,
+      ${ActorColumns.createdByUserName} TEXT,
+      ${ActorColumns.createdAt} TEXT,
       FOREIGN KEY (${PurchaseInvoicesTable.wholesalerId})
         REFERENCES ${WholesalerTable.name}(${WholesalerTable.id})
     )
@@ -2727,7 +2910,10 @@ END
       ${ExpenseTable.remarks} TEXT,
       ${ExpenseTable.expenseDate} TEXT NOT NULL,
       ${ExpenseTable.employeeId} INTEGER,
-      ${ExpenseTable.payrollType} TEXT
+      ${ExpenseTable.payrollType} TEXT,
+      ${ActorColumns.createdByUserId} TEXT,
+      ${ActorColumns.createdByUserName} TEXT,
+      ${ActorColumns.createdAt} TEXT
     )
   ''';
 
@@ -2756,6 +2942,72 @@ END
       FOREIGN KEY (${EmployeeAttendanceTable.employeeId})
         REFERENCES ${EmployeeTable.name}(${EmployeeTable.id})
         ON DELETE CASCADE
+    )
+  ''';
+
+  String _createPartnersTable() =>
+      '''
+    CREATE TABLE IF NOT EXISTS ${PartnerTable.name} (
+      ${PartnerTable.id} INTEGER PRIMARY KEY AUTOINCREMENT,
+      ${PartnerTable.nameColumn} TEXT NOT NULL,
+      ${PartnerTable.phone} TEXT NOT NULL DEFAULT '',
+      ${PartnerTable.userAccountId} TEXT,
+      ${PartnerTable.zamindarId} INTEGER,
+      ${PartnerTable.initialCapital} REAL NOT NULL DEFAULT 0,
+      ${PartnerTable.reinvestedProfit} REAL NOT NULL DEFAULT 0,
+      ${PartnerTable.activeDrawings} REAL NOT NULL DEFAULT 0,
+      ${PartnerTable.isActive} INTEGER NOT NULL DEFAULT 1,
+      ${PartnerTable.createdAt} TEXT NOT NULL DEFAULT '',
+      FOREIGN KEY (${PartnerTable.zamindarId})
+        REFERENCES ${ZamindarTable.name}(${ZamindarTable.id})
+        ON DELETE SET NULL
+    )
+  ''';
+
+  String _createPartnerDrawingsTable() =>
+      '''
+    CREATE TABLE IF NOT EXISTS ${PartnerDrawingTable.name} (
+      ${PartnerDrawingTable.id} INTEGER PRIMARY KEY AUTOINCREMENT,
+      ${PartnerDrawingTable.partnerId} INTEGER NOT NULL,
+      ${PartnerDrawingTable.amount} REAL NOT NULL,
+      ${PartnerDrawingTable.type} TEXT NOT NULL,
+      ${PartnerDrawingTable.date} TEXT NOT NULL,
+      ${PartnerDrawingTable.notes} TEXT,
+      ${PartnerDrawingTable.isSettled} INTEGER NOT NULL DEFAULT 0,
+      ${ActorColumns.createdByUserId} TEXT,
+      ${ActorColumns.createdByUserName} TEXT,
+      ${ActorColumns.createdAt} TEXT,
+      FOREIGN KEY (${PartnerDrawingTable.partnerId})
+        REFERENCES ${PartnerTable.name}(${PartnerTable.id})
+        ON DELETE CASCADE
+    )
+  ''';
+
+  String _createUsersTable() =>
+      '''
+    CREATE TABLE IF NOT EXISTS ${UserTable.name} (
+      ${UserTable.id} TEXT PRIMARY KEY,
+      ${UserTable.nameColumn} TEXT NOT NULL,
+      ${UserTable.phone} TEXT NOT NULL DEFAULT '',
+      ${UserTable.email} TEXT,
+      ${UserTable.role} TEXT NOT NULL,
+      ${UserTable.pinCode} TEXT NOT NULL,
+      ${UserTable.partnerId} TEXT,
+      ${UserTable.isActive} INTEGER NOT NULL DEFAULT 1,
+      ${UserTable.createdAt} TEXT NOT NULL
+    )
+  ''';
+
+  String _createAuditLogsTable() =>
+      '''
+    CREATE TABLE IF NOT EXISTS ${AuditLogTable.name} (
+      ${AuditLogTable.id} TEXT PRIMARY KEY,
+      ${AuditLogTable.userId} TEXT NOT NULL,
+      ${AuditLogTable.userName} TEXT NOT NULL,
+      ${AuditLogTable.actionType} TEXT NOT NULL,
+      ${AuditLogTable.referenceId} TEXT NOT NULL,
+      ${AuditLogTable.description} TEXT NOT NULL,
+      ${AuditLogTable.timestamp} TEXT NOT NULL
     )
   ''';
 
@@ -3401,7 +3653,9 @@ END
 
   Future<int> insertProduct(ProductItem product) async {
     final db = await database;
-    final result = await db.insert(ProductTable.name, product.toMap());
+    final row = product.toMap();
+    _applyActorStamp(row);
+    final result = await db.insert(ProductTable.name, row);
     if (product.availableStock > 0) {
       await _insertStockMovement(
         db,
@@ -3413,6 +3667,13 @@ END
         dateTime: DateTime.now(),
       );
     }
+    final actor = SessionContext.currentUser;
+    await _writeAuditLog(
+      actionType: AuditActionType.addProduct,
+      referenceId: result.toString(),
+      description:
+          'Product "${product.name}" added by ${actor?.name ?? 'Unknown'} (${actor?.roleLabel ?? 'Staff'})',
+    );
     notifyListeners();
     return result;
   }
@@ -3513,6 +3774,8 @@ END
         ) AS kisaan_name,
         si.${SaleItemsTable.productName} AS product_name,
         si.${SaleItemsTable.quantity} AS quantity,
+        si.${SaleItemsTable.unitPrice} AS unit_price,
+        si.${SaleItemsTable.subtotal} AS line_total,
         COALESCE(NULLIF(TRIM(p.${ProductTable.uom}), ''), 'Bags') AS uom
       FROM ${SaleItemsTable.name} si
       INNER JOIN ${SalesTable.name} s
@@ -3547,6 +3810,8 @@ END
             kisaanName: kisaanRaw.isNotEmpty ? kisaanRaw : 'Self',
             productName: productName,
             quantity: (row['quantity'] as num?)?.round() ?? 0,
+            unitPrice: (row['unit_price'] as num?)?.round() ?? 0,
+            lineTotal: (row['line_total'] as num?)?.round() ?? 0,
             uom: uomRaw.isNotEmpty ? uomRaw : 'Bags',
           );
         })
@@ -3683,6 +3948,8 @@ END
         referenceType: row[StockMovementTable.referenceType] as String? ?? '',
         referenceId: row[StockMovementTable.referenceId] as String?,
         notes: row[StockMovementTable.notes] as String?,
+        createdByUserName:
+            row[ActorColumns.createdByUserName] as String?,
       );
     }).toList();
   }
@@ -3699,7 +3966,7 @@ END
     String? notes,
   }) async {
     if (quantity <= 0) return;
-    await txn.insert(StockMovementTable.name, {
+    final row = <String, Object?>{
       StockMovementTable.productId: productId,
       StockMovementTable.movementType: movementType,
       StockMovementTable.quantity: quantity,
@@ -3708,7 +3975,9 @@ END
       StockMovementTable.referenceId: referenceId,
       StockMovementTable.dateTime: _formatDateTime(dateTime),
       StockMovementTable.notes: notes,
-    });
+    };
+    _applyActorStamp(row);
+    await txn.insert(StockMovementTable.name, row);
   }
 
   Future<String> _resolveSalePartyLabel(
@@ -4455,12 +4724,21 @@ END
 
     final db = await database;
     await _ensureExpensesSchema(db);
-    final id = await db.insert(ExpenseTable.name, {
+    final row = <String, Object?>{
       ExpenseTable.category: trimmedCategory,
       ExpenseTable.amount: amount,
       ExpenseTable.remarks: remarks.trim(),
       ExpenseTable.expenseDate: _formatDateTime(DateTime.now()),
-    });
+    };
+    _applyActorStamp(row);
+    final id = await db.insert(ExpenseTable.name, row);
+    final actor = SessionContext.currentUser;
+    await _writeAuditLog(
+      actionType: AuditActionType.recordExpense,
+      referenceId: id.toString(),
+      description:
+          'Expense "$trimmedCategory" recorded by ${actor?.name ?? 'Unknown'} (${actor?.roleLabel ?? 'Staff'})',
+    );
     notifyListeners();
     return id;
   }
@@ -4501,6 +4779,435 @@ END
           '${ExpenseTable.expenseDate} DESC, ${ExpenseTable.id} DESC',
     );
     return maps.map(DbExpense.fromMap).toList();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Users & audit footprints
+  // ---------------------------------------------------------------------------
+
+  Future<bool> hasAnyUsers() async {
+    final db = await database;
+    await _ensureUserAuthSchema(db);
+    final rows = await db.rawQuery(
+      'SELECT COUNT(*) AS c FROM ${UserTable.name}',
+    );
+    return ((rows.first['c'] as num?)?.toInt() ?? 0) > 0;
+  }
+
+  /// True when an active Owner row exists (gates first-launch onboarding).
+  Future<bool> hasOwner() async {
+    final db = await database;
+    await _ensureUserAuthSchema(db);
+    final rows = await db.rawQuery(
+      'SELECT COUNT(*) AS c FROM ${UserTable.name} '
+      'WHERE ${UserTable.role} = ? AND ${UserTable.isActive} = 1',
+      [UserRole.owner],
+    );
+    return ((rows.first['c'] as num?)?.toInt() ?? 0) > 0;
+  }
+
+  Future<UserModel?> getOwnerUser() async {
+    final db = await database;
+    await _ensureUserAuthSchema(db);
+    final maps = await db.query(
+      UserTable.name,
+      where: '${UserTable.role} = ? AND ${UserTable.isActive} = 1',
+      whereArgs: [UserRole.owner],
+      orderBy: '${UserTable.createdAt} ASC',
+      limit: 1,
+    );
+    if (maps.isEmpty) return null;
+    return UserModel.fromMap(maps.first);
+  }
+
+  Future<List<UserModel>> getUsers() async {
+    final db = await database;
+    await _ensureUserAuthSchema(db);
+    final maps = await db.query(
+      UserTable.name,
+      orderBy: '''
+        CASE ${UserTable.role}
+          WHEN '${UserRole.owner}' THEN 0
+          WHEN '${UserRole.partner}' THEN 1
+          WHEN '${UserRole.manager}' THEN 2
+          ELSE 3
+        END,
+        ${UserTable.nameColumn} COLLATE NOCASE ASC
+      ''',
+    );
+    return maps.map(UserModel.fromMap).toList();
+  }
+
+  Future<UserModel?> getUserById(String id) async {
+    final db = await database;
+    await _ensureUserAuthSchema(db);
+    final maps = await db.query(
+      UserTable.name,
+      where: '${UserTable.id} = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (maps.isEmpty) return null;
+    return UserModel.fromMap(maps.first);
+  }
+
+  Future<UserModel?> findUserByPin(String pinCode) async {
+    final db = await database;
+    await _ensureUserAuthSchema(db);
+    final maps = await db.query(
+      UserTable.name,
+      where: '${UserTable.pinCode} = ? AND ${UserTable.isActive} = 1',
+      whereArgs: [pinCode],
+      limit: 1,
+    );
+    if (maps.isEmpty) return null;
+    return UserModel.fromMap(maps.first);
+  }
+
+  Future<bool> isPinInUse(String pinCode, {String? excludeUserId}) async {
+    final db = await database;
+    await _ensureUserAuthSchema(db);
+    final maps = await db.query(
+      UserTable.name,
+      columns: [UserTable.id],
+      where: excludeUserId == null
+          ? '${UserTable.pinCode} = ?'
+          : '${UserTable.pinCode} = ? AND ${UserTable.id} != ?',
+      whereArgs: excludeUserId == null ? [pinCode] : [pinCode, excludeUserId],
+      limit: 1,
+    );
+    return maps.isNotEmpty;
+  }
+
+  Future<UserModel> insertUser(UserModel user) async {
+    final db = await database;
+    await _ensureUserAuthSchema(db);
+    if (await isPinInUse(user.pinCode)) {
+      throw StateError('This PIN is already assigned to another account');
+    }
+    await db.insert(UserTable.name, user.toMap());
+    notifyListeners();
+    return user;
+  }
+
+  Future<UserModel> updateUser(UserModel user) async {
+    final db = await database;
+    await _ensureUserAuthSchema(db);
+    if (await isPinInUse(user.pinCode, excludeUserId: user.id)) {
+      throw StateError('This PIN is already assigned to another account');
+    }
+    await db.update(
+      UserTable.name,
+      user.toMap(),
+      where: '${UserTable.id} = ?',
+      whereArgs: [user.id],
+    );
+    notifyListeners();
+    return user;
+  }
+
+  Future<void> setUserActive(String userId, bool isActive) async {
+    final db = await database;
+    await _ensureUserAuthSchema(db);
+    final existing = await getUserById(userId);
+    if (existing == null) return;
+    if (existing.isOwner && !isActive) {
+      throw StateError('The Owner account cannot be deactivated');
+    }
+    await db.update(
+      UserTable.name,
+      {UserTable.isActive: isActive ? 1 : 0},
+      where: '${UserTable.id} = ?',
+      whereArgs: [userId],
+    );
+    notifyListeners();
+  }
+
+  Future<List<AuditLogModel>> getAuditLogsForUser(
+    String userId, {
+    int limit = 50,
+  }) async {
+    final db = await database;
+    await _ensureUserAuthSchema(db);
+    final maps = await db.query(
+      AuditLogTable.name,
+      where: '${AuditLogTable.userId} = ?',
+      whereArgs: [userId],
+      orderBy: '${AuditLogTable.timestamp} DESC',
+      limit: limit,
+    );
+    return maps.map(AuditLogModel.fromMap).toList();
+  }
+
+  Future<AuditLogModel?> getLatestAuditLogForUser(String userId) async {
+    final logs = await getAuditLogsForUser(userId, limit: 1);
+    return logs.isEmpty ? null : logs.first;
+  }
+
+  Future<Map<String, AuditLogModel?>> getLatestAuditLogsByUserIds(
+    List<String> userIds,
+  ) async {
+    final result = <String, AuditLogModel?>{
+      for (final id in userIds) id: null,
+    };
+    if (userIds.isEmpty) return result;
+    final db = await database;
+    await _ensureUserAuthSchema(db);
+    final placeholders = List.filled(userIds.length, '?').join(',');
+    final maps = await db.rawQuery(
+      '''
+      SELECT a.*
+      FROM ${AuditLogTable.name} a
+      INNER JOIN (
+        SELECT ${AuditLogTable.userId} AS uid, MAX(${AuditLogTable.timestamp}) AS max_ts
+        FROM ${AuditLogTable.name}
+        WHERE ${AuditLogTable.userId} IN ($placeholders)
+        GROUP BY ${AuditLogTable.userId}
+      ) latest
+        ON latest.uid = a.${AuditLogTable.userId}
+       AND latest.max_ts = a.${AuditLogTable.timestamp}
+      ''',
+      userIds,
+    );
+    for (final map in maps) {
+      final log = AuditLogModel.fromMap(map);
+      result[log.userId] = log;
+    }
+    return result;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Partners & equity drawings
+  // ---------------------------------------------------------------------------
+
+  Future<List<PartnerModel>> getPartners({bool activeOnly = false}) async {
+    final db = await database;
+    await _ensurePartnerSchema(db);
+    final maps = await db.query(
+      PartnerTable.name,
+      where: activeOnly ? '${PartnerTable.isActive} = 1' : null,
+      orderBy: '${PartnerTable.nameColumn} COLLATE NOCASE ASC',
+    );
+    return maps.map(PartnerModel.fromMap).toList();
+  }
+
+  Future<PartnerModel?> getPartnerById(String id) async {
+    final parsed = int.tryParse(id);
+    if (parsed == null) return null;
+    final db = await database;
+    await _ensurePartnerSchema(db);
+    final maps = await db.query(
+      PartnerTable.name,
+      where: '${PartnerTable.id} = ?',
+      whereArgs: [parsed],
+      limit: 1,
+    );
+    if (maps.isEmpty) return null;
+    return PartnerModel.fromMap(maps.first);
+  }
+
+  Future<PartnerModel?> getPartnerByZamindarId(String zamindarId) async {
+    final parsed = int.tryParse(zamindarId);
+    if (parsed == null) return null;
+    final db = await database;
+    await _ensurePartnerSchema(db);
+    final maps = await db.query(
+      PartnerTable.name,
+      where:
+          '${PartnerTable.zamindarId} = ? AND ${PartnerTable.isActive} = 1',
+      whereArgs: [parsed],
+      limit: 1,
+    );
+    if (maps.isEmpty) return null;
+    return PartnerModel.fromMap(maps.first);
+  }
+
+  Future<PartnerModel> insertPartner(PartnerModel partner) async {
+    final name = partner.name.trim();
+    if (name.isEmpty) {
+      throw ArgumentError('Partner name is required');
+    }
+    if (partner.initialCapital < 0) {
+      throw ArgumentError('Initial capital cannot be negative');
+    }
+
+    final db = await database;
+    await _ensurePartnerSchema(db);
+    final id = await db.insert(PartnerTable.name, {
+      PartnerTable.nameColumn: name,
+      PartnerTable.phone: partner.phone.trim(),
+      PartnerTable.userAccountId: partner.userAccountId,
+      PartnerTable.zamindarId: partner.zamindarId == null
+          ? null
+          : int.tryParse(partner.zamindarId!),
+      PartnerTable.initialCapital: partner.initialCapital,
+      PartnerTable.reinvestedProfit: partner.reinvestedProfit,
+      PartnerTable.activeDrawings: partner.activeDrawings,
+      PartnerTable.isActive: partner.isActive ? 1 : 0,
+      PartnerTable.createdAt: _formatDateTime(partner.createdAt),
+    });
+    notifyListeners();
+    return partner.copyWith(id: id.toString());
+  }
+
+  Future<PartnerModel> updatePartner(PartnerModel partner) async {
+    final parsed = int.tryParse(partner.id);
+    if (parsed == null) {
+      throw ArgumentError('Invalid partner id');
+    }
+    final db = await database;
+    await _ensurePartnerSchema(db);
+    await db.update(
+      PartnerTable.name,
+      {
+        PartnerTable.nameColumn: partner.name.trim(),
+        PartnerTable.phone: partner.phone.trim(),
+        PartnerTable.userAccountId: partner.userAccountId,
+        PartnerTable.zamindarId: partner.zamindarId == null
+            ? null
+            : int.tryParse(partner.zamindarId!),
+        PartnerTable.initialCapital: partner.initialCapital,
+        PartnerTable.reinvestedProfit: partner.reinvestedProfit,
+        PartnerTable.activeDrawings: partner.activeDrawings,
+        PartnerTable.isActive: partner.isActive ? 1 : 0,
+        PartnerTable.createdAt: _formatDateTime(partner.createdAt),
+      },
+      where: '${PartnerTable.id} = ?',
+      whereArgs: [parsed],
+    );
+    notifyListeners();
+    return partner;
+  }
+
+  Future<PartnerDrawingModel> recordPartnerDrawing({
+    required String partnerId,
+    required double amount,
+    required String type,
+    String? notes,
+    DateTime? date,
+  }) async {
+    if (amount <= 0) {
+      throw ArgumentError('Drawing amount must be greater than zero');
+    }
+    final normalized = type.toUpperCase();
+    if (normalized != PartnerDrawingType.taken &&
+        normalized != PartnerDrawingType.returned) {
+      throw ArgumentError('Drawing type must be TAKEN or RETURNED');
+    }
+
+    final partner = await getPartnerById(partnerId);
+    if (partner == null) {
+      throw StateError('Partner not found');
+    }
+
+    final db = await database;
+    await _ensurePartnerSchema(db);
+    final when = date ?? DateTime.now();
+    final drawingRow = <String, Object?>{
+      PartnerDrawingTable.partnerId: int.parse(partnerId),
+      PartnerDrawingTable.amount: amount,
+      PartnerDrawingTable.type: normalized,
+      PartnerDrawingTable.date: _formatDateTime(when),
+      PartnerDrawingTable.notes: notes?.trim(),
+      PartnerDrawingTable.isSettled: 0,
+    };
+    _applyActorStamp(drawingRow);
+    final drawingId = await db.insert(PartnerDrawingTable.name, drawingRow);
+
+    final delta =
+        normalized == PartnerDrawingType.taken ? amount : -amount;
+    final nextDrawings = partner.activeDrawings + delta;
+    await db.update(
+      PartnerTable.name,
+      {
+        PartnerTable.activeDrawings: nextDrawings < 0 ? 0 : nextDrawings,
+      },
+      where: '${PartnerTable.id} = ?',
+      whereArgs: [int.parse(partnerId)],
+    );
+    final actor = SessionContext.currentUser;
+    await _writeAuditLog(
+      actionType: AuditActionType.drawingEntry,
+      referenceId: drawingId.toString(),
+      description:
+          'Drawing $normalized for ${partner.name} by ${actor?.name ?? 'Unknown'} (${actor?.roleLabel ?? 'Staff'})',
+    );
+    notifyListeners();
+
+    return PartnerDrawingModel(
+      id: drawingId.toString(),
+      partnerId: partnerId,
+      amount: amount,
+      type: normalized,
+      date: when,
+      notes: notes?.trim(),
+      createdByUserId:
+          drawingRow[ActorColumns.createdByUserId]?.toString() ?? '',
+      createdByUserName:
+          drawingRow[ActorColumns.createdByUserName] as String? ?? '',
+      createdAt: DateTime.tryParse(
+            drawingRow[ActorColumns.createdAt] as String? ?? '',
+          ) ??
+          when,
+    );
+  }
+
+  Future<void> settlePartnerDrawing(String drawingId) async {
+    final parsed = int.tryParse(drawingId);
+    if (parsed == null) return;
+    final db = await database;
+    await _ensurePartnerSchema(db);
+
+    final rows = await db.query(
+      PartnerDrawingTable.name,
+      where: '${PartnerDrawingTable.id} = ?',
+      whereArgs: [parsed],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final drawing = PartnerDrawingModel.fromMap(rows.first);
+    if (drawing.isSettled) return;
+
+    await db.update(
+      PartnerDrawingTable.name,
+      {PartnerDrawingTable.isSettled: 1},
+      where: '${PartnerDrawingTable.id} = ?',
+      whereArgs: [parsed],
+    );
+
+    // Settling a TAKEN drawing clears that amount from active drawings debt.
+    if (drawing.isTaken) {
+      final partner = await getPartnerById(drawing.partnerId);
+      if (partner != null) {
+        final next = partner.activeDrawings - drawing.amount;
+        await db.update(
+          PartnerTable.name,
+          {
+            PartnerTable.activeDrawings: next < 0 ? 0 : next,
+          },
+          where: '${PartnerTable.id} = ?',
+          whereArgs: [int.parse(drawing.partnerId)],
+        );
+      }
+    }
+    notifyListeners();
+  }
+
+  Future<List<PartnerDrawingModel>> getPartnerDrawings({
+    String? partnerId,
+  }) async {
+    final db = await database;
+    await _ensurePartnerSchema(db);
+    final maps = await db.query(
+      PartnerDrawingTable.name,
+      where: partnerId == null
+          ? null
+          : '${PartnerDrawingTable.partnerId} = ?',
+      whereArgs: partnerId == null ? null : [int.tryParse(partnerId)],
+      orderBy:
+          '${PartnerDrawingTable.date} DESC, ${PartnerDrawingTable.id} DESC',
+    );
+    return maps.map(PartnerDrawingModel.fromMap).toList();
   }
 
   // ---------------------------------------------------------------------------
@@ -4715,14 +5422,16 @@ END
     final note = remarks.trim().isEmpty
         ? 'Kharchi/Advance — ${employee.name}'
         : 'Kharchi/Advance — ${employee.name}: ${remarks.trim()}';
-    final id = await db.insert(ExpenseTable.name, {
+    final row = <String, Object?>{
       ExpenseTable.category: 'Employee Salaries',
       ExpenseTable.amount: amount,
       ExpenseTable.remarks: note,
       ExpenseTable.expenseDate: _formatDateTime(date ?? DateTime.now()),
       ExpenseTable.employeeId: employeeId,
       ExpenseTable.payrollType: ExpensePayrollType.kharchi,
-    });
+    };
+    _applyActorStamp(row);
+    final id = await db.insert(ExpenseTable.name, row);
     notifyListeners();
     return id;
   }
@@ -4751,7 +5460,7 @@ END
     late final int expenseId;
     await db.transaction((txn) async {
       // Amount can be 0 when advances already covered earnings.
-      expenseId = await txn.insert(ExpenseTable.name, {
+      final row = <String, Object?>{
         ExpenseTable.category: 'Employee Salaries',
         ExpenseTable.amount: net > 0 ? net : 0,
         ExpenseTable.remarks:
@@ -4760,7 +5469,9 @@ END
         ExpenseTable.expenseDate: _formatDateTime(DateTime.now()),
         ExpenseTable.employeeId: employeeId,
         ExpenseTable.payrollType: ExpensePayrollType.settlement,
-      });
+      };
+      _applyActorStamp(row);
+      expenseId = await txn.insert(ExpenseTable.name, row);
     });
     notifyListeners();
     return expenseId;
@@ -5273,7 +5984,7 @@ END
     await _ensureWholesalerPaymentsSchema(db);
     await db.transaction((txn) async {
       // 1) Header — trigger syncs wholesaler_ledger + vendor balance.
-      await txn.insert(PurchaseInvoicesTable.name, {
+      final purchaseRow = <String, Object?>{
         PurchaseInvoicesTable.invoiceNumber: invoiceNumber,
         PurchaseInvoicesTable.wholesalerId: wholesalerId,
         PurchaseInvoicesTable.dateTime: _formatDateTime(dateTime),
@@ -5285,7 +5996,9 @@ END
         PurchaseInvoicesTable.outstanding: outstanding.round(),
         if (trimmedDescription.isNotEmpty)
           PurchaseInvoicesTable.description: trimmedDescription,
-      });
+      };
+      _applyActorStamp(purchaseRow);
+      await txn.insert(PurchaseInvoicesTable.name, purchaseRow);
 
       // 2) Line items + 3) inventory + 4) stock audit log.
       for (final item in items) {
@@ -5351,6 +6064,13 @@ END
       }
     });
 
+    final actor = SessionContext.currentUser;
+    await _writeAuditLog(
+      actionType: AuditActionType.purchaseEntry,
+      referenceId: invoiceNumber,
+      description:
+          'Purchase $invoiceNumber created by ${actor?.name ?? 'Unknown'} (${actor?.roleLabel ?? 'Staff'})',
+    );
     notifyListeners();
     return invoiceNumber;
   }
@@ -6518,7 +7238,7 @@ END
       }
 
       // Step 1: Insert sale (after_sale_insert trigger writes ledger DEBIT).
-      await txn.insert(SalesTable.name, {
+      final saleRow = <String, Object?>{
         SalesTable.invoiceNumber: invoiceNumber,
         SalesTable.dateTime: _formatDateTime(dateTime),
         SalesTable.subtotal: subtotal.round(),
@@ -6536,7 +7256,9 @@ END
         SalesTable.remarks: null,
         SalesTable.zamindarId: resolvedZamindarId,
         SalesTable.kisaanId: resolvedKisaanId,
-      });
+      };
+      _applyActorStamp(saleRow);
+      await txn.insert(SalesTable.name, saleRow);
 
       // Insert line items into sale_items table
       for (final item in items) {
@@ -6644,6 +7366,14 @@ END
       await _recalculateZamindarBalanceOn(txn, resolvedZamindarId);
     });
 
+    final actor = SessionContext.currentUser;
+    await _writeAuditLog(
+      actionType: AuditActionType.newSale,
+      referenceId: invoiceNumber,
+      description:
+          'Sale #$invoiceNumber created by ${actor?.name ?? 'Unknown'} (${actor?.roleLabel ?? 'Staff'})',
+    );
+
     notifyListeners();
 
     return {
@@ -6702,7 +7432,7 @@ END
 
     final db = await database;
     await db.transaction((txn) async {
-      await txn.insert(SalesTable.name, {
+      final advanceRow = <String, Object?>{
         SalesTable.invoiceNumber: invoiceNumber,
         SalesTable.dateTime: _formatDateTime(dateTime),
         SalesTable.subtotal: amount.round(),
@@ -6723,7 +7453,9 @@ END
             : null,
         SalesTable.zamindarId: zamindarId,
         SalesTable.kisaanId: kisaanId,
-      });
+      };
+      _applyActorStamp(advanceRow);
+      await txn.insert(SalesTable.name, advanceRow);
       // after_sale_insert trigger writes advance DEBIT ledger row.
 
       // Liters live on sales.fuel_quantity; line qty stays 1 so reports
@@ -8694,6 +9426,62 @@ class ExpensePayrollType {
   static const String settlement = 'settlement';
 }
 
+class PartnerTable {
+  static const String name = 'partners';
+  static const String id = 'id';
+  static const String nameColumn = 'name';
+  static const String phone = 'phone';
+  static const String userAccountId = 'user_account_id';
+  static const String zamindarId = 'zamindar_id';
+  static const String initialCapital = 'initial_capital';
+  static const String reinvestedProfit = 'reinvested_profit';
+  static const String activeDrawings = 'active_drawings';
+  static const String isActive = 'is_active';
+  static const String createdAt = 'created_at';
+}
+
+class PartnerDrawingTable {
+  static const String name = 'partner_drawings';
+  static const String id = 'id';
+  static const String partnerId = 'partner_id';
+  static const String amount = 'amount';
+  static const String type = 'type';
+  static const String date = 'date';
+  static const String notes = 'notes';
+  static const String isSettled = 'is_settled';
+}
+
+/// Shared actor-stamp column names on transactional tables.
+class ActorColumns {
+  static const String createdByUserId = 'created_by_user_id';
+  static const String createdByUserName = 'created_by_user_name';
+  static const String createdAt = 'created_at';
+}
+
+class UserTable {
+  static const String name = 'users';
+  static const String id = 'id';
+  static const String nameColumn = 'name';
+  static const String phone = 'phone';
+  static const String email = 'email';
+  static const String role = 'role';
+  static const String pinCode = 'pin_code';
+  static const String partnerId = 'partner_id';
+  static const String isActive = 'is_active';
+  static const String createdAt = 'created_at';
+}
+
+class AuditLogTable {
+  static const String name = 'audit_logs';
+  static const String id = 'id';
+  static const String userId = 'user_id';
+  static const String userName = 'user_name';
+  static const String actionType = 'action_type';
+  static const String referenceId = 'reference_id';
+  static const String description = 'description';
+  static const String timestamp = 'timestamp';
+}
+
 class PurchasePaymentType {
   static const String udhaar = 'Udhaar';
   static const String cash = 'Cash';
@@ -9052,6 +9840,8 @@ class ZamindarProductLedgerEntry {
   final String kisaanName;
   final String productName;
   final int quantity;
+  final int unitPrice;
+  final int lineTotal;
   final String uom;
 
   const ZamindarProductLedgerEntry({
@@ -9060,6 +9850,8 @@ class ZamindarProductLedgerEntry {
     required this.kisaanName,
     required this.productName,
     required this.quantity,
+    required this.unitPrice,
+    required this.lineTotal,
     required this.uom,
   });
 }
@@ -9313,6 +10105,9 @@ class DbWholesaler {
   }
 }
 
+/// Shop operating expense with permanent actor footprint.
+typedef ExpenseModel = DbExpense;
+
 class DbExpense {
   final int? id;
   final String category;
@@ -9322,6 +10117,11 @@ class DbExpense {
   final int? employeeId;
   final String? payrollType;
 
+  /// Permanent actor snapshot at insert time (never look up live users).
+  final String createdByUserId;
+  final String createdByUserName;
+  final DateTime createdAt;
+
   const DbExpense({
     this.id,
     required this.category,
@@ -9330,7 +10130,10 @@ class DbExpense {
     required this.expenseDate,
     this.employeeId,
     this.payrollType,
-  });
+    this.createdByUserId = '',
+    this.createdByUserName = '',
+    DateTime? createdAt,
+  }) : createdAt = createdAt ?? expenseDate;
 
   Map<String, Object?> toMap() => {
     ExpenseTable.category: category,
@@ -9339,18 +10142,28 @@ class DbExpense {
     ExpenseTable.expenseDate: DatabaseHelper._formatDateTime(expenseDate),
     ExpenseTable.employeeId: employeeId,
     ExpenseTable.payrollType: payrollType,
+    ActorColumns.createdByUserId: createdByUserId,
+    ActorColumns.createdByUserName: createdByUserName,
+    ActorColumns.createdAt: DatabaseHelper._formatDateTime(createdAt),
   };
 
   factory DbExpense.fromMap(Map<String, Object?> map) {
     final rawDate = map[ExpenseTable.expenseDate] as String? ?? '';
+    final expenseDate = DateTime.tryParse(rawDate) ?? DateTime.now();
+    final rawCreated = map[ActorColumns.createdAt] as String?;
     return DbExpense(
       id: map[ExpenseTable.id] as int?,
       category: map[ExpenseTable.category] as String? ?? '',
       amount: (map[ExpenseTable.amount] as num?)?.toDouble() ?? 0,
       remarks: map[ExpenseTable.remarks] as String? ?? '',
-      expenseDate: DateTime.tryParse(rawDate) ?? DateTime.now(),
+      expenseDate: expenseDate,
       employeeId: map[ExpenseTable.employeeId] as int?,
       payrollType: map[ExpenseTable.payrollType] as String?,
+      createdByUserId:
+          map[ActorColumns.createdByUserId]?.toString() ?? '',
+      createdByUserName:
+          map[ActorColumns.createdByUserName] as String? ?? '',
+      createdAt: DateTime.tryParse(rawCreated ?? '') ?? expenseDate,
     );
   }
 }
@@ -9498,6 +10311,7 @@ class ProductHistoryEntry {
   final String referenceType;
   final String? referenceId;
   final String? notes;
+  final String? createdByUserName;
 
   const ProductHistoryEntry({
     this.id,
@@ -9510,6 +10324,7 @@ class ProductHistoryEntry {
     required this.referenceType,
     this.referenceId,
     this.notes,
+    this.createdByUserName,
   });
 
   bool get isStockIn => movementType == StockMovementType.stockIn;

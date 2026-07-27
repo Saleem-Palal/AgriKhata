@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:path/path.dart' as p;
 import '../models/ledger_models.dart';
+import '../services/whatsapp_urdu_service.dart';
 import '../utils/pdf_generator.dart';
-import '../utils/pdf_share.dart';
+import '../utils/shop_settings.dart';
+import '../theme/theme.dart';
 
 final _currencyFormat = NumberFormat('#,##,##0');
 final _dateFormat = DateFormat('dd MMM');
@@ -295,6 +296,19 @@ class LedgerTable extends StatelessWidget {
                       color: Color(0xFF95B89A),
                     ),
                   ),
+                  if (entry.createdByUserName != null &&
+                      entry.createdByUserName!.trim().isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      'Recorded By: ${entry.createdByUserName!.trim()}',
+                      style: const TextStyle(
+                        fontSize: 10,
+                        color: Color(0xFF6B8F71),
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -1051,6 +1065,12 @@ class _InvoiceDetailDialogState extends State<InvoiceDetailDialog> {
           _buildInfoRow('Date:', _dateFormat.format(widget.entry.date)),
           _buildInfoRow('Time:', _timeFormat.format(widget.entry.date)),
           _buildInfoRow('Season:', widget.entry.season),
+          if (widget.entry.createdByUserName != null &&
+              widget.entry.createdByUserName!.trim().isNotEmpty)
+            _buildInfoRow(
+              'Recorded By:',
+              widget.entry.createdByUserName!.trim(),
+            ),
         ],
       ),
     );
@@ -1267,21 +1287,11 @@ class _InvoiceDetailDialogState extends State<InvoiceDetailDialog> {
     try {
       await PdfGenerator.printInvoice(widget.entry);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Invoice sent to printer'),
-            backgroundColor: Color(0xFF28A745),
-          ),
-        );
+        AppToast.showSuccess(context, 'Invoice sent to printer');
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to print: $e'),
-            backgroundColor: const Color(0xFFDC3545),
-          ),
-        );
+        AppToast.showError(context, 'Failed to print: $e');
       }
     } finally {
       if (mounted) {
@@ -1294,42 +1304,32 @@ class _InvoiceDetailDialogState extends State<InvoiceDetailDialog> {
     setState(() => _isProcessing = true);
     try {
       final file = await PdfGenerator.saveInvoiceToFile(widget.entry);
+      final shopName = await ShopSettings.getShopName();
 
       try {
-        await PdfShare.sharePdfFile(
-          file: file,
-          fileName: p.basename(file.path),
-          text:
-              'Invoice ${widget.entry.invoiceNumber} - ₨ ${_currencyFormat.format(widget.entry.total)}',
-          subject: 'AgriKhata Invoice',
+        await WhatsAppUrduService.sharePdfWithUrduCaption(
+          phone: '',
+          zamindarName: widget.entry.stakeholderName,
+          shopName: shopName,
+          amount: widget.entry.total,
+          pdfPath: file.path,
+          detailLines: [
+            'انوائس نمبر: ${widget.entry.invoiceNumber}',
+            'ادا شدہ: Rs ${_currencyFormat.format(widget.entry.paid.round())}',
+          ],
+          subject: 'AgriKhata Invoice ${widget.entry.invoiceNumber}',
         );
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Invoice ready to share'),
-              backgroundColor: Color(0xFF28A745),
-            ),
-          );
+          AppToast.showSuccess(context, 'Invoice ready to share');
         }
       } catch (shareError) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('PDF saved to: ${file.path}'),
-              backgroundColor: const Color(0xFF28A745),
-              duration: const Duration(seconds: 5),
-            ),
-          );
+          AppToast.showSuccess(context, 'PDF saved to: ${file.path}');
         }
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to share: $e'),
-            backgroundColor: const Color(0xFFDC3545),
-          ),
-        );
+        AppToast.showError(context, 'Failed to share: $e');
       }
     } finally {
       if (mounted) {
@@ -1940,14 +1940,32 @@ class PurchaseLedgerTable extends StatelessWidget {
             ),
           ),
           Expanded(
-            child: Text(
-              entry.ledgerSummary,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontSize: 11.5,
-                color: Color(0xFF6B8F71),
-              ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  entry.ledgerSummary,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 11.5,
+                    color: Color(0xFF6B8F71),
+                  ),
+                ),
+                if (entry.createdByUserName != null &&
+                    entry.createdByUserName!.trim().isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    'Recorded By: ${entry.createdByUserName!.trim()}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 10,
+                      color: Color(0xFF95B89A),
+                    ),
+                  ),
+                ],
+              ],
             ),
           ),
           SizedBox(

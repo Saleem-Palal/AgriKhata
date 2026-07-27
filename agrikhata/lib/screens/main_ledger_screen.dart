@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:path/path.dart' as p;
 import '../models/ledger_models.dart';
+import '../services/whatsapp_urdu_service.dart';
 import '../utils/season_utils.dart';
 import '../utils/pdf_generator.dart';
-import '../utils/pdf_share.dart';
+import '../utils/shop_settings.dart';
 import '../Widgets/ledger_widgets.dart';
 import '../Database/database_helper.dart' as db;
+import '../theme/theme.dart';
+import '../Data/agri_header.dart';
 
 class MainLedgerScreen extends StatefulWidget {
   final Function(String)? onEditInvoice;
@@ -238,6 +240,13 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
             status: status,
             season: _selectedSeason.displayName,
             isWalkInCustomer: !registeredZamindarNames.contains(zamindarName),
+            createdByUserId:
+                sale[db.ActorColumns.createdByUserId]?.toString(),
+            createdByUserName:
+                sale[db.ActorColumns.createdByUserName] as String?,
+            createdAt: DateTime.tryParse(
+              sale[db.ActorColumns.createdAt] as String? ?? '',
+            ),
           ),
         );
       }
@@ -284,6 +293,13 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
             season: _selectedSeason.displayName,
             purchaseTerms: terms,
             description: description,
+            createdByUserId:
+                row[db.ActorColumns.createdByUserId]?.toString(),
+            createdByUserName:
+                row[db.ActorColumns.createdByUserName] as String?,
+            createdAt: DateTime.tryParse(
+              row[db.ActorColumns.createdAt] as String? ?? '',
+            ),
           ),
         );
       }
@@ -302,12 +318,7 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
       debugPrint('Error loading ledger data: $e');
       setState(() => _isLoading = false);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to load ledger data: $e'),
-            backgroundColor: const Color(0xFFDC3545),
-          ),
-        );
+        AppToast.showError(context, 'Failed to load ledger data: $e');
       }
     }
   }
@@ -377,25 +388,16 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
       );
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              isPurchases
-                  ? 'Purchase Ledger PDF saved successfully'
-                  : 'PDF Saved Successfully to Local Storage',
-            ),
-            backgroundColor: const Color(0xFF28A745),
-          ),
+        AppToast.showSuccess(
+          context,
+          isPurchases
+              ? 'Purchase Ledger PDF saved successfully'
+              : 'PDF Saved Successfully to Local Storage',
         );
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to export: $e'),
-            backgroundColor: const Color(0xFFDC3545),
-          ),
-        );
+        AppToast.showError(context, 'Failed to export: $e');
       }
     } finally {
       if (mounted) {
@@ -408,57 +410,88 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
     setState(() => _isExporting = true);
 
     try {
-      final isPurchases = _tabController.index == 1;
-      if (isPurchases) {
-        final summary = LedgerSummary(
-          totalVolume: _purchaseKpis['totalPurchases'] ?? 0,
-          totalCashReceived: _purchaseKpis['paidCash'] ?? 0,
-          outstandingCredit: _purchaseKpis['outstandingDebt'] ?? 0,
-        );
-        final message =
-            'AgriKhata Purchase Ledger — ${_selectedSeason.displayName}\n'
-            'Total Purchases: Rs ${NumberFormat('#,##,##0').format(summary.totalVolume.round())}\n'
-            'Paid Cash Outflow: Rs ${NumberFormat('#,##,##0').format(summary.totalCashReceived.round())}\n'
-            'Outstanding Supplier Debt: Rs ${NumberFormat('#,##,##0').format(summary.outstandingCredit.round())}\n'
-            'Invoices: ${_filteredPurchasesEntries.length}';
+      final shopName = await ShopSettings.getShopName();
+      final tabIndex = _tabController.index;
+      final seasonLabel = _selectedSeason.displayName;
 
+      final String recipientLabel;
+      final double amount;
+      final List<String> detailLines;
+      final String subject;
+      final String pdfPath;
+
+      if (tabIndex == 1) {
+        // Purchases / Wholesalers ledger
+        final outstanding = _purchaseKpis['outstandingDebt'] ?? 0;
+        final totalPurchases = _purchaseKpis['totalPurchases'] ?? 0;
+        final paidCash = _purchaseKpis['paidCash'] ?? 0;
         final file = await PdfGenerator.saveConsolidatedLedgerToDocuments(
           salesEntries: const [],
           purchasesEntries: _filteredPurchasesEntries,
           paymentEntries: const [],
           season: _selectedSeason,
         );
-
-        await PdfShare.sharePdfFile(
-          file: file,
-          fileName: p.basename(file.path),
-          text: message,
-          subject: 'AgriKhata Purchase Ledger',
-        );
-      } else {
+        recipientLabel = 'محترم تھوک فروش';
+        amount = outstanding;
+        detailLines = [
+          'رپورٹ: خریداری کھاتہ — $seasonLabel',
+          'کل خریداری: ${WhatsAppUrduService.formatAmount(totalPurchases)}',
+          'ادا شدہ نقد: ${WhatsAppUrduService.formatAmount(paidCash)}',
+          'رسیدیں: ${_filteredPurchasesEntries.length}',
+        ];
+        subject = 'AgriKhata Purchase Ledger';
+        pdfPath = file.path;
+      } else if (tabIndex == 2) {
+        // Payments ledger
+        final summary = PaymentSummary.fromEntries(_filteredPaymentsEntries);
         final file = await PdfGenerator.saveConsolidatedLedgerToDocuments(
-          salesEntries: _filteredSalesEntries,
-          purchasesEntries: _filteredPurchasesEntries,
+          salesEntries: const [],
+          purchasesEntries: const [],
           paymentEntries: _filteredPaymentsEntries,
           season: _selectedSeason,
         );
-
-        await PdfShare.sharePdfFile(
-          file: file,
-          fileName: p.basename(file.path),
-          text:
-              'AgriKhata Consolidated Ledger — ${_selectedSeason.displayName}',
-          subject: 'AgriKhata Consolidated Ledger',
+        recipientLabel = 'محترم گاہک';
+        amount = summary.totalPaymentsReceived;
+        detailLines = [
+          'رپورٹ: وصولی کھاتہ — $seasonLabel',
+          'کل وصولیاں: ${WhatsAppUrduService.formatAmount(summary.totalPaymentsReceived)}',
+          'ایڈوانس: ${WhatsAppUrduService.formatAmount(summary.totalAdvanceCollected)}',
+        ];
+        subject = 'AgriKhata Payments Ledger';
+        pdfPath = file.path;
+      } else {
+        // Sales / Zamindars (+ Kisaans) ledger
+        final summary = LedgerSummary.fromEntries(_filteredSalesEntries);
+        final file = await PdfGenerator.saveConsolidatedLedgerToDocuments(
+          salesEntries: _filteredSalesEntries,
+          purchasesEntries: const [],
+          paymentEntries: const [],
+          season: _selectedSeason,
         );
+        recipientLabel = 'محترم زمیندار';
+        amount = summary.outstandingCredit;
+        detailLines = [
+          'رپورٹ: فروخت کھاتہ — $seasonLabel',
+          'کل فروخت: ${WhatsAppUrduService.formatAmount(summary.totalVolume)}',
+          'نقد وصولی: ${WhatsAppUrduService.formatAmount(summary.totalCashReceived)}',
+          'رسیدیں: ${_filteredSalesEntries.length}',
+        ];
+        subject = 'AgriKhata Sales Ledger';
+        pdfPath = file.path;
       }
+
+      await WhatsAppUrduService.sharePdfWithUrduCaption(
+        phone: '',
+        zamindarName: recipientLabel,
+        shopName: shopName,
+        amount: amount,
+        pdfPath: pdfPath,
+        detailLines: detailLines,
+        subject: subject,
+      );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to share via WhatsApp: $e'),
-            backgroundColor: const Color(0xFFDC3545),
-          ),
-        );
+        AppToast.showError(context, 'Failed to share via WhatsApp: $e');
       }
     } finally {
       if (mounted) {
@@ -471,10 +504,13 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
   Widget build(BuildContext context) {
     super.build(context); // Required for AutomaticKeepAliveClientMixin
     return Scaffold(
-      backgroundColor: const Color(0xFFF7F9F4),
+      backgroundColor: AppColors.background,
       body: Column(
         children: [
-          _buildTopBar(),
+          AgriHeader(
+            breadcrumbs: const ['Finance', 'Ledger'],
+            actions: const [],
+          ),
           Expanded(
             child: Padding(
               padding: const EdgeInsets.all(20),
@@ -489,38 +525,6 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
                   Expanded(child: _buildLedgerCard()),
                 ],
               ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTopBar() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        border: Border(
-          bottom: BorderSide(color: Color(0xFFE2EBE0), width: 0.5),
-        ),
-      ),
-      child: Row(
-        children: [
-          const Text(
-            'Finance',
-            style: TextStyle(fontSize: 12, color: Color(0xFF95B89A)),
-          ),
-          const Text(
-            '  ›  ',
-            style: TextStyle(fontSize: 12, color: Color(0xFF95B89A)),
-          ),
-          const Text(
-            'Ledger',
-            style: TextStyle(
-              fontSize: 12,
-              color: Color(0xFF1B4332),
-              fontWeight: FontWeight.w500,
             ),
           ),
         ],
@@ -656,170 +660,39 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
   }
 
   Widget _buildFilterRow() {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final searchField = Container(
-          height: 36,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            border: Border.all(color: const Color(0xFFC6DEC9), width: 0.5),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Row(
-            children: [
-              const Icon(Icons.search, size: 15, color: Color(0xFF95B89A)),
-              const SizedBox(width: 7),
-              Expanded(
-                child: TextField(
-                  controller: _searchController,
-                  decoration: InputDecoration(
-                    hintText: _tabController.index == 1
-                        ? 'Search Invoice # or Wholesaler name...'
-                        : _tabController.index == 2
-                            ? 'Search Payment ID, Invoice # or Zamindar...'
-                            : 'Search Invoice #, Zamindar or Kisaan name...',
-                    hintStyle: const TextStyle(
-                      fontSize: 12.5,
-                      color: Color(0xFF95B89A),
-                    ),
-                    border: InputBorder.none,
-                    isDense: true,
-                    contentPadding: EdgeInsets.symmetric(vertical: 8),
-                  ),
-                  style: const TextStyle(
-                    fontSize: 12.5,
-                    color: Color(0xFF1B4332),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        );
+    final searchHint = _tabController.index == 1
+        ? 'Search Invoice # or Wholesaler name...'
+        : _tabController.index == 2
+            ? 'Search Payment ID, Invoice # or Zamindar...'
+            : 'Search Invoice #, Zamindar or Kisaan name...';
 
-        final exportButton = InkWell(
-          onTap: _isExporting ? null : _handleExportStatement,
-          child: Container(
-            height: 36,
-            padding: const EdgeInsets.symmetric(horizontal: 13),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              border: Border.all(color: const Color(0xFFC6DEC9), width: 0.5),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_isExporting)
-                  const SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      valueColor: AlwaysStoppedAnimation<Color>(
-                        Color(0xFF1B4332),
-                      ),
-                    ),
-                  )
-                else
-                  const Icon(
-                    Icons.file_download_outlined,
-                    size: 14,
-                    color: Color(0xFF1B4332),
-                  ),
-                const SizedBox(width: 6),
-                const Text(
-                  'Export Statement',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                    color: Color(0xFF1B4332),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-
-        final whatsAppButton = InkWell(
-          onTap: _isExporting ? null : _handleShareViaWhatsApp,
-          child: Container(
-            height: 36,
-            padding: const EdgeInsets.symmetric(horizontal: 13),
-            decoration: BoxDecoration(
-              color: const Color(0xFF25D366),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: const Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.chat_outlined,
-                  size: 14,
-                  color: Colors.white,
-                ),
-                SizedBox(width: 6),
-                Text(
-                  'Share via WhatsApp',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                    color: Colors.white,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-
-        if (constraints.maxWidth < 720) {
-          return Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              SizedBox(width: constraints.maxWidth, child: searchField),
-              SeasonDropdown(
-                selectedSeason: _selectedSeason,
-                availableSeasons: _availableSeasons,
-                onChanged: (season) {
-                  if (season != null && season != _selectedSeason) {
-                    setState(() {
-                      _selectedSeason = season;
-                    });
-                    _loadLedgerData();
-                  }
-                },
-              ),
-              exportButton,
-              whatsAppButton,
-            ],
-          );
-        }
-
-        return Row(
-          children: [
-            Expanded(child: searchField),
-            const SizedBox(width: 10),
-            SeasonDropdown(
-              selectedSeason: _selectedSeason,
-              availableSeasons: _availableSeasons,
-              onChanged: (season) {
-                if (season != null && season != _selectedSeason) {
-                  setState(() {
-                    _selectedSeason = season;
-                  });
-                  _loadLedgerData();
-                }
-              },
-            ),
-            const SizedBox(width: 10),
-            exportButton,
-            const SizedBox(width: 10),
-            whatsAppButton,
-          ],
-        );
-      },
+    return AppSearchBar(
+      controller: _searchController,
+      hintText: searchHint,
+      breakpoint: 720,
+      filters: [
+        SeasonDropdown(
+          selectedSeason: _selectedSeason,
+          availableSeasons: _availableSeasons,
+          onChanged: (season) {
+            if (season != null && season != _selectedSeason) {
+              setState(() => _selectedSeason = season);
+              _loadLedgerData();
+            }
+          },
+        ),
+        AppButton.secondary(
+          label: 'Export Statement',
+          icon: Icons.file_download_outlined,
+          loading: _isExporting,
+          onPressed: _isExporting ? null : _handleExportStatement,
+        ),
+        AppButton.whatsapp(
+          label: 'Share via WhatsApp',
+          loading: _isExporting,
+          onPressed: _isExporting ? null : _handleShareViaWhatsApp,
+        ),
+      ],
     );
   }
 
@@ -1003,27 +876,13 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
   }
 
   Future<void> _handleDeleteInvoice(LedgerEntry entry) async {
-    final confirmed = await showDialog<bool>(
+    final confirmed = await AppDialog.confirm(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Delete Transaction?'),
-        content: const Text(
+      title: 'Delete Transaction?',
+      message:
           'Are you sure you want to delete this transaction and all associated payments?',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            style: TextButton.styleFrom(
-              foregroundColor: const Color(0xFFDC3545),
-            ),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
+      confirmLabel: 'Delete',
+      danger: true,
     );
 
     if (confirmed != true) return;
@@ -1031,21 +890,14 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
     try {
       await db.DatabaseHelper.instance.deleteInvoiceEntirely(entry.invoiceNumber);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Invoice ${entry.invoiceNumber} deleted'),
-            backgroundColor: const Color(0xFF28A745),
-          ),
+        AppToast.showSuccess(
+          context,
+          'Invoice ${entry.invoiceNumber} deleted',
         );
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to delete invoice: $e'),
-            backgroundColor: const Color(0xFFDC3545),
-          ),
-        );
+        AppToast.showError(context, 'Failed to delete invoice: $e');
       }
     }
   }

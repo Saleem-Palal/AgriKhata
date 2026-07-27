@@ -8,6 +8,8 @@ class ShopSettings {
   static const shopAddressKey = 'shop_address';
   static const shopPhoneKey = 'shop_phone';
   static const darkThemeKey = 'dark_theme';
+  static const showThumbprintBlockThermalKey =
+      'show_thumbprint_block_thermal';
 
   static const defaultShopName = 'Shop Name';
   static const notConfiguredLabel = 'Not configured yet';
@@ -69,6 +71,18 @@ class ShopSettings {
   static Future<void> setDarkTheme(bool enabled) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(darkThemeKey, enabled);
+  }
+
+  /// Whether thermal (80mm) receipts include the ink thumbprint/sign block.
+  /// Defaults to enabled when unset.
+  static Future<bool> getShowThumbprintBlockOnThermal() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(showThumbprintBlockThermalKey) ?? true;
+  }
+
+  static Future<void> setShowThumbprintBlockOnThermal(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(showThumbprintBlockThermalKey, enabled);
   }
 
   /// Subtitle for Settings rows: saved value, or [notConfiguredLabel].

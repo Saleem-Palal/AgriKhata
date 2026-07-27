@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AgriKhata — Login &amp; Onboarding</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+<style>
+  *{box-sizing:border-box}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    background:#F0F4EE;color:#1B4332;
+    min-height:100vh;display:flex;align-items:center;justify-content:center;
+    padding:24px;
+  }
+
+  .scene{width:100%;max-width:1040px}
+
+  .card{background:#fff;border:0.5px solid #E2EBE0;border-radius:18px;box-shadow:0 20px 60px rgba(27,67,50,0.08)}
+
+  .brand-name{font-size:20px;font-weight:700;display:flex;align-items:center;gap:8px}
+
+  .field-label{font-size:11.5px;font-weight:600;color:#4B5A50;margin-bottom:6px;display:block}
+  .field-input{width:100%;border:0.5px solid #C6DEC9;border-radius:9px;padding:10px 13px;font-size:13px;color:#1B4332;background:#fff}
+  .field-input:focus{outline:none;border-color:#40916C;box-shadow:0 0 0 3px rgba(64,145,108,0.12)}
+  .field-input::placeholder{color:#95B89A}
+  .field-input:disabled{background:#F7F9F4;color:#B4C4B8;cursor:not-allowed}
+
+  .btn-primary{background:#1B4332;color:#fff;border:none;border-radius:11px;padding:13px;font-size:13.5px;font-weight:600;cursor:pointer;transition:background .15s ease}
+  .btn-primary:hover:not(:disabled){background:#163828}
+  .btn-primary:disabled{background:#B4C4B8;cursor:not-allowed}
+
+  .google-btn{
+    display:flex;align-items:center;justify-content:center;gap:10px;
+    width:100%;background:#fff;border:1px solid #DADCE0;border-radius:11px;
+    padding:12px;font-size:13.5px;font-weight:600;color:#3C4043;cursor:pointer;
+    transition:box-shadow .15s ease, background .15s ease;
+  }
+  .google-btn:hover{box-shadow:0 2px 8px rgba(0,0,0,0.1);background:#F8F9FA}
+
+  .divider{display:flex;align-items:center;gap:12px;color:#95B89A;font-size:11px;margin:16px 0}
+  .divider::before,.divider::after{content:'';flex:1;height:1px;background:#E2EBE0}
+
+  .pin-box{width:100%;border:0.5px solid #C6DEC9;border-radius:9px;padding:9px 13px;font-size:15px;letter-spacing:4px;color:#1B4332}
+  .pin-box:focus{outline:none;border-color:#40916C}
+  .pin-toggle{cursor:pointer;color:#95B89A}
+  .pin-toggle:hover{color:#40916C}
+
+  /* ---------- STATE 1: split onboarding ---------- */
+  .onboarding-split{display:flex;border-radius:18px;overflow:hidden}
+  .intro-panel{
+    width:42%;flex-shrink:0;background:linear-gradient(165deg,#1B4332 0%,#173B2B 100%);
+    color:#fff;padding:38px 32px;display:flex;flex-direction:column;justify-content:space-between;
+    position:relative;overflow:hidden;
+  }
+  .intro-panel::before{
+    content:'';position:absolute;top:-70px;right:-70px;width:220px;height:220px;
+    background:radial-gradient(circle,rgba(64,145,108,0.3) 0%,transparent 70%);
+  }
+  .intro-headline{font-size:19px;font-weight:700;line-height:1.4;margin:22px 0 26px;position:relative;z-index:1}
+  .feature-item{display:flex;align-items:flex-start;gap:11px;margin-bottom:15px;position:relative;z-index:1}
+  .feature-icon{
+    width:30px;height:30px;border-radius:9px;background:rgba(255,255,255,0.1);
+    display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:14px;
+  }
+  .feature-text{font-size:12px;color:#D8E6DC;line-height:1.4;padding-top:5px}
+  .intro-footer{
+    font-size:10.5px;color:#95D5B2;display:flex;align-items:center;gap:7px;
+    border-top:0.5px solid rgba(255,255,255,0.15);padding-top:14px;position:relative;z-index:1;
+  }
+
+  .form-panel{flex:1;padding:38px 40px;background:#fff}
+
+  /* ---------- STATE 2: staff cards ---------- */
+  .staff-card{
+    border:1px solid #E2EBE0;border-radius:14px;padding:14px 10px;text-align:center;
+    cursor:pointer;transition:all .15s ease;background:#fff;
+  }
+  .staff-card:hover{border-color:#97C459;background:#F7FBF3;transform:translateY(-1px)}
+  .staff-card.selected{border-color:#1B4332;background:#EAF3DE;box-shadow:0 4px 14px rgba(27,67,50,0.12)}
+  .staff-av{
+    width:46px;height:46px;border-radius:50%;background:#D8F3DC;color:#1B4332;
+    display:flex;align-items:center;justify-content:center;font-size:14.5px;font-weight:700;
+    margin:0 auto 9px;border:1.5px solid #B7E4C7;
+  }
+  .staff-card.selected .staff-av{background:#1B4332;color:#fff;border-color:#1B4332}
+  .staff-name{font-size:12px;font-weight:700;color:#1B4332}
+  .role-badge{
+    display:inline-block;margin-top:5px;font-size:9px;font-weight:600;
+    padding:2px 8px;border-radius:20px;background:#F0F4EE;color:#5C8468;
+  }
+  .role-badge.owner{background:#FAEEDA;color:#633806}
+
+  /* ---------- PIN dots ---------- */
+  .pin-dots{display:flex;gap:16px;justify-content:center}
+  .pin-dot{width:15px;height:15px;border-radius:50%;border:1.5px solid #C6DEC9;transition:all .15s ease}
+  .pin-dot.filled{background:#1B4332;border-color:#1B4332;transform:scale(1.1)}
+  .pin-dot.shake{animation:shakeDot .35s}
+  @keyframes shakeDot{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+
+  /* ---------- Compact 3x4 keypad ---------- */
+  .keypad{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;width:252px;margin:0 auto}
+  .key-btn{
+    background:#fff;border:1px solid #E2EBE0;border-radius:12px;
+    padding:13px 0;font-size:23px;font-weight:600;color:#1B4332;cursor:pointer;
+    transition:all .1s ease;user-select:none;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .key-btn:hover{background:#F7F9F4;border-color:#C6DEC9}
+  .key-btn:active{transform:scale(.93);background:#EAF3DE}
+  .key-btn.func{
+    font-size:12px;font-weight:700;color:#6B8F71;background:#F0F4EE;border-color:#E2EBE0;
+    letter-spacing:.3px;
+  }
+  .key-btn.func:hover{background:#E5EEE2}
+  .key-btn.func i{font-size:15px}
+
+  /* ---------- toggle preview button ---------- */
+  .preview-toggle{
+    display:inline-flex;align-items:center;gap:7px;font-size:11.5px;font-weight:600;
+    color:#5C8468;background:#F0F4EE;border:0.5px solid #DCE6D9;border-radius:20px;
+    padding:7px 14px;cursor:pointer;
+  }
+  .preview-toggle:hover{background:#E5EEE2}
+
+  .view{display:none}
+  .view.active{display:block}
+
+  .fade-in{animation:fadeIn .3s ease}
+  @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+</style>
+</head>
+<body>
+
+<div class="scene">
+
+  <!-- top preview switcher (dev/demo affordance, not part of the real product) -->
+  <div class="flex justify-center mb-4">
+    <div class="preview-toggle" onclick="toggleView()">
+      <i class="fa-solid fa-shuffle"></i>
+      <span id="toggleLabel">Preview Counter Login</span>
+    </div>
+  </div>
+
+  <!-- ======================================================= -->
+  <!-- STATE 1: OWNER INITIAL ONBOARDING — SPLIT SCREEN -->
+  <!-- ======================================================= -->
+  <div id="viewOnboarding" class="view active fade-in">
+    <div class="card onboarding-split mx-auto" style="max-width:900px">
+
+      <!-- ---------- LEFT: App introduction ---------- -->
+      <div class="intro-panel">
+        <div>
+          <div class="brand-name"><i class="fa-solid fa-leaf" style="color:#95D5B2"></i>AgriKhata ERP</div>
+
+          <div class="intro-headline">Smart Shop Management for Pesticide &amp; Fertilizer Stores</div>
+
+          <div class="feature-item">
+            <div class="feature-icon">🌾</div>
+            <div class="feature-text">Zamindar Credit &amp; Khata Ledgers</div>
+          </div>
+          <div class="feature-item">
+            <div class="feature-icon">📦</div>
+            <div class="feature-text">Inventory &amp; Weighted Average Batch Pricing</div>
+          </div>
+          <div class="feature-item">
+            <div class="feature-icon">🤝</div>
+            <div class="feature-text">Partner Capital &amp; Equity Share Calculations</div>
+          </div>
+          <div class="feature-item">
+            <div class="feature-icon">⚡</div>
+            <div class="feature-text">High-Speed Counter Checkout with PIN Access</div>
+          </div>
+        </div>
+
+        <div class="intro-footer">
+          <i class="fa-solid fa-shield-halved"></i>
+          Secure Local Database with Cloud Sync Capability
+        </div>
+      </div>
+
+      <!-- ---------- RIGHT: Account setup form ---------- -->
+      <div class="form-panel">
+        <div class="mb-5">
+          <div class="text-[15px] font-bold" style="color:#1B4332">Set up your owner profile</div>
+          <div class="text-[12px] mt-1" style="color:#8CA491">This only takes a minute — you'll be ready to launch right after.</div>
+        </div>
+
+        <!-- Google Sign-in -->
+        <button class="google-btn" id="googleSignInBtn" onclick="handleGoogleSignIn()">
+          <svg width="18" height="18" viewBox="0 0 48 48">
+            <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.6-6 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.5 6.1 29.5 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.7-.4-3.5z"/>
+            <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 15.9 18.9 13 24 13c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.5 6.1 29.5 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/>
+            <path fill="#4CAF50" d="M24 44c5.4 0 10.3-2.1 14-5.5l-6.5-5.4C29.4 34.9 26.8 36 24 36c-5.3 0-9.7-3.4-11.3-8l-6.6 5.1C9.6 39.6 16.2 44 24 44z"/>
+            <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.2 4.2-4 5.6l6.5 5.4C40.9 36.2 44 30.6 44 24c0-1.3-.1-2.7-.4-3.5z"/>
+          </svg>
+          Sign in with Google
+        </button>
+
+        <div class="divider">then complete your profile</div>
+
+        <!-- Setup form -->
+        <div id="setupForm" style="opacity:0.4;pointer-events:none">
+          <div class="mb-3">
+            <label class="field-label">Owner Name</label>
+            <input type="text" class="field-input" id="ownerName" value="Atta Muhammad" disabled />
+          </div>
+          <div class="mb-3">
+            <label class="field-label">Store / Business Name</label>
+            <input type="text" class="field-input" placeholder="e.g. AM Pesticides &amp; Fertilizers" disabled />
+          </div>
+          <div class="mb-3">
+            <label class="field-label">Phone Number</label>
+            <input type="text" class="field-input" placeholder="03XX-XXXXXXX" disabled />
+          </div>
+          <div class="grid grid-cols-2 gap-3 mb-5">
+            <div>
+              <label class="field-label">Set 4-Digit PIN</label>
+              <div class="relative">
+                <input type="password" maxlength="4" class="pin-box" placeholder="••••" disabled id="pinSet" />
+                <i class="fa-regular fa-eye pin-toggle absolute" style="right:12px;top:50%;transform:translateY(-50%)" onclick="togglePinVisibility('pinSet', this)"></i>
+              </div>
+            </div>
+            <div>
+              <label class="field-label">Confirm PIN</label>
+              <div class="relative">
+                <input type="password" maxlength="4" class="pin-box" placeholder="••••" disabled id="pinConfirm" />
+                <i class="fa-regular fa-eye pin-toggle absolute" style="right:12px;top:50%;transform:translateY(-50%)" onclick="togglePinVisibility('pinConfirm', this)"></i>
+              </div>
+            </div>
+          </div>
+          <button class="btn-primary w-full" id="completeSetupBtn" disabled>
+            <i class="fa-solid fa-arrow-right-to-bracket mr-2"></i>Complete Setup &amp; Launch App
+          </button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ======================================================= -->
+  <!-- STATE 2: QUICK COUNTER LOGIN & STAFF SWITCHING -->
+  <!-- ======================================================= -->
+  <div id="viewCounterLogin" class="view fade-in">
+    <div class="card mx-auto" style="max-width:640px;padding:34px 38px">
+
+      <div class="text-center mb-6">
+        <div class="brand-name justify-center" style="color:#1B4332"><i class="fa-solid fa-leaf" style="color:#40916C"></i>AgriKhata</div>
+        <div class="text-[13px] font-semibold mt-3" style="color:#1B4332">AM Pesticides &amp; Fertilizers</div>
+        <div class="text-[11.5px] mt-1" style="color:#8CA491">Select your account or enter PIN to access the terminal.</div>
+      </div>
+
+      <!-- Staff selector grid -->
+      <div class="grid grid-cols-4 gap-3 mb-8" id="staffGrid">
+        <div class="staff-card selected" data-name="Atta Muhammad" data-role="Owner / Partner" data-role-class="owner" data-initials="AM" onclick="selectStaff(this)">
+          <div class="staff-av">AM</div>
+          <div class="staff-name">Atta Muhammad</div>
+          <span class="role-badge owner">Owner / Partner</span>
+        </div>
+        <div class="staff-card" data-name="Zubair Ahmed" data-role="Partner" data-role-class="" data-initials="ZA" onclick="selectStaff(this)">
+          <div class="staff-av">ZA</div>
+          <div class="staff-name">Zubair Ahmed</div>
+          <span class="role-badge">Partner</span>
+        </div>
+        <div class="staff-card" data-name="Ali Raza" data-role="Manager" data-role-class="" data-initials="AR" onclick="selectStaff(this)">
+          <div class="staff-av">AR</div>
+          <div class="staff-name">Ali Raza</div>
+          <span class="role-badge">Manager</span>
+        </div>
+        <div class="staff-card" data-name="Shop Cashier" data-role="Cashier" data-role-class="" data-initials="SC" onclick="selectStaff(this)">
+          <div class="staff-av">SC</div>
+          <div class="staff-name">Shop Cashier</div>
+          <span class="role-badge">Cashier</span>
+        </div>
+      </div>
+
+      <!-- Centered active user + PIN dots + keypad stack -->
+      <div class="flex flex-col items-center">
+
+        <div class="flex items-center gap-3 mb-6">
+          <div class="staff-av" style="margin:0;background:#1B4332;color:#fff;border-color:#1B4332" id="activeAvatar">AM</div>
+          <div>
+            <div class="text-[14px] font-bold" style="color:#1B4332" id="activeName">Atta Muhammad</div>
+            <span class="role-badge owner" id="activeRole">Owner / Partner</span>
+          </div>
+        </div>
+
+        <div class="pin-dots mb-7" id="pinDots">
+          <div class="pin-dot"></div>
+          <div class="pin-dot"></div>
+          <div class="pin-dot"></div>
+          <div class="pin-dot"></div>
+        </div>
+
+        <!-- Compact 3x4 keypad -->
+        <div class="keypad">
+          <div class="key-btn" onclick="pressKey('1')">1</div>
+          <div class="key-btn" onclick="pressKey('2')">2</div>
+          <div class="key-btn" onclick="pressKey('3')">3</div>
+          <div class="key-btn" onclick="pressKey('4')">4</div>
+          <div class="key-btn" onclick="pressKey('5')">5</div>
+          <div class="key-btn" onclick="pressKey('6')">6</div>
+          <div class="key-btn" onclick="pressKey('7')">7</div>
+          <div class="key-btn" onclick="pressKey('8')">8</div>
+          <div class="key-btn" onclick="pressKey('9')">9</div>
+          <div class="key-btn func" onclick="clearPin()">C</div>
+          <div class="key-btn" onclick="pressKey('0')">0</div>
+          <div class="key-btn func" onclick="backspacePin()"><i class="fa-solid fa-delete-left"></i></div>
+        </div>
+
+        <div class="text-[10.5px] text-center mt-5" style="color:#95B89A">
+          You can also type your PIN using the keyboard.
+        </div>
+
+        <a href="#" class="text-[11.5px] font-medium mt-4" style="color:#40916C">Forgot PIN? Ask Owner</a>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<script>
+/* ======================= VIEW TOGGLE ======================= */
+function toggleView() {
+  const onboarding = document.getElementById('viewOnboarding');
+  const counter = document.getElementById('viewCounterLogin');
+  const label = document.getElementById('toggleLabel');
+
+  if (onboarding.classList.contains('active')) {
+    onboarding.classList.remove('active');
+    counter.classList.add('active');
+    label.textContent = 'Preview First-Time Onboarding';
+  } else {
+    counter.classList.remove('active');
+    onboarding.classList.add('active');
+    label.textContent = 'Preview Counter Login';
+  }
+}
+
+/* ======================= STATE 1: ONBOARDING ======================= */
+function handleGoogleSignIn() {
+  const form = document.getElementById('setupForm');
+  form.style.opacity = '1';
+  form.style.pointerEvents = 'auto';
+  document.querySelectorAll('#setupForm input').forEach(el => el.disabled = false);
+  document.getElementById('completeSetupBtn').disabled = false;
+
+  const googleBtn = document.getElementById('googleSignInBtn');
+  googleBtn.innerHTML = '<i class="fa-solid fa-circle-check" style="color:#2D6A4F"></i> Signed in as atta.muhammad@gmail.com';
+  googleBtn.style.pointerEvents = 'none';
+  googleBtn.style.background = '#F0F7EB';
+  googleBtn.style.borderColor = '#97C459';
+}
+
+function togglePinVisibility(inputId, iconEl) {
+  const input = document.getElementById(inputId);
+  if (input.type === 'password') {
+    input.type = 'text';
+    iconEl.classList.remove('fa-eye');
+    iconEl.classList.add('fa-eye-slash');
+  } else {
+    input.type = 'password';
+    iconEl.classList.remove('fa-eye-slash');
+    iconEl.classList.add('fa-eye');
+  }
+}
+
+/* ======================= STATE 2: STAFF SELECT ======================= */
+function selectStaff(card) {
+  document.querySelectorAll('.staff-card').forEach(c => c.classList.remove('selected'));
+  card.classList.add('selected');
+
+  document.getElementById('activeAvatar').textContent = card.dataset.initials;
+  document.getElementById('activeName').textContent = card.dataset.name;
+
+  const roleEl = document.getElementById('activeRole');
+  roleEl.textContent = card.dataset.role;
+  roleEl.className = 'role-badge' + (card.dataset.roleClass === 'owner' ? ' owner' : '');
+
+  clearPin();
+}
+
+/* ======================= STATE 2: PIN ENTRY ======================= */
+let currentPin = '';
+
+function renderPinDots() {
+  const dots = document.querySelectorAll('#pinDots .pin-dot');
+  dots.forEach((dot, i) => dot.classList.toggle('filled', i < currentPin.length));
+}
+
+function pressKey(digit) {
+  if (currentPin.length >= 4) return;
+  currentPin += digit;
+  renderPinDots();
+  if (currentPin.length === 4) {
+    setTimeout(() => {
+      document.querySelectorAll('#pinDots .pin-dot').forEach(d => d.classList.add('shake'));
+      setTimeout(() => {
+        document.querySelectorAll('#pinDots .pin-dot').forEach(d => d.classList.remove('shake'));
+        clearPin();
+      }, 400);
+    }, 150);
+  }
+}
+
+function backspacePin() {
+  currentPin = currentPin.slice(0, -1);
+  renderPinDots();
+}
+
+function clearPin() {
+  currentPin = '';
+  renderPinDots();
+}
+
+document.addEventListener('keydown', (e) => {
+  if (!document.getElementById('viewCounterLogin').classList.contains('active')) return;
+  if (/^[0-9]$/.test(e.key)) pressKey(e.key);
+  else if (e.key === 'Backspace') backspacePin();
+  else if (e.key === 'Escape') clearPin();
+});
+</script>
+</body>
+</html>

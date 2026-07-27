@@ -9,6 +9,7 @@ class UpdateDialog extends StatefulWidget {
     required this.currentVersion,
     required this.changelog,
     required this.downloadUrl,
+    this.initialStatus,
     this.onUpdateNow,
   });
 
@@ -16,6 +17,7 @@ class UpdateDialog extends StatefulWidget {
   final String currentVersion;
   final List<String> changelog;
   final String downloadUrl;
+  final String? initialStatus;
   final Future<void> Function(
     String downloadUrl, {
     void Function(String status)? onStatus,
@@ -29,6 +31,7 @@ class UpdateDialog extends StatefulWidget {
     required String currentVersion,
     required List<String> changelog,
     required String downloadUrl,
+    String? initialStatus,
     Future<void> Function(
       String downloadUrl, {
       void Function(String status)? onStatus,
@@ -44,6 +47,7 @@ class UpdateDialog extends StatefulWidget {
         currentVersion: currentVersion,
         changelog: changelog,
         downloadUrl: downloadUrl,
+        initialStatus: initialStatus,
         onUpdateNow: onUpdateNow,
       ),
     );
@@ -56,9 +60,18 @@ class UpdateDialog extends StatefulWidget {
 class _UpdateDialogState extends State<UpdateDialog> {
   bool _busy = false;
   bool _completed = false;
-  String _status = '';
+  late String _status;
   String? _error;
   double? _progress; // null => indeterminate
+
+  bool get _hasCachedPackage =>
+      (widget.initialStatus ?? '').toLowerCase().contains('already downloaded');
+
+  @override
+  void initState() {
+    super.initState();
+    _status = widget.initialStatus ?? '';
+  }
 
   static String _formatDownloadLabel(int receivedBytes, int totalBytes) {
     final downloadedMB = receivedBytes / (1024 * 1024);
@@ -79,8 +92,10 @@ class _UpdateDialogState extends State<UpdateDialog> {
       _busy = true;
       _completed = false;
       _error = null;
-      _status = 'Preparing update...';
-      _progress = null;
+      _status = _hasCachedPackage
+          ? 'Preparing installer...'
+          : 'Preparing update...';
+      _progress = _hasCachedPackage ? 1.0 : null;
     });
 
     try {
@@ -90,13 +105,8 @@ class _UpdateDialogState extends State<UpdateDialog> {
           if (!mounted) return;
           setState(() {
             _status = status;
-            if (status.startsWith('Downloading:')) {
-              // Keep whatever progress onProgress last set.
-            } else if (status.toLowerCase().contains('install')) {
-              // Download finished — hold a full bar, then indeterminate feel.
-              _progress = null;
-            } else {
-              _progress = null;
+            if (!status.startsWith('Downloading:')) {
+              _progress = status.toLowerCase().contains('download') ? _progress : null;
             }
           });
         },
@@ -106,23 +116,21 @@ class _UpdateDialogState extends State<UpdateDialog> {
             _status = _formatDownloadLabel(receivedBytes, totalBytes);
             _progress =
                 totalBytes > 0 ? (receivedBytes / totalBytes).clamp(0.0, 1.0) : null;
-            // Keep the bar full once download finishes so it doesn't look
-            // like the UI reset right before install.
             if (totalBytes > 0 && receivedBytes >= totalBytes) {
               _progress = 1.0;
             }
           });
         },
       );
-      // Install may shut the process down via ForceApplicationShutdown.
-      // If we are still here, show the final status (success or manual steps).
+      // App stays open until the user confirms in Windows Installer.
       if (!mounted) return;
       setState(() {
         _busy = false;
         _completed = true;
         _progress = null;
         if (_status.isEmpty) {
-          _status = 'Update ready. Restart AgriKhata to finish.';
+          _status =
+              'Windows Installer opened. Confirm Update there to finish.';
         }
       });
     } catch (e) {
@@ -193,6 +201,19 @@ class _UpdateDialogState extends State<UpdateDialog> {
                     fontSize: 12.5,
                     fontWeight: FontWeight.w600,
                     fontFeatures: [FontFeature.tabularFigures()],
+                    height: 1.35,
+                  ),
+                ),
+              ],
+              if (!_busy && !_completed && _status.isNotEmpty && _error == null) ...[
+                const SizedBox(height: 18),
+                Text(
+                  _status,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: AppColors.textMuted,
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
                     height: 1.35,
                   ),
                 ),
@@ -339,28 +360,53 @@ class _UpdateDialogState extends State<UpdateDialog> {
 
   Widget _buildActions() {
     if (_completed) {
-      return SizedBox(
-        width: double.infinity,
-        child: ElevatedButton(
-          onPressed: () => Navigator.of(context).pop(),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: AppColors.darkGreen,
-            foregroundColor: Colors.white,
-            elevation: 0,
-            shadowColor: Colors.transparent,
-            padding: const EdgeInsets.symmetric(vertical: 14),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10),
+      return Row(
+        children: [
+          Expanded(
+            child: TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              style: TextButton.styleFrom(
+                foregroundColor: AppColors.textMuted,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  side: const BorderSide(color: AppColors.border),
+                ),
+              ),
+              child: const Text(
+                'Close',
+                style: TextStyle(
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
             ),
           ),
-          child: const Text(
-            'OK',
-            style: TextStyle(
-              fontSize: 13.5,
-              fontWeight: FontWeight.w700,
+          const SizedBox(width: 12),
+          Expanded(
+            child: ElevatedButton(
+              onPressed: _handleUpdateNow,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.darkGreen,
+                foregroundColor: Colors.white,
+                elevation: 0,
+                shadowColor: Colors.transparent,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              child: const Text(
+                'Open Installer Again',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
             ),
           ),
-        ),
+        ],
       );
     }
 
@@ -417,7 +463,11 @@ class _UpdateDialogState extends State<UpdateDialog> {
                   const Icon(Icons.system_update_alt_rounded, size: 18),
                 const SizedBox(width: 8),
                 Text(
-                  _busy ? 'Updating...' : 'Update Now',
+                  _busy
+                      ? 'Working...'
+                      : _hasCachedPackage
+                          ? 'Install'
+                          : 'Update Now',
                   style: const TextStyle(
                     fontSize: 13.5,
                     fontWeight: FontWeight.w700,

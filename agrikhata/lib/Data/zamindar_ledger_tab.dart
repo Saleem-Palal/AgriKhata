@@ -2,10 +2,11 @@ import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Database/database_helper.dart';
 import 'package:agrikhata/Widgets/ledger_widgets.dart';
 import 'package:agrikhata/screens/new_sale_screen.dart';
+import 'package:agrikhata/services/whatsapp_urdu_service.dart';
+import 'package:agrikhata/theme/theme.dart';
 import 'package:agrikhata/utils/pdf_generator.dart';
-import 'package:agrikhata/utils/pdf_share.dart';
+import 'package:agrikhata/utils/shop_settings.dart';
 import 'package:flutter/material.dart';
-import 'package:path/path.dart' as p;
 
 class ZamindarLedgerTab extends StatefulWidget {
   final int zamindarId;
@@ -22,28 +23,33 @@ class ZamindarLedgerTab extends StatefulWidget {
 }
 
 class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
+  final TextEditingController _searchController = TextEditingController();
   String _selectedSeason = "All seasons";
   List<Map<String, dynamic>> _allTransactions = [];
   Map<String, String> _invoiceItemSummaries = {};
   Map<String, Map<String, double>> _invoiceCollections = {};
   String _outstandingBalanceDisplay = "Rs. 0";
+  double _outstandingBalanceAmount = 0;
   int _totalPaymentsReceived = 0;
   bool _isLoading = true;
   bool _isExporting = false;
   String? _loadError;
   String _zamindarName = 'Zamindar';
+  String _zamindarWhatsapp = '';
 
   List<String> _seasons = ["All seasons"];
 
   @override
   void initState() {
     super.initState();
+    _searchController.addListener(() => setState(() {}));
     _loadLedgerData();
     DatabaseHelper.instance.addListener(_onDatabaseChanged);
   }
 
   @override
   void dispose() {
+    _searchController.dispose();
     DatabaseHelper.instance.removeListener(_onDatabaseChanged);
     super.dispose();
   }
@@ -71,6 +77,9 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
       final zamindar = await DatabaseHelper.instance.getZamindar(
         widget.zamindarId,
       );
+      final balances = await DatabaseHelper.instance.getZamindarBalancesSafe(
+        widget.zamindarId,
+      );
 
       final invoiceNumbers = transactions
           .map((row) => row[LedgerTransactionTable.invoiceNumber] as String?)
@@ -88,12 +97,15 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
         _invoiceItemSummaries = itemSummaries;
         _invoiceCollections = collections;
         _outstandingBalanceDisplay = outstandingBalance;
+        _outstandingBalanceAmount =
+            (balances?['outstandingBalance'] as num?)?.toDouble() ?? 0;
         _totalPaymentsReceived = totalPayments;
         _seasons = ["All seasons", ...distinctSeasons];
         if (!_seasons.contains(_selectedSeason)) {
           _selectedSeason = "All seasons";
         }
         _zamindarName = zamindar?.name ?? 'Zamindar';
+        _zamindarWhatsapp = zamindar?.whatsappNumber ?? '';
         _isLoading = false;
       });
     } catch (e) {
@@ -106,16 +118,33 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
   }
 
   List<Map<String, dynamic>> get _filteredTransactions {
-    if (_selectedSeason == "All seasons") {
-      return _allTransactions;
-    }
-    return _allTransactions
-        .where(
-          (row) =>
-              (row[LedgerTransactionTable.season] as String? ?? '') ==
-              _selectedSeason,
-        )
-        .toList();
+    final query = _searchController.text.trim().toLowerCase();
+
+    return _allTransactions.where((row) {
+      if (_selectedSeason != "All seasons") {
+        final season = row[LedgerTransactionTable.season] as String? ?? '';
+        if (season != _selectedSeason) return false;
+      }
+
+      if (query.isEmpty) return true;
+
+      final invoiceNumber =
+          row[LedgerTransactionTable.invoiceNumber] as String? ?? '';
+      final kisaan = (row['kisaan_name'] as String? ?? '').toLowerCase();
+      final description =
+          (row[LedgerTransactionTable.description] as String? ?? '')
+              .toLowerCase();
+      final category =
+          (row[LedgerTransactionTable.category] as String? ?? '').toLowerCase();
+      final items =
+          (_invoiceItemSummaries[invoiceNumber] ?? '').toLowerCase();
+
+      return invoiceNumber.toLowerCase().contains(query) ||
+          kisaan.contains(query) ||
+          description.contains(query) ||
+          category.contains(query) ||
+          items.contains(query);
+    }).toList();
   }
 
   int get _totalDebit => _allTransactions
@@ -160,20 +189,10 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
         cumulativeRemaining: _cumulativeRemaining(rows),
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('PDF saved to ${file.path}'),
-          backgroundColor: const Color(0xFF2D6A4F),
-        ),
-      );
+      AppToast.showSuccess(context, 'PDF saved to ${file.path}');
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to export PDF: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      AppToast.showError(context, 'Failed to export PDF: $e');
     } finally {
       if (mounted) setState(() => _isExporting = false);
     }
@@ -192,20 +211,18 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
         cumulativeRemaining: _cumulativeRemaining(rows),
       );
 
-      await PdfShare.sharePdfFile(
-        file: file,
-        fileName: p.basename(file.path),
-        text: 'AgriKhata Ledger - $_zamindarName ($_selectedSeason)',
-        subject: 'AgriKhata Ledger PDF',
+      final shopName = await ShopSettings.getShopName();
+      await WhatsAppUrduService.sharePdfWithUrduCaption(
+        phone: _zamindarWhatsapp,
+        zamindarName: _zamindarName,
+        shopName: shopName,
+        amount: _outstandingBalanceAmount,
+        pdfPath: file.path,
+        subject: 'AgriKhata Ledger — $_zamindarName',
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to share via WhatsApp: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      AppToast.showError(context, 'Failed to share via WhatsApp: $e');
     } finally {
       if (mounted) setState(() => _isExporting = false);
     }
@@ -226,12 +243,7 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
       await PdfGenerator.printDocument(pdf);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to print: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      AppToast.showError(context, 'Failed to print: $e');
     } finally {
       if (mounted) setState(() => _isExporting = false);
     }
@@ -339,75 +351,39 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
   }
 
   Widget _buildFilterBar() {
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      children: [
-        _dropdown(
-          _seasons,
-          _selectedSeason,
-          (val) => setState(() => _selectedSeason = val!),
+    return AppSearchBar(
+      controller: _searchController,
+      hintText: 'Search Invoice #, Kisaan or items...',
+      breakpoint: 720,
+      filters: [
+        AppFilterDropdown(
+          options: _seasons,
+          value: _selectedSeason,
+          onChanged: (val) {
+            if (val != null) setState(() => _selectedSeason = val);
+          },
         ),
         Text(
           "${_filteredTransactions.length} transactions",
           style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
         ),
-        _exportBtn(Icons.print_outlined, "Print", _handlePrint),
-        _exportBtn(
-          Icons.chat_outlined,
-          "WhatsApp PDF",
-          _handleShareWhatsAppPdf,
+        AppButton.secondary(
+          label: 'Print',
+          icon: Icons.print_outlined,
+          loading: _isExporting,
+          onPressed: _isExporting ? null : _handlePrint,
         ),
-        _exportBtn(
-          Icons.picture_as_pdf_outlined,
-          "Export PDF",
-          _handleExportPdf,
+        AppButton.whatsapp(
+          label: 'WhatsApp PDF',
+          loading: _isExporting,
+          onPressed: _isExporting ? null : _handleShareWhatsAppPdf,
+        ),
+        AppButton.pdf(
+          label: 'Export PDF',
+          loading: _isExporting,
+          onPressed: _isExporting ? null : _handleExportPdf,
         ),
       ],
-    );
-  }
-
-  Widget _dropdown(
-    List<String> options,
-    String value,
-    ValueChanged<String?> onChanged,
-  ) {
-    return Container(
-      height: 38,
-      padding: const EdgeInsets.symmetric(horizontal: 10),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: AppColors.sidebarBg, width: 0.5),
-      ),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<String>(
-          value: value,
-          icon: const Icon(
-            Icons.keyboard_arrow_down,
-            size: 16,
-            color: AppColors.textMuted,
-          ),
-          style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
-          items: options
-              .map((opt) => DropdownMenuItem(value: opt, child: Text(opt)))
-              .toList(),
-          onChanged: onChanged,
-        ),
-      ),
-    );
-  }
-
-  Widget _exportBtn(IconData icon, String label, VoidCallback onPressed) {
-    return OutlinedButton.icon(
-      onPressed: _isExporting ? null : onPressed,
-      icon: Icon(icon, size: 14),
-      label: Text(label, style: const TextStyle(fontSize: 12)),
-      style: OutlinedButton.styleFrom(
-        side: const BorderSide(color: AppColors.sidebarBg, width: 0.5),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      ),
     );
   }
 
@@ -560,21 +536,11 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
     try {
       await DatabaseHelper.instance.deleteInvoiceEntirely(invoiceNumber);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Invoice $invoiceNumber deleted'),
-            backgroundColor: const Color(0xFF28A745),
-          ),
-        );
+        AppToast.showSuccess(context, 'Invoice $invoiceNumber deleted');
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to delete invoice: $e'),
-            backgroundColor: const Color(0xFFDC3545),
-          ),
-        );
+        AppToast.showError(context, 'Failed to delete invoice: $e');
       }
     }
   }
@@ -607,12 +573,7 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
 
     if (invoiceNumber == null || invoiceNumber.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('This sale is not linked to an invoice.'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        AppToast.showError(context, 'This sale is not linked to an invoice.');
       }
       return;
     }
@@ -623,12 +584,7 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
           .getInvoiceRemainingBalance(invoiceNumber);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Could not load invoice balance: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        AppToast.showError(context, 'Could not load invoice balance: $e');
       }
       return;
     }
@@ -769,24 +725,12 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
 
                           if (context.mounted) {
                             Navigator.pop(context);
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text(
-                                  'Payment of Rs ${_fmt(amount)} recorded successfully',
-                                ),
-                                backgroundColor: const Color(0xFF2D6A4F),
-                              ),
-                            );
+                            AppToast.showSuccess(context, 'Payment of Rs ${_fmt(amount)} recorded successfully',);
                             _loadLedgerData();
                           }
                         } catch (e) {
                           if (context.mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text('Failed to record payment: $e'),
-                                backgroundColor: Colors.red,
-                              ),
-                            );
+                            AppToast.showError(context, 'Failed to record payment: $e');
                           }
                         }
                       }

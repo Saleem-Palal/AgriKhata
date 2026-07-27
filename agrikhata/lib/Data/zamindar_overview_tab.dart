@@ -1,8 +1,12 @@
 import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Database/database_helper.dart';
 import 'package:agrikhata/Widgets/ledger_widgets.dart';
+import 'package:agrikhata/services/session_context.dart';
+import 'package:agrikhata/services/whatsapp_urdu_service.dart';
+import 'package:agrikhata/theme/theme.dart';
 import 'package:agrikhata/utils/pdf_generator.dart';
 import 'package:agrikhata/utils/season_utils.dart';
+import 'package:agrikhata/utils/shop_settings.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
@@ -198,7 +202,10 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                if (trailing != null) Flexible(child: trailing),
+                if (trailing != null) ...[
+                  const SizedBox(width: AppSpacing.sm),
+                  trailing,
+                ],
               ],
             ),
           ),
@@ -431,6 +438,9 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
   int get _filteredProductTotalQty =>
       _filteredProductLedger.fold<int>(0, (sum, item) => sum + item.quantity);
 
+  int get _filteredProductTotalValue =>
+      _filteredProductLedger.fold<int>(0, (sum, item) => sum + item.lineTotal);
+
   String get _filteredProductTotalUom {
     final uoms = _filteredProductLedger.map((e) => e.uom).toSet();
     if (uoms.length == 1) return uoms.first;
@@ -441,12 +451,7 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
     final filtered = _filteredProductLedger;
     if (filtered.isEmpty) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('No product ledger rows to export'),
-          backgroundColor: Colors.orange,
-        ),
-      );
+      AppToast.showWarning(context, 'No product ledger rows to export');
       return;
     }
 
@@ -463,6 +468,8 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
               'product_name': e.productName,
               'quantity': e.quantity,
               'uom': e.uom,
+              'unit_price': e.unitPrice,
+              'line_total': e.lineTotal,
             },
           )
           .toList();
@@ -473,23 +480,14 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
         filterLabel: filterLabel,
         totalQuantity: _filteredProductTotalQty,
         totalUom: _filteredProductTotalUom,
+        totalValue: _filteredProductTotalValue,
       );
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('PDF saved to ${file.path}'),
-          backgroundColor: AppColors.darkGreen,
-        ),
-      );
+      AppToast.showSuccess(context, 'PDF saved to ${file.path}');
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to generate PDF: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      AppToast.showError(context, 'Failed to generate PDF: $e');
     }
   }
 
@@ -498,28 +496,15 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
     final filtered = _filteredProductLedger;
     final totalQty = _filteredProductTotalQty;
     final totalUom = _filteredProductTotalUom;
+    final totalValue = _filteredProductTotalValue;
     final hasSelection = _selectedProducts.isNotEmpty;
 
     return _card(
       title: "Product-wise ledger",
       padChild: false,
-      trailing: OutlinedButton.icon(
+      trailing: AppButton.pdf(
+        compact: true,
         onPressed: _generateProductWiseLedgerPdf,
-        icon: const Icon(
-          Icons.picture_as_pdf_outlined,
-          size: 14,
-          color: Color(0xFF27500A),
-        ),
-        label: const Text(
-          "Generate PDF",
-          style: TextStyle(fontSize: 11, color: Color(0xFF27500A)),
-        ),
-        style: OutlinedButton.styleFrom(
-          side: const BorderSide(color: Color(0xFF27500A)),
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          minimumSize: Size.zero,
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -616,7 +601,7 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
                         children: [
                           Text(
                             hasSelection
-                                ? 'Selected product total'
+                                ? 'Selected product quantity'
                                 : 'Total quantity issued',
                             style: const TextStyle(
                               fontSize: 11,
@@ -628,6 +613,40 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
                           const SizedBox(height: 2),
                           Text(
                             '$totalQty $totalUom',
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.darkGreen,
+                              letterSpacing: -0.3,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Container(
+                      width: 1,
+                      height: 36,
+                      color: AppColors.border,
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            hasSelection
+                                ? 'Selected product value'
+                                : 'Total value issued',
+                            style: const TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.textMuted,
+                              letterSpacing: 0.2,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            'Rs ${_fmt(totalValue.toDouble())}',
                             style: const TextStyle(
                               fontSize: 18,
                               fontWeight: FontWeight.w700,
@@ -678,7 +697,7 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
             LayoutBuilder(
               builder: (context, constraints) {
                 final width =
-                    constraints.maxWidth < 720 ? 720.0 : constraints.maxWidth;
+                    constraints.maxWidth < 920 ? 920.0 : constraints.maxWidth;
                 return SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   child: SizedBox(
@@ -752,9 +771,29 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
             ),
           ),
           SizedBox(
-            width: 100,
+            width: 90,
             child: Text(
               'QUANTITY',
+              textAlign: TextAlign.right,
+              style: _productLedgerHeaderStyle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          SizedBox(
+            width: 100,
+            child: Text(
+              'PRODUCT PRICE',
+              textAlign: TextAlign.right,
+              style: _productLedgerHeaderStyle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          SizedBox(
+            width: 110,
+            child: Text(
+              'TOTAL PRICE',
               textAlign: TextAlign.right,
               style: _productLedgerHeaderStyle,
               maxLines: 1,
@@ -835,13 +874,41 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
             ),
           ),
           SizedBox(
-            width: 100,
+            width: 90,
             child: Text(
               '${entry.quantity} ${entry.uom}',
               textAlign: TextAlign.right,
               style: const TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
+                color: AppColors.darkGreen,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          SizedBox(
+            width: 100,
+            child: Text(
+              'Rs ${_fmt(entry.unitPrice.toDouble())}',
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: AppColors.darkGreen,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          SizedBox(
+            width: 110,
+            child: Text(
+              'Rs ${_fmt(entry.lineTotal.toDouble())}',
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
                 color: AppColors.darkGreen,
               ),
               maxLines: 1,
@@ -965,65 +1032,68 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
       title: "Quick actions",
       child: Column(
         children: [
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: widget.onNavigateToSaleWithZamindar,
-              icon: const Icon(Icons.receipt_long_outlined, size: 15),
-              label: const Text("New sale for this Zamindar"),
-            ),
+          AppButton.primary(
+            label: 'New sale for this Zamindar',
+            icon: Icons.receipt_long_outlined,
+            expanded: true,
+            onPressed: widget.onNavigateToSaleWithZamindar,
           ),
-          const SizedBox(height: 8),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: widget.onNavigateToAddKisaan,
-              icon: const Icon(Icons.person_add_outlined, size: 15),
-              label: const Text("Add Kisaan"),
-            ),
+          const SizedBox(height: AppSpacing.sm),
+          AppButton.secondary(
+            label: 'Add Kisaan',
+            icon: Icons.person_add_outlined,
+            expanded: true,
+            onPressed: widget.onNavigateToAddKisaan,
           ),
-          const SizedBox(height: 8),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: () {
-                _showPlaceholderDialog(
-                  context,
-                  "Send via WhatsApp",
-                  "Send ledger summary to ${widget.zamindar.name} via WhatsApp.",
-                );
-              },
-              icon: const Icon(Icons.send_outlined, size: 15),
-              label: const Text("Send via WhatsApp"),
-            ),
+          const SizedBox(height: AppSpacing.sm),
+          AppButton.whatsapp(
+            label: 'Send via WhatsApp',
+            expanded: true,
+            onPressed: _sendWhatsAppReminder,
           ),
         ],
       ),
     );
   }
 
-  void _showPlaceholderDialog(
-    BuildContext context,
-    String title,
-    String message,
-  ) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(
-          title,
-          style: const TextStyle(color: AppColors.darkGreen, fontSize: 16),
-        ),
-        content: Text(message, style: const TextStyle(fontSize: 13)),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("Got it"),
-          ),
-        ],
-      ),
-    );
+  Future<void> _sendWhatsAppReminder() async {
+    final phone = widget.zamindar.whatsappNumber.trim();
+    if (WhatsAppUrduService.normalizePhone(phone) == null) {
+      if (!mounted) return;
+      AppToast.showError(
+        context,
+        'No WhatsApp number on file for ${widget.zamindar.name}.',
+      );
+      return;
+    }
+
+    try {
+      double amount = 0;
+      if (widget.zamindar.id != null) {
+        final balances = await DatabaseHelper.instance
+            .getZamindarBalancesSafe(widget.zamindar.id!);
+        amount = (balances?['outstandingBalance'] as num?)?.toDouble() ?? 0;
+      }
+
+      final shopName = await ShopSettings.getShopName();
+      final launched = await WhatsAppUrduService.sendUrduReminder(
+        phone: phone,
+        zamindarName: widget.zamindar.name,
+        shopName: shopName,
+        amount: amount,
+      );
+
+      if (!mounted) return;
+      if (launched) {
+        AppToast.showSuccess(context, 'WhatsApp reminder opened.');
+      } else {
+        AppToast.showError(context, 'Could not open WhatsApp.');
+      }
+    } catch (e) {
+      if (mounted) {
+        AppToast.showError(context, 'Could not send WhatsApp reminder: $e');
+      }
+    }
   }
 
   Widget _buildPaymentTermsCard() {
@@ -1232,13 +1302,7 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
                 );
 
                 if (amount == null || amount <= 0) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Please enter a valid amount'),
-                      backgroundColor: Colors.red,
-                      duration: Duration(minutes: 1),
-                    ),
-                  );
+                  AppToast.showError(context, 'Please enter a valid amount');
                   return;
                 }
 
@@ -1259,15 +1323,7 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
                   if (!mounted) return;
                   Navigator.pop(ctx);
 
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(
-                        'Advance payment of Rs ${_fmt(amount.toDouble())} received successfully',
-                      ),
-                      duration: Duration(minutes: 1),
-                      backgroundColor: Colors.green,
-                    ),
-                  );
+                  AppToast.showSuccess(context, 'Advance payment of Rs ${_fmt(amount.toDouble())} received successfully',);
 
                   // Trigger receipt printing
                   try {
@@ -1275,30 +1331,16 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
                       zamindarName: widget.zamindar.name,
                       amount: amount,
                       date: DateTime.now(),
+                      servedBy: SessionContext.footprintLabel,
                     );
                   } catch (e) {
                     debugPrint('Error printing receipt: $e');
                     if (!mounted) return;
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(
-                          'Payment saved but receipt print failed: $e',
-                        ),
-                        duration: Duration(minutes: 1),
-                        backgroundColor: Colors.orange,
-                      ),
-                    );
+                    AppToast.showWarning(context, 'Payment saved but receipt print failed: $e',);
                   }
                 } catch (e) {
                   if (!mounted) return;
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Error: $e'),
-
-                      backgroundColor: Colors.red,
-                      duration: Duration(minutes: 1),
-                    ),
-                  );
+                  AppToast.showError(context, 'Error: $e');
                 }
               },
               style: ElevatedButton.styleFrom(

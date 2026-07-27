@@ -4,6 +4,7 @@ import 'package:agrikhata/Widgets/app_auto_suggest_field.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
+import 'package:agrikhata/theme/theme.dart';
 
 enum EmployeesView { directory, profile }
 
@@ -121,14 +122,7 @@ class EmployeesScreenState extends State<EmployeesScreen> {
   }
 
   void _snack(String msg, {bool error = false}) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(msg),
-        backgroundColor: error ? AppColors.dangerText : AppColors.mediumGreen,
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 2),
-      ),
-    );
+    AppToast.showError(context, msg);
   }
 
   String _pkr(num amount) => '₨ ${_currency.format(amount.round())}';
@@ -174,26 +168,10 @@ class EmployeesScreenState extends State<EmployeesScreen> {
                     ),
                   ),
                   const Spacer(),
-                  ElevatedButton.icon(
+                  AppButton.primary(
+                    label: 'Add Employee',
+                    icon: Icons.person_add_alt_1,
                     onPressed: _showAddEmployeeDialog,
-                    icon: const Icon(Icons.person_add_alt_1, size: 16),
-                    label: const Text('Add Employee'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.darkGreen,
-                      foregroundColor: Colors.white,
-                      elevation: 0,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 10,
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(9),
-                      ),
-                      textStyle: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
                   ),
                 ],
               ),
@@ -221,25 +199,97 @@ class EmployeesScreenState extends State<EmployeesScreen> {
                             ),
                           ),
                         )
-                      : ListView(
-                          padding: const EdgeInsets.symmetric(vertical: 4),
-                          children: [
-                            ...active.map(_employeeRow),
-                            if (inactive.isNotEmpty) ...[
-                              const Padding(
-                                padding: EdgeInsets.fromLTRB(14, 14, 14, 6),
-                                child: Text(
-                                  'Inactive',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: AppColors.textHint,
-                                  ),
-                                ),
-                              ),
-                              ...inactive.map(_employeeRow),
+                      : SingleChildScrollView(
+                          child: AppDataTable(
+                            showCardChrome: false,
+                            trailingWidth: 24,
+                            minWidth: 720,
+                            columns: const [
+                              AppDataColumn(title: 'Employee', flex: 28),
+                              AppDataColumn(title: 'Role', flex: 16),
+                              AppDataColumn(title: 'Pay Type', flex: 12),
+                              AppDataColumn(title: 'Salary', flex: 14),
+                              AppDataColumn(title: 'Phone', flex: 16),
+                              AppDataColumn(title: 'Status', flex: 12),
                             ],
-                          ],
+                            rows: [
+                              for (final emp in [...active, ...inactive])
+                                AppDataRow(
+                                  onTap: () => _openProfile(emp),
+                                  trailing: const SizedBox(
+                                    width: 24,
+                                    child: Icon(
+                                      Icons.chevron_right,
+                                      size: 16,
+                                      color: AppColors.textHint,
+                                    ),
+                                  ),
+                                  cells: [
+                                    Row(
+                                      children: [
+                                        CircleAvatar(
+                                          radius: 14,
+                                          backgroundColor: emp.isActive
+                                              ? AppColors.tagGreenBg
+                                              : const Color(0xFFF0F4EE),
+                                          child: Text(
+                                            _initials(emp.name),
+                                            style: TextStyle(
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.w700,
+                                              color: emp.isActive
+                                                  ? AppColors.tagGreenText
+                                                  : AppColors.textHint,
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Flexible(
+                                          child: Text(
+                                            emp.name,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w600,
+                                              color: emp.isActive
+                                                  ? AppColors.textPrimary
+                                                  : AppColors.textMuted,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    emp.role.isEmpty ? '—' : emp.role,
+                                    emp.isDaily ? 'Daily' : 'Monthly',
+                                    _pkr(emp.baseSalary),
+                                    emp.phone.isEmpty ? '—' : emp.phone,
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 3,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: emp.isActive
+                                            ? AppColors.tagGreenBg
+                                            : const Color(0xFFF0F4EE),
+                                        borderRadius: BorderRadius.circular(20),
+                                      ),
+                                      child: Text(
+                                        emp.isActive ? 'Active' : 'Inactive',
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w600,
+                                          color: emp.isActive
+                                              ? AppColors.tagGreenText
+                                              : AppColors.textHint,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                            ],
+                          ),
                         ),
             ),
           ],

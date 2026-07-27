@@ -2,6 +2,7 @@ import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Database/database_helper.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:agrikhata/theme/theme.dart';
 
 /// Daily attendance register — toggle P / A / ½ per active employee.
 /// Unmarked days leave no row in [employee_attendance].
@@ -57,13 +58,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _loading = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to load attendance: $e'),
-          backgroundColor: AppColors.dangerText,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      AppToast.showError(context, 'Failed to load attendance: $e');
     }
   }
 
@@ -121,13 +116,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       if (!mounted) return;
       await _load(silent: true);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Could not update attendance: $e'),
-          backgroundColor: AppColors.dangerText,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      AppToast.showError(context, 'Could not update attendance: $e');
     } finally {
       if (mounted) {
         setState(() => _savingIds.remove(employeeId));

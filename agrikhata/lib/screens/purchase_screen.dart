@@ -2,6 +2,7 @@ import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Data/agri_header.dart';
 import 'package:agrikhata/Database/database_helper.dart';
 import 'package:agrikhata/screens/products_screen.dart';
+import 'package:agrikhata/theme/theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
@@ -263,7 +264,6 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
   }
 
   Future<void> _showQuickAddProductDialog() async {
-    final messenger = ScaffoldMessenger.of(context);
     final created = await showDialog<ProductItem>(
       context: context,
       barrierDismissible: false,
@@ -298,22 +298,14 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
                       if (!dialogContext.mounted) return;
                       if (product == null) {
                         setDialogState(() => saving = false);
-                        messenger.showSnackBar(
-                          const SnackBar(
-                            content: Text(
-                              'Product was saved but could not be loaded.',
-                            ),
-                          ),
-                        );
+                        AppToast.showError(context, 'Product was saved but could not be loaded.',);
                         return;
                       }
                       Navigator.of(dialogContext).pop(product);
                     } catch (e) {
                       if (!dialogContext.mounted) return;
                       setDialogState(() => saving = false);
-                      messenger.showSnackBar(
-                        SnackBar(content: Text('Failed to save product: $e')),
-                      );
+                      AppToast.showError(context, 'Failed to save product: $e');
                     }
                   },
                 ),
@@ -421,13 +413,7 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
 
       if (!mounted) return;
       _resetForm();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Purchase $invoiceNo saved successfully.'),
-          behavior: SnackBarBehavior.floating,
-          backgroundColor: _secondary,
-        ),
-      );
+      AppToast.showSuccess(context, 'Purchase $invoiceNo saved successfully.');
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = 'Failed to save purchase: $e');
@@ -467,36 +453,11 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
           AgriHeader(
             breadcrumbs: const ['Inventory', 'Purchase Invoice'],
             actions: [
-              ElevatedButton.icon(
+              AppButton.primary(
+                label: _saving ? 'Saving…' : 'Save Purchase',
+                icon: Icons.save_outlined,
+                loading: _saving,
                 onPressed: _saving ? null : _savePurchase,
-                icon: _saving
-                    ? const SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Colors.white,
-                        ),
-                      )
-                    : const Icon(Icons.save_outlined, size: 16),
-                label: Text(_saving ? 'Saving…' : 'Save Purchase'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: _primary,
-                  foregroundColor: Colors.white,
-                  disabledBackgroundColor: _primary.withValues(alpha: 0.6),
-                  elevation: 0,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(9),
-                  ),
-                  textStyle: const TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
               ),
             ],
           ),

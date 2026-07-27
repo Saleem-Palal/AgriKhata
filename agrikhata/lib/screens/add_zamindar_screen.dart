@@ -1,8 +1,10 @@
 import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Core/constants/payment_terms.dart';
+import 'package:agrikhata/Data/agri_header.dart';
 import 'package:agrikhata/Database/database_helper.dart';
 import 'package:agrikhata/Widgets/season_selector.dart';
 import 'package:agrikhata/screens/zamindar_profile_screen.dart';
+import 'package:agrikhata/theme/theme.dart';
 import 'package:flutter/material.dart';
 
 class AddZamindarScreen extends StatefulWidget {
@@ -149,12 +151,7 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
     }
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Draft saved successfully'),
-          duration: Duration(minutes: 1),
-        ),
-      );
+      AppToast.showSuccess(context, 'Draft saved successfully');
     }
 
     if (widget.onSaveZamindar != null) {
@@ -669,19 +666,19 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        OutlinedButton(
-                          onPressed: _minimalFieldsFilled
-                              ? _handleSaveDraft
-                              : null,
-                          child: const Text("Save as Draft"),
+                        AppButton.secondary(
+                          label: 'Save as Draft',
+                          icon: Icons.save_outlined,
+                          onPressed:
+                              _minimalFieldsFilled ? _handleSaveDraft : null,
                         ),
                         const SizedBox(width: 12),
-                        ElevatedButton.icon(
+                        AppButton.primary(
+                          label: 'Save & go to profile',
+                          icon: Icons.arrow_forward,
                           onPressed: _allFieldsFilled
                               ? _handleSaveAndGoToProfile
                               : null,
-                          icon: const Icon(Icons.arrow_forward, size: 16),
-                          label: const Text("Save & go to profile"),
                         ),
                       ],
                     ),
@@ -793,65 +790,20 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
   }
 
   Widget _buildHeader(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-      decoration: const BoxDecoration(
-        color: AppColors.cardSurface,
-        border: Border(
-          bottom: BorderSide(color: Color.fromARGB(255, 65, 113, 54)),
+    return AgriHeader(
+      breadcrumbs: const ['Zamindars', 'Add new Zamindar'],
+      actions: [
+        AppButton.secondary(
+          label: 'Cancel',
+          icon: Icons.close,
+          onPressed: widget.onCancel,
         ),
-      ),
-      child: Row(
-        children: [
-          const Flexible(
-            child: Text(
-              "Zamindars",
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w200,
-                color: AppColors.textMuted,
-              ),
-            ),
-          ),
-          const Flexible(
-            child: Text(
-              "  ›  Add new Zamindar",
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w200),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Flexible(
-            child: Align(
-              alignment: Alignment.centerRight,
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                reverse: true,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    OutlinedButton(
-                      onPressed: widget.onCancel,
-                      child: const Text("Cancel"),
-                    ),
-                    const SizedBox(width: 12),
-                    ElevatedButton.icon(
-                      onPressed: _allFieldsFilled
-                          ? _handleSaveAndGoToProfile
-                          : null,
-                      icon: const Icon(Icons.check, size: 16),
-                      label: const Text("Save Zamindar"),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
+        AppButton.primary(
+          label: 'Save Zamindar',
+          icon: Icons.check,
+          onPressed: _allFieldsFilled ? _handleSaveAndGoToProfile : null,
+        ),
+      ],
     );
   }
 

@@ -1,8 +1,10 @@
 import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Database/database_helper.dart';
 import 'package:agrikhata/Widgets/app_auto_suggest_field.dart';
+import 'package:agrikhata/services/whatsapp_urdu_service.dart';
+import 'package:agrikhata/theme/theme.dart';
 import 'package:agrikhata/utils/pdf_generator.dart';
-import 'package:agrikhata/utils/pdf_share.dart';
+import 'package:agrikhata/utils/shop_settings.dart';
 import 'package:flutter/material.dart';
 
 class ZamindarKisaansTab extends StatefulWidget {
@@ -28,6 +30,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
   List<Kisaan> _kisaans = [];
   Map<int, double> _kisaanBalances = {};
   ZamindarLandAllocationSummary? _landSummary;
+  String _zamindarWhatsapp = '';
   bool _isLoading = true;
   String? _loadError;
 
@@ -79,6 +82,9 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
       );
       final landSummary = await DatabaseHelper.instance
           .getZamindarLandAllocationSummary(widget.zamindarId);
+      final zamindar = await DatabaseHelper.instance.getZamindar(
+        widget.zamindarId,
+      );
 
       final Map<int, double> balances = {};
       for (final kisaan in kisaans) {
@@ -95,6 +101,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
         _kisaans = kisaans;
         _kisaanBalances = balances;
         _landSummary = landSummary;
+        _zamindarWhatsapp = zamindar?.whatsappNumber ?? '';
         _isLoading = false;
       });
     } catch (e) {
@@ -139,15 +146,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
 
                   if (nameExists) {
                     if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(
-                            'A Kisaan named "${kisaan.name}" already exists under ${widget.zamindarName}. Please use a different name.',
-                          ),
-                          backgroundColor: Colors.red,
-                          duration: const Duration(minutes: 1),
-                        ),
-                      );
+                      AppToast.showError(context, 'A Kisaan named "${kisaan.name}" already exists under ${widget.zamindarName}. Please use a different name.',);
                     }
                     return;
                   }
@@ -168,15 +167,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
 
                   if (newTotalInZamindarUnit > summary.totalLand + 1e-9) {
                     if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(
-                            'Cannot allocate land. Total assigned (${newTotalInZamindarUnit.toStringAsFixed(2)} ${summary.landUnit}) exceeds Zamindar\'s limit (${summary.totalLand.toStringAsFixed(2)} ${summary.landUnit}).',
-                          ),
-                          backgroundColor: Colors.red,
-                          duration: Duration(minutes: 1),
-                        ),
-                      );
+                      AppToast.showError(context, 'Cannot allocate land. Total assigned (${newTotalInZamindarUnit.toStringAsFixed(2)} ${summary.landUnit}) exceeds Zamindar\'s limit (${summary.totalLand.toStringAsFixed(2)} ${summary.landUnit}).',);
                     }
                     return;
                   }
@@ -191,27 +182,13 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
                   await _loadKisaans();
 
                   if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(
-                          editTarget == null
+                    AppToast.showSuccess(context, editTarget == null
                               ? '✓ Kisaan "${kisaan.name}" created successfully!'
-                              : '✓ Kisaan "${kisaan.name}" updated successfully!',
-                        ),
-                        backgroundColor: AppColors.darkGreen,
-                        duration: Duration(minutes: 1),
-                      ),
-                    );
+                              : '✓ Kisaan "${kisaan.name}" updated successfully!',);
                   }
                 } catch (e) {
                   if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text('Error saving kisaan: $e'),
-                        backgroundColor: Colors.red,
-                        duration: Duration(minutes: 1),
-                      ),
-                    );
+                    AppToast.showError(context, 'Error saving kisaan: $e');
                   }
                 }
               },
@@ -311,21 +288,11 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
     try {
       await DatabaseHelper.instance.deleteKisaan(kisaan.id!);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Kisaan "${kisaan.name}" deleted'),
-            backgroundColor: AppColors.darkGreen,
-          ),
-        );
+        AppToast.showSuccess(context, 'Kisaan "${kisaan.name}" deleted');
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to delete kisaan: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        AppToast.showError(context, 'Failed to delete kisaan: $e');
       }
     }
   }
@@ -361,21 +328,11 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
     try {
       await DatabaseHelper.instance.clearKisaanTransactionData(kisaan.id!);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("Cleared all data associated with 'Self'"),
-            backgroundColor: AppColors.darkGreen,
-          ),
-        );
+        AppToast.showSuccess(context, "Cleared all data associated with 'Self'");
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to clear data: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        AppToast.showError(context, 'Failed to clear data: $e');
       }
     }
   }
@@ -392,9 +349,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
           .toList();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error loading ledger: $e')));
+        AppToast.showError(context, 'Error loading ledger: $e');
       }
       return;
     }
@@ -429,29 +384,29 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
           totalDebit: totalDebit,
         );
         if (share) {
-          await PdfShare.sharePdfFile(
-            file: file,
-            fileName: 'kisaan_${kisaan.name.replaceAll(' ', '_')}_statement.pdf',
-            text:
-                'AgriKhata Kisaan Statement — ${kisaan.name} (under ${widget.zamindarName})',
-            subject: 'Kisaan Account Statement',
+          final shopName = await ShopSettings.getShopName();
+          final phone = (kisaan.phone?.trim().isNotEmpty ?? false)
+              ? kisaan.phone!.trim()
+              : _zamindarWhatsapp;
+          await WhatsAppUrduService.sharePdfWithUrduCaption(
+            phone: phone,
+            zamindarName: kisaan.name,
+            shopName: shopName,
+            amount: outstanding.toDouble(),
+            pdfPath: file.path,
+            detailLines: [
+              'زمیندار: ${widget.zamindarName}',
+              'کل خریداری: Rs ${_fmt(totalDebit.toDouble())}',
+              'کل وصولی: Rs ${_fmt(totalCredit.toDouble())}',
+            ],
+            subject: 'Kisaan Statement — ${kisaan.name}',
           );
         } else if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('PDF saved to ${file.path}'),
-              backgroundColor: AppColors.darkGreen,
-            ),
-          );
+          AppToast.showSuccess(context, 'PDF saved to ${file.path}');
         }
       } catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Failed: $e'),
-              backgroundColor: Colors.red,
-            ),
-          );
+          AppToast.showError(context, 'Failed: $e');
         }
       }
     }
@@ -478,12 +433,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
         await PdfGenerator.printDocument(pdf);
       } catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Failed to print: $e'),
-              backgroundColor: Colors.red,
-            ),
-          );
+          AppToast.showError(context, 'Failed to print: $e');
         }
       }
     }
@@ -888,24 +838,11 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
             );
             await _loadKisaans();
             if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    'Payment of Rs ${amount.toStringAsFixed(0)} recorded successfully',
-                  ),
-                  backgroundColor: const Color(0xFF2D6A4F),
-                ),
-              );
+              AppToast.showSuccess(context, 'Payment of Rs ${amount.toStringAsFixed(0)} recorded successfully',);
             }
           } catch (e) {
             if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text('Error recording payment: $e'),
-                  backgroundColor: Colors.red,
-                  duration: const Duration(minutes: 1),
-                ),
-              );
+              AppToast.showError(context, 'Error recording payment: $e');
             }
           }
         },
@@ -939,12 +876,7 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
   Future<void> _exportOrShareKisaanSummary({required bool share}) async {
     if (_kisaans.isEmpty) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('No kisaans to include in the summary PDF'),
-          backgroundColor: Colors.orange,
-        ),
-      );
+      AppToast.showWarning(context, 'No kisaans to include in the summary PDF');
       return;
     }
 
@@ -962,30 +894,47 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
         rows: rows,
       );
       if (share) {
-        await PdfShare.sharePdfFile(
-          file: file,
-          fileName:
-              'kisaan_summary_${widget.zamindarName.replaceAll(' ', '_')}.pdf',
-          text:
-              'AgriKhata Kisaan Summary — Overall debt overview for ${widget.zamindarName}',
+        final shopName = await ShopSettings.getShopName();
+        final totalDue = _kisaanBalances.values.fold<double>(
+          0,
+          (sum, value) => sum + value,
+        );
+        final kisaanLines = _kisaans.map((k) {
+          final due = k.id != null ? (_kisaanBalances[k.id] ?? 0.0) : 0.0;
+          return '${k.name} — Rs ${_fmt(due)}';
+        }).toList();
+
+        // Itemized Urdu chat + PDF with matching caption.
+        if (WhatsAppUrduService.normalizePhone(_zamindarWhatsapp) != null) {
+          await WhatsAppUrduService.sendKisaanSummaryLedger(
+            phone: _zamindarWhatsapp,
+            zamindarName: widget.zamindarName,
+            shopName: shopName,
+            amount: totalDue,
+            kisaanLines: kisaanLines,
+          );
+        } else if (mounted) {
+          AppToast.showWarning(
+            context,
+            'No WhatsApp number on file — sharing PDF only.',
+          );
+        }
+
+        await WhatsAppUrduService.sharePdfWithUrduCaption(
+          phone: _zamindarWhatsapp,
+          zamindarName: widget.zamindarName,
+          shopName: shopName,
+          amount: totalDue,
+          pdfPath: file.path,
+          detailLines: kisaanLines,
           subject: 'Kisaan Summary — ${widget.zamindarName}',
         );
       } else if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('PDF saved to ${file.path}'),
-            backgroundColor: AppColors.darkGreen,
-          ),
-        );
+        AppToast.showSuccess(context, 'PDF saved to ${file.path}');
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        AppToast.showError(context, 'Failed: $e');
       }
     }
   }
@@ -1647,12 +1596,7 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
     if (!_formKey.currentState!.validate()) return;
 
     if (_selectedCrops.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Select at least one crop'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      AppToast.showError(context, 'Select at least one crop');
       return;
     }
 

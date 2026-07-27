@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:agrikhata/Database/database_helper.dart';
 import 'package:agrikhata/Widgets/update_dialog.dart';
 import 'package:agrikhata/utils/app_version.dart';
 import 'package:flutter/material.dart';
@@ -9,14 +8,23 @@ import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
 
 /// Checks GitHub-hosted [version.json] and prompts when a newer build exists.
+///
+/// Install flow (Windows / MSIX only):
+/// 1. Compare bundled [assets/version.json] to remote manifest
+/// 2. Download (or reuse) MSIX under `%LOCALAPPDATA%\AgriKhata\updates\`
+/// 3. Verify Appx identity version matches the expected release
+/// 4. Open Windows App Installer UI — never [exit] / never silent ForceShutdown
 class UpdateService {
   static const _manifestUrl =
       'https://raw.githubusercontent.com/Saleem-Palal/AgriKhata/master/version.json';
 
-  static const _packageIdentity = 'com.saleempalal.agrikhata';
-
   Future<void> checkForUpdates(BuildContext context) async {
     try {
+      if (!Platform.isWindows) {
+        debugPrint('UpdateService: skipping (Windows only)');
+        return;
+      }
+
       final response = await http
           .get(Uri.parse(_manifestUrl))
           .timeout(const Duration(seconds: 8));
@@ -50,8 +58,14 @@ class UpdateService {
 
       if (!_isNewerVersion(latestVersion, currentVersion)) {
         debugPrint('UpdateService: already up to date');
+        await _deleteUpdateArtifacts(latestVersion);
         return;
       }
+
+      final cached = await _updatePackageFile(latestVersion);
+      final hasCached = await cached.exists() &&
+          await _msixIdentityVersionMatches(cached.path, latestVersion);
+
       if (!context.mounted) return;
 
       await UpdateDialog.show(
@@ -60,8 +74,12 @@ class UpdateService {
         currentVersion: currentVersion,
         changelog: changelog,
         downloadUrl: downloadUrl,
+        initialStatus: hasCached
+            ? 'Update already downloaded. Tap Install to open Windows setup.'
+            : null,
         onUpdateNow: (url, {onStatus, onProgress}) => downloadAndInstall(
           url,
+          expectedVersion: latestVersion,
           onStatus: onStatus,
           onProgress: onProgress,
         ),
@@ -71,16 +89,11 @@ class UpdateService {
     }
   }
 
-  /// Downloads the MSIX locally, then installs it. Never opens a browser URL.
-  ///
-  /// [onProgress] receives `(receivedBytes, totalBytes)`. `totalBytes` is `0`
-  /// when the server omits `Content-Length`.
-  ///
-  /// Does **not** call [exit] — that looked like a crash right after 100%.
-  /// Packaged installs rely on `Add-AppxPackage -ForceApplicationShutdown`
-  /// so Windows closes this process only when the package is actually applied.
+  /// Downloads the MSIX (or reuses a valid cache), verifies identity version,
+  /// then opens the Windows App Installer UI.
   Future<void> downloadAndInstall(
     String downloadUrl, {
+    required String expectedVersion,
     void Function(String status)? onStatus,
     void Function(int receivedBytes, int totalBytes)? onProgress,
   }) async {
@@ -100,116 +113,74 @@ class UpdateService {
       );
     }
 
-    onStatus?.call('Preparing update...');
-    // Keep the payload outside the MSIX package folder. App temp under
-    // Packages\...\TempState can vanish while the package is replaced.
-    final msixFile = await _updatePackageFile();
-    if (await msixFile.exists()) {
-      await msixFile.delete();
-    }
+    final msixFile = await _updatePackageFile(expectedVersion);
+    final canReuse = await msixFile.exists() &&
+        await _msixIdentityVersionMatches(msixFile.path, expectedVersion);
 
-    await _downloadFile(uri, msixFile, onProgress: onProgress);
+    if (canReuse) {
+      onStatus?.call('Using previously downloaded update...');
+      onProgress?.call(1, 1);
+      debugPrint('UpdateService: reusing cached ${msixFile.path}');
+    } else {
+      onStatus?.call('Checking download...');
+      await _assertDownloadAvailable(uri);
 
-    final length = await msixFile.length();
-    if (length < 1024 * 100) {
-      // Real packages are several MB; tiny files are usually HTML error pages.
-      throw StateError(
-        'Downloaded file looks invalid ($length bytes). '
-        'Check that download_url is a direct .msix asset link.',
-      );
-    }
+      onStatus?.call('Preparing update...');
+      if (await msixFile.exists()) {
+        try {
+          await msixFile.delete();
+        } catch (_) {}
+      }
 
-    final msixPath = msixFile.path;
-    debugPrint('UpdateService: installing local file $msixPath ($length bytes)');
+      await _downloadFileAtomic(uri, msixFile, onProgress: onProgress);
 
-    final packaged = _isRunningAsPackagedMsix();
-    if (!packaged) {
-      onStatus?.call('Opening installer...');
-      final opened = await _launchInstallerUi(msixPath);
-      if (!opened) {
+      final length = await msixFile.length();
+      if (length < 1024 * 100) {
+        try {
+          await msixFile.delete();
+        } catch (_) {}
         throw StateError(
-          'Could not open the MSIX installer. '
-          'Install the packaged AgriKhata build to use automatic updates, '
-          'or run the downloaded .msix manually.',
+          'Downloaded file looks invalid ($length bytes). '
+          'Check that download_url is a direct .msix asset link.',
         );
       }
-      onStatus?.call(
-        'Installer opened. Finish the Windows install, then restart AgriKhata.',
-      );
-      return;
+
+      onStatus?.call('Verifying update package...');
+      await _flushUiFrames();
+      final matches =
+          await _msixIdentityVersionMatches(msixFile.path, expectedVersion);
+      if (!matches) {
+        final found = await _readMsixIdentityVersion(msixFile.path);
+        try {
+          await msixFile.delete();
+        } catch (_) {}
+        throw StateError(
+          'Downloaded package version mismatch. '
+          'Expected $expectedVersion, got ${found ?? "unknown"}. '
+          'Upload the correct agrikhata.msix for this release, then try again.',
+        );
+      }
     }
 
-    onStatus?.call('Download complete. Installing update...');
+    if (!await msixFile.exists()) {
+      throw StateError('Update package missing: ${msixFile.path}');
+    }
+
+    debugPrint('UpdateService: opening installer UI for ${msixFile.path}');
+    onStatus?.call('Opening Windows installer...');
     await _flushUiFrames();
-    await Future.delayed(const Duration(milliseconds: 600));
+
+    final opened = await _launchInstallerUi(msixFile.path);
+    if (!opened) {
+      throw StateError(
+        'Could not open the Windows installer.\n'
+        'Open this file manually:\n${msixFile.path}',
+      );
+    }
 
     onStatus?.call(
-      'Installing… Windows will close and reopen AgriKhata when ready.',
-    );
-    await _flushUiFrames();
-
-    final logFile = File(p.join(_updateDirPath(), 'agrikhata_update.log'));
-    if (await logFile.exists()) {
-      try {
-        await logFile.delete();
-      } catch (_) {}
-    }
-
-    final started = await _installLocalMsix(msixPath);
-    if (!started) {
-      onStatus?.call('Automatic install unavailable. Opening installer...');
-      await _flushUiFrames();
-      final opened = await _launchInstallerUi(msixPath);
-      if (!opened) {
-        throw StateError(
-          'Could not install the update automatically. '
-          'Run install.bat once as Administrator to trust the certificate, '
-          'then try again.',
-        );
-      }
-      onStatus?.call(
-        'Installer opened. Finish the Windows install, then restart AgriKhata.',
-      );
-      return;
-    }
-
-    // Stay alive until Windows applies the package (ForceApplicationShutdown)
-    // or the installer reports failure in the log. Never call exit() ourselves.
-    final deadline = DateTime.now().add(const Duration(minutes: 2));
-    while (DateTime.now().isBefore(deadline)) {
-      await Future.delayed(const Duration(seconds: 1));
-      if (!await logFile.exists()) continue;
-      String text;
-      try {
-        text = await logFile.readAsString();
-      } catch (_) {
-        continue;
-      }
-      if (text.contains('Update FAILED:')) {
-        final failLine = text
-            .split(RegExp(r'\r?\n'))
-            .lastWhere(
-              (line) => line.contains('Update FAILED:'),
-              orElse: () => 'Update FAILED: unknown error',
-            );
-        final detail = failLine.split('Update FAILED:').last.trim();
-        throw StateError(
-          detail.isEmpty
-              ? 'The update could not be installed. See ${logFile.path}'
-              : detail,
-        );
-      }
-      if (text.contains('Update completed successfully')) {
-        onStatus?.call(
-          'Update installed. Please restart AgriKhata if it is still open.',
-        );
-        return;
-      }
-    }
-    throw StateError(
-      'The update is taking too long or did not finish. '
-      'See ${logFile.path}, or run the installer under '
-      '${_updateDirPath()} manually.',
+      'Windows Installer is open. Click Update / Install there. '
+      'AgriKhata stays open until Windows applies the update.',
     );
   }
 
@@ -222,41 +193,137 @@ class UpdateService {
     return p.join(root, 'AgriKhata', 'updates');
   }
 
-  Future<File> _updatePackageFile() async {
+  Future<File> _updatePackageFile(String version) async {
     final dir = Directory(_updateDirPath());
     await dir.create(recursive: true);
-    return File(p.join(dir.path, 'agrikhata_update.msix'));
+    final safe = version.replaceAll(RegExp(r'[^\w.\-]'), '_');
+    return File(p.join(dir.path, 'agrikhata_$safe.msix'));
   }
 
-  /// True when running as an installed MSIX (not `flutter run` / unpackaged exe).
-  bool _isRunningAsPackagedMsix() {
-    final env = Platform.environment;
-    if (env.containsKey('APPX_PACKAGE_FULL_NAME') ||
-        env.containsKey('APPX_PACKAGE_NAME')) {
-      return true;
+  Future<void> _deleteUpdateArtifacts(String version) async {
+    try {
+      final file = await _updatePackageFile(version);
+      if (await file.exists()) await file.delete();
+      final partial = File('${file.path}.partial');
+      if (await partial.exists()) await partial.delete();
+    } catch (_) {}
+  }
+
+  /// Fail fast with a clear error when the GitHub release asset is missing.
+  Future<void> _assertDownloadAvailable(Uri uri) async {
+    final client = http.Client();
+    try {
+      // Prefer HEAD; some CDNs dislike it — fall back to a ranged GET.
+      var response = await client
+          .head(uri, headers: {
+            'User-Agent': 'AgriKhata-Updater',
+            'Accept': 'application/octet-stream,*/*',
+          })
+          .timeout(const Duration(seconds: 15));
+
+      if (response.statusCode == 405 || response.statusCode == 501) {
+        response = await client
+            .get(
+              uri,
+              headers: {
+                'User-Agent': 'AgriKhata-Updater',
+                'Accept': 'application/octet-stream,*/*',
+                'Range': 'bytes=0-0',
+              },
+            )
+            .timeout(const Duration(seconds: 15));
+      }
+
+      if (response.statusCode == 404) {
+        throw StateError(
+          'Update file not found (HTTP 404).\n'
+          'The GitHub release asset is missing for this version.\n'
+          'Publish agrikhata.msix to the release, then try again.\n'
+          'URL: $uri',
+        );
+      }
+      if (response.statusCode < 200 || response.statusCode >= 400) {
+        throw StateError(
+          'Update file is not reachable (HTTP ${response.statusCode}).\n'
+          'URL: $uri',
+        );
+      }
+    } finally {
+      client.close();
     }
-    final exe = Platform.resolvedExecutable.toLowerCase();
-    return exe.contains(r'\windowsapps\');
   }
 
-  /// Yields so [setState] from [onStatus] can paint.
+  /// Reads `Package/Identity/@Version` from the MSIX (zip) via PowerShell.
+  Future<String?> _readMsixIdentityVersion(String msixPath) async {
+    final safePath = msixPath.replaceAll("'", "''");
+    final script = '''
+\$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+\$zip = [System.IO.Compression.ZipFile]::OpenRead('$safePath')
+try {
+  \$entry = \$zip.Entries | Where-Object { \$_.FullName -eq 'AppxManifest.xml' } | Select-Object -First 1
+  if (\$null -eq \$entry) { throw 'AppxManifest.xml missing' }
+  \$reader = New-Object System.IO.StreamReader(\$entry.Open())
+  try {
+    [xml]\$xml = \$reader.ReadToEnd()
+    \$ver = \$xml.Package.Identity.Version
+    if (-not \$ver) { throw 'Identity Version missing' }
+    Write-Output \$ver
+  } finally { \$reader.Close() }
+} finally { \$zip.Dispose() }
+''';
+
+    try {
+      final result = await Process.run(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-Command',
+          script,
+        ],
+        runInShell: false,
+      );
+      if (result.exitCode != 0) {
+        debugPrint(
+          'UpdateService: read MSIX version failed: ${result.stderr}',
+        );
+        return null;
+      }
+      final out = (result.stdout as String).trim();
+      return out.isEmpty ? null : out;
+    } catch (e, st) {
+      debugPrint('UpdateService: read MSIX version error: $e\n$st');
+      return null;
+    }
+  }
+
+  /// True when the package identity version matches [expected] (3-part semver).
+  Future<bool> _msixIdentityVersionMatches(
+    String msixPath,
+    String expected,
+  ) async {
+    final identity = await _readMsixIdentityVersion(msixPath);
+    if (identity == null) return false;
+    // Identity is usually 1.0.14.0 — compare first 3 segments to expected 1.0.14
+    return !_isNewerVersion(expected, identity) &&
+        !_isNewerVersion(identity, expected);
+  }
+
   Future<void> _flushUiFrames() async {
     try {
       final binding = WidgetsBinding.instance;
       await binding.endOfFrame;
       binding.scheduleFrame();
       await binding.endOfFrame;
-    } catch (_) {
-      // Binding may be unavailable in rare edge cases; delay still helps.
-    }
+    } catch (_) {}
   }
 
-  /// Prefer a direct asset URL. Never returns a GitHub web page URL.
   String _resolveMsixUrl(String raw) {
     final url = raw.trim();
     if (url.toLowerCase().endsWith('.msix')) return url;
 
-    // releases/tag/vX.Y.Z -> releases/download/vX.Y.Z/agrikhata.msix
     final tagMatch = RegExp(
       r'github\.com/([^/]+)/([^/]+)/releases/tag/(v?[\w.\-]+)',
       caseSensitive: false,
@@ -271,11 +338,19 @@ class UpdateService {
     return url;
   }
 
-  Future<void> _downloadFile(
+  /// Downloads to `destination.partial`, verifies size, then renames into place.
+  Future<void> _downloadFileAtomic(
     Uri uri,
     File destination, {
     void Function(int receivedBytes, int totalBytes)? onProgress,
   }) async {
+    final partial = File('${destination.path}.partial');
+    if (await partial.exists()) {
+      try {
+        await partial.delete();
+      } catch (_) {}
+    }
+
     final client = http.Client();
     try {
       final request = http.Request('GET', uri);
@@ -284,7 +359,7 @@ class UpdateService {
 
       final streamed = await client
           .send(request)
-          .timeout(const Duration(minutes: 5));
+          .timeout(const Duration(minutes: 10));
 
       if (streamed.statusCode < 200 || streamed.statusCode >= 300) {
         throw HttpException(
@@ -311,7 +386,6 @@ class UpdateService {
         final percent =
             totalBytes > 0 ? ((receivedBytes / totalBytes) * 100).round() : -1;
         final elapsed = now.difference(lastUiEmit);
-        // Throttle UI updates (~10 Hz or on percent change) to keep frames smooth.
         if (!force &&
             elapsed < const Duration(milliseconds: 100) &&
             percent == lastEmittedPercent) {
@@ -322,7 +396,7 @@ class UpdateService {
         onProgress?.call(receivedBytes, totalBytes);
       }
 
-      final sink = destination.openWrite();
+      final sink = partial.openWrite();
       try {
         await for (final chunk in streamed.stream) {
           sink.add(chunk);
@@ -335,135 +409,90 @@ class UpdateService {
         await sink.close();
       }
 
+      if (totalBytes > 0 && receivedBytes != totalBytes) {
+        try {
+          await partial.delete();
+        } catch (_) {}
+        throw StateError(
+          'Download incomplete ($receivedBytes of $totalBytes bytes). '
+          'Please try again.',
+        );
+      }
+
+      if (await destination.exists()) {
+        await destination.delete();
+      }
+      await partial.rename(destination.path);
+
       debugPrint(
         'UpdateService: download complete '
-        '($receivedBytes / ${totalBytes > 0 ? totalBytes : "?"} bytes)',
+        '($receivedBytes / ${totalBytes > 0 ? totalBytes : "?"} bytes) '
+        '=> ${destination.path}',
       );
+    } catch (e) {
+      try {
+        if (await partial.exists()) await partial.delete();
+      } catch (_) {}
+      rethrow;
     } finally {
       client.close();
     }
   }
 
-  /// Releases SQLite locks, then starts Add-AppxPackage in a detached process.
-  ///
-  /// Returns true if the installer process was started. Does not call [exit] —
-  /// `-ForceApplicationShutdown` closes this app when Windows applies the package.
-  Future<bool> _installLocalMsix(String msixPath) async {
+  /// Opens the MSIX with Windows App Installer. App stays running.
+  Future<bool> _launchInstallerUi(String msixPath) async {
+    final file = File(msixPath);
+    if (!await file.exists()) {
+      debugPrint('UpdateService: installer file missing: $msixPath');
+      return false;
+    }
+
+    // 1) cmd start — shell association for .msix (App Installer)
     try {
-      debugPrint('UpdateService: closing database before install...');
-      await DatabaseHelper.instance.close();
-      // Allow WAL/journal handles to finish releasing on Windows.
-      await Future.delayed(const Duration(milliseconds: 500));
-
-      final safePath = msixPath.replaceAll("'", "''");
-      final logPath =
-          p.join(_updateDirPath(), 'agrikhata_update.log').replaceAll("'", "''");
-
-      final launched = await _launchDetachedInstaller(safePath, logPath);
-      if (launched) {
-        debugPrint(
-          'UpdateService: Add-AppxPackage started (no hard exit; log: $logPath)',
-        );
+      final result = await Process.run(
+        'cmd',
+        ['/c', 'start', '', msixPath],
+        runInShell: false,
+      );
+      if (result.exitCode == 0) {
+        debugPrint('UpdateService: launched installer via cmd start');
         return true;
       }
-      return false;
-    } catch (e, st) {
-      debugPrint('UpdateService: install launcher error: $e\n$st');
-      return false;
-    }
-  }
-
-  /// Runs Add-AppxPackage in a detached PowerShell process, then relaunches.
-  ///
-  /// Failures are written to [logPath] and shown in a MessageBox.
-  Future<bool> _launchDetachedInstaller(String safePath, String logPath) async {
-    try {
-      final script = '''
-\$ErrorActionPreference = 'Stop'
-\$logFile = '$logPath'
-function Write-UpdateLog([string]\$Message) {
-  \$line = ('[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), \$Message)
-  Add-Content -Path \$logFile -Value \$line -ErrorAction SilentlyContinue
-}
-try {
-  Write-UpdateLog "Installing MSIX: $safePath"
-  if (-not (Test-Path -LiteralPath '$safePath')) {
-    throw "Update package not found: $safePath"
-  }
-  # ForceApplicationShutdown closes AgriKhata only when the package is applied.
-  Add-AppxPackage -Path '$safePath' -ForceUpdateFromAnyVersion -ForceApplicationShutdown
-  Start-Sleep -Seconds 2
-  \$pkg = Get-AppxPackage -Name '$_packageIdentity' | Sort-Object -Property Version -Descending | Select-Object -First 1
-  if (\$null -eq \$pkg) { throw 'Package not found after install ($_packageIdentity).' }
-  \$manifest = Get-AppxPackageManifest -Package \$pkg
-  \$appId = \$manifest.Package.Applications.Application.Id
-  if (\$appId -is [System.Array]) { \$appId = \$appId[0] }
-  if (-not \$appId) { \$appId = 'App' }
-  \$aumid = \$pkg.PackageFamilyName + '!' + \$appId
-  Write-UpdateLog "Relaunching \$aumid"
-  Start-Process ("shell:AppsFolder\\" + \$aumid)
-  Write-UpdateLog 'Update completed successfully.'
-} catch {
-  \$err = \$_.Exception.Message
-  Write-UpdateLog ("Update FAILED: " + \$err)
-  try {
-    Add-Type -AssemblyName PresentationFramework | Out-Null
-    [System.Windows.MessageBox]::Show(
-      ("AgriKhata could not finish the update.`n`n" + \$err + "`n`nDetails: $logPath"),
-      'AgriKhata Update',
-      'OK',
-      'Error'
-    ) | Out-Null
-  } catch { }
-  exit 1
-}
-''';
-
-      await Process.start(
-        'powershell.exe',
-        [
-          '-NoProfile',
-          '-ExecutionPolicy',
-          'Bypass',
-          '-WindowStyle',
-          'Hidden',
-          '-Command',
-          script,
-        ],
-        mode: ProcessStartMode.detached,
+      debugPrint(
+        'UpdateService: cmd start exit=${result.exitCode} '
+        'stderr=${result.stderr}',
       );
-
-      debugPrint('UpdateService: Add-AppxPackage scheduled (detached)');
-      return true;
     } catch (e, st) {
-      debugPrint('UpdateService: detached Add-AppxPackage failed: $e\n$st');
-      return false;
+      debugPrint('UpdateService: cmd start failed: $e\n$st');
     }
-  }
 
-  /// Opens the MSIX with the Windows App Installer UI (app stays running).
-  Future<bool> _launchInstallerUi(String msixPath) async {
+    // 2) PowerShell Start-Process fallback
     try {
       final safePath = msixPath.replaceAll("'", "''");
-      await Process.start(
+      final result = await Process.run(
         'powershell.exe',
         [
           '-NoProfile',
           '-ExecutionPolicy',
           'Bypass',
-          '-WindowStyle',
-          'Hidden',
           '-Command',
-          "Start-Process -FilePath '$safePath'",
+          "Start-Process -FilePath '$safePath' -ErrorAction Stop",
         ],
-        mode: ProcessStartMode.detached,
+        runInShell: false,
       );
-      debugPrint('UpdateService: launched local MSIX installer UI');
-      return true;
+      if (result.exitCode == 0) {
+        debugPrint('UpdateService: launched installer via PowerShell');
+        return true;
+      }
+      debugPrint(
+        'UpdateService: PowerShell Start-Process exit=${result.exitCode} '
+        'stderr=${result.stderr}',
+      );
     } catch (e, st) {
-      debugPrint('UpdateService: Start-Process installer UI failed: $e\n$st');
-      return false;
+      debugPrint('UpdateService: PowerShell Start-Process failed: $e\n$st');
     }
+
+    return false;
   }
 
   List<String> _parseChangelog(Map<String, dynamic> manifest) {
@@ -483,6 +512,11 @@ try {
         .map((line) => line.trim())
         .where((line) => line.isNotEmpty)
         .toList();
+  }
+
+  /// Public for tests / diagnostics.
+  static bool isNewerVersion(String remote, String local) {
+    return UpdateService()._isNewerVersion(remote, local);
   }
 
   bool _isNewerVersion(String remote, String local) {

@@ -1,5 +1,5 @@
 {
-  "latest_version": "1.0.12",
-  "download_url": "https://github.com/Saleem-Palal/AgriKhata/releases/download/v1.0.12/agrikhata.msix",
-  "release_notes": "• Bug fixes and improvements"
+  "latest_version": "1.0.14",
+  "download_url": "https://github.com/Saleem-Palal/AgriKhata/releases/download/v1.0.14/agrikhata.msix",
+  "release_notes": "• Fix update crash loop after download\n• Verify package version before install\n• Reuse downloaded update instead of restarting from 0%"
 }
