@@ -1,9 +1,17 @@
-import 'package:agrikhata/Core/Themes/app_colors.dart';
+import 'package:agrikhata/Data/agri_header.dart';
 import 'package:agrikhata/Database/database_helper.dart';
+import 'package:agrikhata/Widgets/audit/audit_report_dialog.dart';
+import 'package:agrikhata/screens/auth/auth_gate.dart';
+import 'package:agrikhata/services/auth_service.dart';
+import 'package:agrikhata/services/backup_service.dart';
+import 'package:agrikhata/services/google_oauth_config.dart';
+import 'package:agrikhata/utils/advance_checkout_overlay.dart';
 import 'package:agrikhata/utils/app_version.dart';
 import 'package:agrikhata/utils/shop_settings.dart';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:agrikhata/theme/theme.dart';
 
 class SettingsScreen extends StatefulWidget {
   final VoidCallback? onDataReset;
@@ -32,13 +40,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
   static const _dangerTitle = Color(0xFFD64545);
   static const _dangerSub = Color(0xFFB56A6A);
   static const _footer = Color(0xFF95AC9C);
+  static const _forestButton = Color(0xFF1B4332);
 
   String _shopName = '';
   String _shopAddress = '';
   String _shopPhone = '';
   bool _darkTheme = false;
+  bool _showThumbprintBlockThermal = true;
   bool _loaded = false;
   String _versionLabel = '';
+  double _cashOpeningBalance = 0;
+  bool _backupBusy = false;
+  bool _accountBusy = false;
+  bool _fetchBusy = false;
+  bool _autoBackupOnExit = false;
+  bool _keepLocalCopy = true;
+  String? _driveEmail;
+  String _lastBackupLabel = 'Last Cloud Backup: Never';
 
   @override
   void initState() {
@@ -47,12 +65,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _loadSettings() async {
+    final backup = BackupService.instance;
     final results = await Future.wait([
       ShopSettings.getShopName(),
       ShopSettings.getShopAddress(),
       ShopSettings.getShopPhone(),
       ShopSettings.getDarkTheme(),
+      ShopSettings.getShowThumbprintBlockOnThermal(),
       AppVersion.displayLabel(),
+      backup.loadPreferences(),
+      ShopSettings.getCashOpeningBalance(),
     ]);
     if (!mounted) return;
     setState(() {
@@ -60,8 +82,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _shopAddress = results[1] as String;
       _shopPhone = results[2] as String;
       _darkTheme = results[3] as bool;
-      _versionLabel = results[4] as String;
+      _showThumbprintBlockThermal = results[4] as bool;
+      _versionLabel = results[5] as String;
+      _driveEmail = backup.connectedEmail;
+      _lastBackupLabel = backup.lastBackupStatusLabel;
+      _autoBackupOnExit = backup.autoBackupOnExit;
+      _keepLocalCopy = backup.keepLocalCopy;
+      _cashOpeningBalance = results[7] as double;
       _loaded = true;
+    });
+  }
+
+  void _syncBackupUi() {
+    final backup = BackupService.instance;
+    setState(() {
+      _driveEmail = backup.connectedEmail;
+      _lastBackupLabel = backup.lastBackupStatusLabel;
+      _autoBackupOnExit = backup.autoBackupOnExit;
+      _keepLocalCopy = backup.keepLocalCopy;
     });
   }
 
@@ -137,20 +175,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       await onSave(saved);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('$title saved'),
-          backgroundColor: const Color(0xFF28A745),
-        ),
-      );
+      AppToast.showSuccess(context, '$title saved');
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to save: $e'),
-          backgroundColor: const Color(0xFFDC3545),
-        ),
-      );
+      AppToast.showError(context, 'Failed to save: $e');
     }
   }
 
@@ -195,29 +223,445 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  Future<void> _editCashOpeningBalance() async {
+    await _editTextField(
+      title: 'Cash Opening Balance',
+      initialValue: _cashOpeningBalance > 0
+          ? _cashOpeningBalance.toStringAsFixed(0)
+          : '',
+      hint: 'Counter float in Rs (e.g. 50000)',
+      keyboardType: TextInputType.number,
+      onSave: (value) async {
+        final parsed =
+            double.tryParse(value.replaceAll(RegExp(r'[^0-9.]'), '')) ?? 0;
+        await ShopSettings.setCashOpeningBalance(parsed);
+        if (mounted) setState(() => _cashOpeningBalance = parsed);
+      },
+    );
+  }
+
+  Future<void> _runSystemAudit() async {
+    await showAuditReportDialog(context);
+  }
+
   Future<void> _toggleDarkTheme(bool value) async {
     setState(() => _darkTheme = value);
     await ShopSettings.setDarkTheme(value);
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          value
+    AppToast.showSuccess(context, value
               ? 'Dark theme will apply in a future update'
-              : 'Dark theme disabled',
-        ),
-        backgroundColor: AppColors.darkGreen,
-      ),
+              : 'Dark theme disabled',);
+  }
+
+  Future<void> _toggleThumbprintBlock(bool value) async {
+    setState(() => _showThumbprintBlockThermal = value);
+    await ShopSettings.setShowThumbprintBlockOnThermal(value);
+    if (!mounted) return;
+    AppToast.showSuccess(
+      context,
+      value
+          ? 'Thumbprint block enabled on thermal receipts'
+          : 'Thumbprint block hidden on thermal receipts',
     );
   }
 
-  Future<void> _exportBackup() async {
+  Future<bool> _ensureOAuthConfigured() async {
+    await GoogleOAuthConfig.load();
+    if (GoogleOAuthConfig.isConfigured) return true;
+    return _showOAuthSetupDialog();
+  }
+
+  Future<bool> _showOAuthSetupDialog() async {
+    final idController = TextEditingController(
+      text: GoogleOAuthConfig.desktopClientId,
+    );
+    final secretController = TextEditingController(
+      text: GoogleOAuthConfig.desktopClientSecret,
+    );
+
+    final saved = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Configure Google Drive OAuth'),
+          content: SizedBox(
+            width: 480,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Windows desktop backup needs a Google Cloud Desktop OAuth client. Enable the Google Drive API, create a Desktop app client, then paste the credentials below.',
+                  style: TextStyle(fontSize: 13, height: 1.4),
+                ),
+                const SizedBox(height: 14),
+                TextField(
+                  controller: idController,
+                  autofocus: true,
+                  decoration: const InputDecoration(
+                    labelText: 'OAuth Client ID',
+                    hintText: 'xxxx.apps.googleusercontent.com',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: secretController,
+                  decoration: const InputDecoration(
+                    labelText: 'OAuth Client Secret (optional)',
+                    hintText: 'GOCSPX-…',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                const Text(
+                  'Authorized redirect URI (if prompted):\nhttp://localhost:8765/',
+                  style: TextStyle(fontSize: 12, color: _rowSub, height: 1.4),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              style: FilledButton.styleFrom(
+                backgroundColor: _forestButton,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Save & Continue'),
+            ),
+          ],
+        );
+      },
+    );
+
+    final id = idController.text;
+    final secret = secretController.text;
+    idController.dispose();
+    secretController.dispose();
+
+    if (saved != true || !mounted) return false;
+    try {
+      await GoogleOAuthConfig.saveRuntimeCredentials(
+        clientId: id,
+        clientSecret: secret,
+      );
+      if (!mounted) return false;
+      AppToast.showSuccess(context, 'Google OAuth credentials saved');
+      return true;
+    } catch (e) {
+      if (!mounted) return false;
+      AppToast.showError(context, '$e');
+      return false;
+    }
+  }
+
+  Future<void> _connectOrSwitchGoogle({required bool switchAccount}) async {
+    if (_accountBusy) return;
+    setState(() => _accountBusy = true);
+    try {
+      final ready = await _ensureOAuthConfigured();
+      if (!ready) {
+        if (!mounted) return;
+        AppToast.showError(
+          context,
+          'Add a Google Desktop OAuth Client ID to connect Drive backup',
+        );
+        return;
+      }
+
+      if (switchAccount || BackupService.instance.isConnected) {
+        await BackupService.instance.switchGoogleAccount();
+      } else {
+        final ok = await BackupService.instance.connectGoogleAccount();
+        if (!ok) {
+          if (!mounted) return;
+          AppToast.showError(context, 'Google sign-in was cancelled');
+          return;
+        }
+      }
+      if (!mounted) return;
+      _syncBackupUi();
+      AppToast.showSuccess(
+        context,
+        'Connected: ${BackupService.instance.connectedEmail ?? 'Google Account'}',
+      );
+    } on GoogleOAuthNotConfiguredException {
+      if (!mounted) return;
+      final ready = await _showOAuthSetupDialog();
+      if (ready && mounted) {
+        setState(() => _accountBusy = false);
+        await _connectOrSwitchGoogle(switchAccount: switchAccount);
+        return;
+      }
+    } catch (e) {
+      if (!mounted) return;
+      AppToast.showError(context, 'Google account error: $e');
+    } finally {
+      if (mounted) setState(() => _accountBusy = false);
+    }
+  }
+
+  Future<void> _disconnectGoogle() async {
+    if (_accountBusy) return;
+    setState(() => _accountBusy = true);
+    try {
+      await BackupService.instance.disconnectGoogleAccount();
+      if (!mounted) return;
+      _syncBackupUi();
+      AppToast.showSuccess(context, 'Google Drive account disconnected');
+    } catch (e) {
+      if (!mounted) return;
+      AppToast.showError(context, 'Disconnect failed: $e');
+    } finally {
+      if (mounted) setState(() => _accountBusy = false);
+    }
+  }
+
+  Future<void> _backupDatabaseNow() async {
+    if (_backupBusy) return;
+    setState(() => _backupBusy = true);
+    try {
+      final ready = await _ensureOAuthConfigured();
+      if (!ready) {
+        if (!mounted) return;
+        AppToast.showError(context, 'Configure Google OAuth before backup');
+        return;
+      }
+      if (!BackupService.instance.isConnected) {
+        final ok = await BackupService.instance.connectGoogleAccount();
+        if (!ok) {
+          if (!mounted) return;
+          AppToast.showError(context, 'Connect a Google account first');
+          return;
+        }
+        _syncBackupUi();
+      }
+      final ok = await BackupService.instance.createCloudBackup();
+      if (!mounted) return;
+      _syncBackupUi();
+      if (ok) {
+        AppToast.showSuccess(context, 'Database backed up to Google Drive');
+      } else {
+        AppToast.showError(context, 'Backup did not complete');
+      }
+    } on GoogleOAuthNotConfiguredException {
+      if (!mounted) return;
+      await _showOAuthSetupDialog();
+    } catch (e) {
+      if (!mounted) return;
+      _syncBackupUi();
+      AppToast.showError(context, 'Backup failed: $e');
+    } finally {
+      if (mounted) setState(() => _backupBusy = false);
+    }
+  }
+
+  Future<void> _fetchAndViewCloudBackups() async {
+    if (_fetchBusy) return;
+    setState(() => _fetchBusy = true);
+    try {
+      final ready = await _ensureOAuthConfigured();
+      if (!ready) {
+        if (!mounted) return;
+        AppToast.showError(context, 'Configure Google OAuth before restore');
+        return;
+      }
+      if (!BackupService.instance.isConnected) {
+        final ok = await BackupService.instance.connectGoogleAccount();
+        if (!ok) {
+          if (!mounted) return;
+          AppToast.showError(context, 'Connect a Google account first');
+          return;
+        }
+        _syncBackupUi();
+      }
+      final backups = await BackupService.instance.fetchCloudBackups();
+      if (!mounted) return;
+      await _showCloudBackupsModal(backups);
+    } on GoogleOAuthNotConfiguredException {
+      if (!mounted) return;
+      await _showOAuthSetupDialog();
+    } catch (e) {
+      if (!mounted) return;
+      AppToast.showError(context, 'Could not fetch backups: $e');
+    } finally {
+      if (mounted) setState(() => _fetchBusy = false);
+    }
+  }
+
+  Future<void> _showCloudBackupsModal(List<DriveBackupFile> backups) async {
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Cloud Backups'),
+          content: SizedBox(
+            width: 520,
+            child: backups.isEmpty
+                ? const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 12),
+                    child: Text(
+                      'No AgriKhata backups found in Google Drive.',
+                      style: TextStyle(color: _rowSub),
+                    ),
+                  )
+                : SizedBox(
+                    height: 360,
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: backups.length,
+                      separatorBuilder: (_, _) => const Divider(height: 1),
+                      itemBuilder: (context, index) {
+                        final file = backups[index];
+                        return ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: const CircleAvatar(
+                            backgroundColor: _iconBg,
+                            child: Icon(
+                              Icons.cloud_download_outlined,
+                              color: AppColors.accentGreen,
+                              size: 20,
+                            ),
+                          ),
+                          title: Text(
+                            file.formattedWhen,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w600,
+                              fontSize: 13.5,
+                            ),
+                          ),
+                          subtitle: Text(
+                            '${file.name}  •  ${file.formattedSize}',
+                            style: const TextStyle(
+                              fontSize: 11.5,
+                              color: _rowSub,
+                            ),
+                          ),
+                          trailing: TextButton(
+                            onPressed: () {
+                              Navigator.of(ctx).pop();
+                              _confirmAndRestore(file);
+                            },
+                            style: TextButton.styleFrom(
+                              foregroundColor: _forestButton,
+                            ),
+                            child: const Text('Restore'),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _confirmAndRestore(DriveBackupFile file) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('Restore Database from Cloud'),
+          content: const Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '⚠️ Restoring a backup will overwrite all existing local sales, inventory, and ledger data on this device. Create a local backup first?',
+                style: TextStyle(height: 1.45),
+              ),
+              SizedBox(height: 12),
+              Text(
+                'If “Keep local backup copy on desktop” is enabled, a safety ZIP is saved under Documents/AgriKhata_Backups before restore.',
+                style: TextStyle(fontSize: 12.5, color: _rowSub, height: 1.4),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              style: FilledButton.styleFrom(
+                backgroundColor: _forestButton,
+                foregroundColor: Colors.white,
+              ),
+              child: const Text('Confirm & Restore'),
+            ),
+          ],
+        );
+      },
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _backupBusy = true);
+    try {
+      final ok = await BackupService.instance.restoreFromCloudBackup(file.id);
+      if (!mounted) return;
+      if (!ok) {
+        AppToast.showError(context, 'Restore failed');
+        return;
+      }
+      AppToast.showSuccess(context, 'Database restored — reloading app…');
+      await _reloadAppAfterRestore();
+    } catch (e) {
+      if (!mounted) return;
+      AppToast.showError(context, 'Restore failed: $e');
+    } finally {
+      if (mounted) setState(() => _backupBusy = false);
+    }
+  }
+
+  Future<void> _reloadAppAfterRestore() async {
+    widget.onDataReset?.call();
+    try {
+      await AuthService.instance.logout();
+    } catch (_) {}
+    final nav = rootNavigatorKey.currentState;
+    if (nav == null) return;
+    nav.pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const AuthGate()),
+      (_) => false,
+    );
+  }
+
+  Future<void> _toggleAutoBackupOnExit(bool value) async {
+    setState(() => _autoBackupOnExit = value);
+    await BackupService.instance.setAutoBackupOnExit(value);
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Google Drive backup coming soon'),
-        backgroundColor: AppColors.darkGreen,
-      ),
+    AppToast.showSuccess(
+      context,
+      value
+          ? 'Auto-backup on app exit enabled'
+          : 'Auto-backup on app exit disabled',
+    );
+  }
+
+  Future<void> _toggleKeepLocalCopy(bool value) async {
+    setState(() => _keepLocalCopy = value);
+    await BackupService.instance.setKeepLocalCopy(value);
+    if (!mounted) return;
+    AppToast.showSuccess(
+      context,
+      value
+          ? 'Local desktop backup copies enabled'
+          : 'Local desktop backup copies disabled',
     );
   }
 
@@ -232,12 +676,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
     final launched = await launchUrl(uri);
     if (!launched && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Could not open email app'),
-          backgroundColor: Color(0xFFDC3545),
-        ),
-      );
+      AppToast.showError(context, 'Could not open email app');
     }
   }
 
@@ -322,21 +761,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
       widget.onDataReset?.call();
 
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Application data has been reset'),
-            backgroundColor: Color(0xFF28A745),
-          ),
-        );
+        AppToast.showSuccess(context, 'Application data has been reset');
       }
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to reset data: $e'),
-            backgroundColor: const Color(0xFFDC3545),
-          ),
-        );
+        AppToast.showError(context, 'Failed to reset data: $e');
       }
     }
   }
@@ -347,34 +776,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       backgroundColor: AppColors.background,
       body: Column(
         children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              border: Border(
-                bottom: BorderSide(color: AppColors.border, width: 0.5),
-              ),
-            ),
-            child: const Row(
-              children: [
-                Text(
-                  'System',
-                  style: TextStyle(fontSize: 12, color: AppColors.textHint),
-                ),
-                Text(
-                  '  ›  ',
-                  style: TextStyle(fontSize: 12, color: AppColors.textHint),
-                ),
-                Text(
-                  'Settings',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: AppColors.textPrimary,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
-            ),
+          const AgriHeader(
+            breadcrumbs: ['System', 'Settings'],
+            actions: [],
           ),
           Expanded(
             child: !_loaded
@@ -428,16 +832,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           ],
                         ),
                         const SizedBox(height: 24),
+                        _buildSectionLabel('Cloud Backup & Data Security'),
+                        const SizedBox(height: 8),
+                        _buildCloudBackupSection(),
+                        const SizedBox(height: 24),
                         _buildSectionLabel('Preferences & Data Safety'),
                         const SizedBox(height: 8),
                         _buildCard(
                           children: [
                             _SettingsRow(
-                              icon: Icons.cloud_upload_outlined,
-                              title: 'Google Drive Cloud Backup',
+                              icon: Icons.account_balance_wallet_outlined,
+                              title: 'Cash Opening Balance',
+                              subtitle: _cashOpeningBalance > 0
+                                  ? 'Rs ${NumberFormat('#,##,##0').format(_cashOpeningBalance.round())}'
+                                  : 'Used by Cash in Hand KPI (not set)',
+                              onTap: _editCashOpeningBalance,
+                            ),
+                            _SettingsRow(
+                              icon: Icons.manage_search_rounded,
+                              title: 'Run Audit & Reconcile All Ledgers',
                               subtitle:
-                                  'Save your local database securely to the cloud',
-                              trailing: _ExportButton(onPressed: _exportBackup),
+                                  'Scan orphan rows, stock drift, KPI vs SQL sums, then fix',
+                              onTap: _runSystemAudit,
                             ),
                             _SettingsRow(
                               icon: Icons.dark_mode_outlined,
@@ -447,6 +863,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               trailing: Switch(
                                 value: _darkTheme,
                                 onChanged: _toggleDarkTheme,
+                                activeThumbColor: Colors.white,
+                                activeTrackColor: AppColors.accentGreen,
+                                inactiveThumbColor: Colors.white,
+                                inactiveTrackColor: _switchOff,
+                                trackOutlineColor:
+                                    const WidgetStatePropertyAll(
+                                  Colors.transparent,
+                                ),
+                                materialTapTargetSize:
+                                    MaterialTapTargetSize.shrinkWrap,
+                              ),
+                            ),
+                            _SettingsRow(
+                              icon: Icons.fingerprint_outlined,
+                              title:
+                                  'Show Thumbprint Block on Thermal Receipts',
+                              subtitle:
+                                  'Print Zamindar thumb/sign and shop stamp boxes on 80mm receipts',
+                              trailing: Switch(
+                                value: _showThumbprintBlockThermal,
+                                onChanged: _toggleThumbprintBlock,
                                 activeThumbColor: Colors.white,
                                 activeTrackColor: AppColors.accentGreen,
                                 inactiveThumbColor: Colors.white,
@@ -473,7 +910,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         _buildDangerCard(),
                         const SizedBox(height: 36),
                         Text(
-                          'AgriKhata ${_versionLabel.isEmpty ? 'v1.0.8' : _versionLabel}  •  Built with ❤️',
+                          'AgriKhata ${_versionLabel.isEmpty ? 'v1.0.15' : _versionLabel}  •  Built with ❤️',
                           textAlign: TextAlign.center,
                           style: const TextStyle(
                             fontSize: 11,
@@ -535,8 +972,237 @@ class _SettingsScreenState extends State<SettingsScreen> {
           border: Border.all(color: AppColors.border),
         ),
         clipBehavior: Clip.antiAlias,
-        child: Column(children: children),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: children,
+        ),
       ),
+    );
+  }
+
+  Widget _buildCloudBackupSection() {
+    final email = (_driveEmail == null || _driveEmail!.trim().isEmpty)
+        ? 'No Account Connected'
+        : _driveEmail!.trim();
+    final connected = email != 'No Account Connected';
+
+    return _buildCard(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Row(
+                children: [
+                  Icon(
+                    Icons.cloud_outlined,
+                    size: 20,
+                    color: AppColors.accentGreen,
+                  ),
+                  SizedBox(width: 10),
+                  Text(
+                    'Google Drive Backup Account',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF5F9F4),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      connected
+                          ? Icons.account_circle_rounded
+                          : Icons.person_off_outlined,
+                      size: 22,
+                      color: connected ? AppColors.accentGreen : _rowSub,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        email,
+                        style: TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w600,
+                          color:
+                              connected ? AppColors.textPrimary : _rowSub,
+                        ),
+                      ),
+                    ),
+                    if (_accountBusy)
+                      const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: AppColors.darkGreen,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    if (!connected)
+                      _ForestActionButton(
+                        icon: Icons.link_rounded,
+                        label: 'Connect Google Account',
+                        onPressed: _accountBusy
+                            ? null
+                            : () => _connectOrSwitchGoogle(
+                                  switchAccount: false,
+                                ),
+                      )
+                    else ...[
+                      _ForestActionButton(
+                        icon: Icons.swap_horiz_rounded,
+                        label: 'Switch Google Account',
+                        onPressed: _accountBusy
+                            ? null
+                            : () => _connectOrSwitchGoogle(
+                                  switchAccount: true,
+                                ),
+                      ),
+                      _OutlineActionButton(
+                        icon: Icons.logout_rounded,
+                        label: 'Disconnect',
+                        onPressed: _accountBusy ? null : _disconnectGoogle,
+                      ),
+                    ],
+                    _OutlineActionButton(
+                      icon: Icons.key_outlined,
+                      label: 'OAuth Setup',
+                      onPressed: _accountBusy ? null : () async {
+                        await _showOAuthSetupDialog();
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        const _CustomDivider(),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                _lastBackupLabel,
+                textAlign: TextAlign.left,
+                style: const TextStyle(
+                  fontSize: 12.5,
+                  color: _sectionLabel,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: _ForestActionButton(
+                  icon: Icons.cloud_upload_outlined,
+                  label: 'Backup Database Now',
+                  loading: _backupBusy,
+                  onPressed: _backupBusy ? null : _backupDatabaseNow,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const _CustomDivider(),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'Restore Database from Cloud',
+                textAlign: TextAlign.left,
+                style: TextStyle(
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Download a previous AgriKhata backup ZIP from Google Drive and replace the local database.',
+                textAlign: TextAlign.left,
+                style: TextStyle(
+                  fontSize: 11.5,
+                  color: _rowSub,
+                  height: 1.4,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: _ForestActionButton(
+                  icon: Icons.cloud_download_outlined,
+                  label: 'Fetch & View Cloud Backups',
+                  loading: _fetchBusy,
+                  onPressed: _fetchBusy ? null : _fetchAndViewCloudBackups,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const _CustomDivider(),
+        _SettingsRow(
+          icon: Icons.exit_to_app_outlined,
+          title: 'Auto-backup to Google Drive on App Exit',
+          subtitle: 'Upload a fresh cloud backup when AgriKhata is closed',
+          trailing: Switch(
+            value: _autoBackupOnExit,
+            onChanged: _toggleAutoBackupOnExit,
+            activeThumbColor: Colors.white,
+            activeTrackColor: AppColors.accentGreen,
+            inactiveThumbColor: Colors.white,
+            inactiveTrackColor: _switchOff,
+            trackOutlineColor:
+                const WidgetStatePropertyAll(Colors.transparent),
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+        ),
+        _SettingsRow(
+          icon: Icons.folder_copy_outlined,
+          title: 'Keep local backup copy on desktop',
+          subtitle: 'Also save ZIP copies under Documents/AgriKhata_Backups',
+          trailing: Switch(
+            value: _keepLocalCopy,
+            onChanged: _toggleKeepLocalCopy,
+            activeThumbColor: Colors.white,
+            activeTrackColor: AppColors.accentGreen,
+            inactiveThumbColor: Colors.white,
+            inactiveTrackColor: _switchOff,
+            trackOutlineColor:
+                const WidgetStatePropertyAll(Colors.transparent),
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          showDivider: false,
+        ),
+      ],
     );
   }
 
@@ -601,6 +1267,84 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ForestActionButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback? onPressed;
+  final bool loading;
+
+  const _ForestActionButton({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+    this.loading = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return FilledButton.icon(
+      onPressed: onPressed,
+      icon: loading
+          ? const SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Colors.white,
+              ),
+            )
+          : Icon(icon, size: 16),
+      label: Text(label),
+      style: FilledButton.styleFrom(
+        backgroundColor: _SettingsScreenState._forestButton,
+        foregroundColor: Colors.white,
+        disabledBackgroundColor: const Color(0xFF9BB0A3),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        textStyle: const TextStyle(
+          fontSize: 12.5,
+          fontWeight: FontWeight.w600,
+        ),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+        ),
+      ),
+    );
+  }
+}
+
+class _OutlineActionButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback? onPressed;
+
+  const _OutlineActionButton({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return OutlinedButton.icon(
+      onPressed: onPressed,
+      icon: Icon(icon, size: 16),
+      label: Text(label),
+      style: OutlinedButton.styleFrom(
+        foregroundColor: _SettingsScreenState._forestButton,
+        side: const BorderSide(color: Color(0xFFC6DEC9)),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        textStyle: const TextStyle(
+          fontSize: 12.5,
+          fontWeight: FontWeight.w600,
+        ),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
         ),
       ),
     );
@@ -725,50 +1469,3 @@ class _SettingsRowState extends State<_SettingsRow> {
   }
 }
 
-class _ExportButton extends StatefulWidget {
-  final VoidCallback onPressed;
-
-  const _ExportButton({required this.onPressed});
-
-  @override
-  State<_ExportButton> createState() => _ExportButtonState();
-}
-
-class _ExportButtonState extends State<_ExportButton> {
-  bool _hovered = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      cursor: SystemMouseCursors.click,
-      child: GestureDetector(
-        onTap: widget.onPressed,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 150),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-          decoration: BoxDecoration(
-            color: _hovered ? const Color(0xFF163828) : AppColors.darkGreen,
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: const Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.download_rounded, size: 12, color: Colors.white),
-              SizedBox(width: 6),
-              Text(
-                'Export Now',
-                style: TextStyle(
-                  fontSize: 11.5,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.white,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}

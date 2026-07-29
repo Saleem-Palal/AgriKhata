@@ -1,8 +1,9 @@
-import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Data/agri_header.dart';
 import 'package:agrikhata/Database/database_helper.dart';
 import 'package:agrikhata/screens/attendance_screen.dart';
 import 'package:agrikhata/screens/employees_screen.dart';
+import 'package:agrikhata/services/partner_accounting_service.dart';
+import 'package:agrikhata/theme/theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
@@ -262,18 +263,33 @@ class _ExpenseScreenState extends State<ExpenseScreen> {
         amount,
         _remarksController.text.trim(),
       );
+
+      // Store overheads are split equally across active partners in Partner Management.
+      String successMsg = 'Expense saved';
+      if (PartnerService.instance.isOverheadCategory(category)) {
+        await PartnerAccountingService.instance.postOverheadExpenseSplit(
+          category: category,
+          amount: amount,
+        );
+        final partners = await PartnerService.instance.getActivePartners();
+        if (partners.isNotEmpty) {
+          final share = PartnerService.instance.overheadSharePerPartner(
+            amount,
+            partners.length,
+          );
+          final pct = (100 / partners.length).toStringAsFixed(0);
+          successMsg =
+              'Expense saved · Overhead split $pct% each '
+              '(${partners.map((p) => p.name).join(' / ')}) '
+              '≈ ₨ ${_currency.format(share.round())}';
+        }
+      }
+
       if (!mounted) return;
       _resetForm();
       await _loadExpenses(silent: true);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Expense saved'),
-          backgroundColor: AppColors.mediumGreen,
-          behavior: SnackBarBehavior.floating,
-          duration: Duration(seconds: 2),
-        ),
-      );
+      AppToast.showSuccess(context, successMsg);
     } catch (e) {
       if (!mounted) return;
       setState(() => _formError = 'Could not save expense: $e');
@@ -422,18 +438,7 @@ class _ExpenseScreenState extends State<ExpenseScreen> {
     required String label,
     required VoidCallback onPressed,
   }) {
-    return OutlinedButton.icon(
-      onPressed: onPressed,
-      icon: Icon(icon, size: 15),
-      label: Text(label),
-      style: OutlinedButton.styleFrom(
-        foregroundColor: AppColors.darkGreen,
-        side: const BorderSide(color: AppColors.inputBorder),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-      ),
-    );
+    return AppButton.secondary(label: label, icon: icon, onPressed: onPressed);
   }
 
   // -------------------------------------------------------------------------
@@ -486,8 +491,8 @@ class _ExpenseScreenState extends State<ExpenseScreen> {
                     ),
                   )
                 : _expenses.isEmpty
-                    ? _buildEmptyLedger()
-                    : _buildExpenseTable(),
+                ? _buildEmptyLedger()
+                : _buildExpenseTable(),
           ),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -605,14 +610,18 @@ class _ExpenseScreenState extends State<ExpenseScreen> {
   }
 
   Widget _buildExpenseTable() {
-    const minTableWidth = 560.0;
+    const minTableWidth = 720.0;
 
     Widget buildTableContent() {
       return Column(
         children: [
           Container(
+            constraints: const BoxConstraints(
+              minHeight: AppDataTable.headerHeight,
+            ),
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: const BoxDecoration(
+              color: AppColors.tableHeaderBg,
               border: Border(
                 bottom: BorderSide(color: AppColors.border, width: 0.5),
               ),
@@ -621,51 +630,26 @@ class _ExpenseScreenState extends State<ExpenseScreen> {
               children: [
                 SizedBox(
                   width: 96,
+                  child: Text('DATE', style: AppTextStyles.tableHeader),
+                ),
+                Expanded(
+                  flex: 2,
+                  child: Text('CATEGORY', style: AppTextStyles.tableHeader),
+                ),
+                SizedBox(
+                  width: 110,
+                  child: Text('AMOUNT (₨)', style: AppTextStyles.tableHeader),
+                ),
+                Expanded(
+                  flex: 4,
                   child: Text(
-                    'DATE',
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textMuted,
-                      letterSpacing: 0.3,
-                    ),
+                    'REMARKS / DETAILS',
+                    style: AppTextStyles.tableHeader,
                   ),
                 ),
                 Expanded(
                   flex: 2,
-                  child: Text(
-                    'CATEGORY',
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textMuted,
-                      letterSpacing: 0.3,
-                    ),
-                  ),
-                ),
-                SizedBox(
-                  width: 110,
-                  child: Text(
-                    'AMOUNT (₨)',
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textMuted,
-                      letterSpacing: 0.3,
-                    ),
-                  ),
-                ),
-                Expanded(
-                  flex: 5,
-                  child: Text(
-                    'REMARKS / DETAILS',
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textMuted,
-                      letterSpacing: 0.3,
-                    ),
-                  ),
+                  child: Text('RECORDED BY', style: AppTextStyles.tableHeader),
                 ),
               ],
             ),
@@ -676,7 +660,11 @@ class _ExpenseScreenState extends State<ExpenseScreen> {
               itemBuilder: (context, index) {
                 final expense = _expenses[index];
                 final odd = index.isEven;
+                final recordedBy = expense.createdByUserName.trim();
                 return Container(
+                  constraints: const BoxConstraints(
+                    minHeight: AppDataTable.rowMinHeight,
+                  ),
                   padding: const EdgeInsets.symmetric(
                     horizontal: 12,
                     vertical: 9,
@@ -733,12 +721,24 @@ class _ExpenseScreenState extends State<ExpenseScreen> {
                         ),
                       ),
                       Expanded(
-                        flex: 5,
+                        flex: 4,
                         child: Text(
                           expense.remarks.isEmpty ? '—' : expense.remarks,
                           style: const TextStyle(
                             fontSize: 12,
                             color: Color(0xFF4B5A50),
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                          maxLines: 2,
+                        ),
+                      ),
+                      Expanded(
+                        flex: 2,
+                        child: Text(
+                          recordedBy.isEmpty ? '—' : recordedBy,
+                          style: const TextStyle(
+                            fontSize: 11.5,
+                            color: AppColors.textMuted,
                           ),
                           overflow: TextOverflow.ellipsis,
                           maxLines: 2,
@@ -851,8 +851,9 @@ class _ExpenseScreenState extends State<ExpenseScreen> {
                 onPressed: _saving ? null : _saveExpense,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF047857),
-                  disabledBackgroundColor: const Color(0xFF047857)
-                      .withValues(alpha: 0.55),
+                  disabledBackgroundColor: const Color(
+                    0xFF047857,
+                  ).withValues(alpha: 0.55),
                   foregroundColor: Colors.white,
                   elevation: 0,
                   padding: const EdgeInsets.symmetric(vertical: 12),
@@ -946,10 +947,7 @@ class _ExpenseScreenState extends State<ExpenseScreen> {
             color: AppColors.textMuted,
             size: 20,
           ),
-          style: const TextStyle(
-            fontSize: 12.5,
-            color: AppColors.textPrimary,
-          ),
+          style: const TextStyle(fontSize: 12.5, color: AppColors.textPrimary),
           dropdownColor: Colors.white,
           borderRadius: BorderRadius.circular(8),
           items: _kCategoryOptions.map((option) {
@@ -984,10 +982,7 @@ class _ExpenseScreenState extends State<ExpenseScreen> {
         FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]')),
         _IndianNumberInputFormatter(),
       ],
-      style: const TextStyle(
-        fontSize: 12.5,
-        color: AppColors.textPrimary,
-      ),
+      style: const TextStyle(fontSize: 12.5, color: AppColors.textPrimary),
       decoration: InputDecoration(
         hintText: 'e.g. 500',
         hintStyle: const TextStyle(color: AppColors.textHint, fontSize: 12.5),
@@ -1062,10 +1057,7 @@ class _ExpenseScreenState extends State<ExpenseScreen> {
     return TextField(
       controller: controller,
       maxLines: maxLines,
-      style: const TextStyle(
-        fontSize: 12.5,
-        color: AppColors.textPrimary,
-      ),
+      style: const TextStyle(fontSize: 12.5, color: AppColors.textPrimary),
       decoration: InputDecoration(
         hintText: hint,
         hintStyle: const TextStyle(color: AppColors.textHint, fontSize: 12.5),

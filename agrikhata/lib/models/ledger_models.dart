@@ -100,10 +100,20 @@ class LedgerEntry {
   final PaymentStatus status;
   final String season;
   final bool isWalkInCustomer;
+
   /// Purchase payment terms label: Cash / Udhaar / Partial (purchases only).
   final String? purchaseTerms;
-  /// Invoice-level summary (purchases only).
+
+  /// Invoice-level summary (purchases / cash advances).
   final String? description;
+
+  /// Sales `transaction_type` (e.g. PRODUCT_SALE, CASH_ADVANCE).
+  final String? transactionType;
+
+  /// Permanent actor snapshot from the invoice row (never a live user lookup).
+  final String? createdByUserId;
+  final String? createdByUserName;
+  final DateTime? createdAt;
 
   LedgerEntry({
     required this.id,
@@ -119,7 +129,17 @@ class LedgerEntry {
     this.isWalkInCustomer = false,
     this.purchaseTerms,
     this.description,
+    this.transactionType,
+    this.createdByUserId,
+    this.createdByUserName,
+    this.createdAt,
   });
+
+  bool get isCashAdvance => transactionType == 'CASH_ADVANCE';
+  bool get isAdvance =>
+      transactionType == 'CASH_ADVANCE' ||
+      transactionType == 'DIESEL_ADVANCE' ||
+      transactionType == 'PETROL_ADVANCE';
 
   double get outstanding => total - paid;
 
@@ -208,6 +228,10 @@ class PaymentLedgerEntry {
   final String paymentMethod;
   final String season;
   final String itemsSummary;
+  final DateTime? editedAt;
+  final String? editedBy;
+  final double? originalAmount;
+  final String? notes;
 
   PaymentLedgerEntry({
     required this.paymentId,
@@ -219,14 +243,39 @@ class PaymentLedgerEntry {
     required this.paymentMethod,
     required this.season,
     this.itemsSummary = '',
+    this.editedAt,
+    this.editedBy,
+    this.originalAmount,
+    this.notes,
   });
 
   bool get isAdvanceCollection => invoiceNumber == null;
   bool get isWalletDeduction => paymentMethod == 'Advance Wallet Deduction';
-  bool get isAdvanceSummary =>
-      itemsSummary == 'N/A (Advance Collection)';
+  bool get isAdvanceSummary => itemsSummary == 'N/A (Advance Collection)';
+  bool get isEdited => editedAt != null;
+
+  /// Label for wallet drawdowns: `Advance payments deducted for (Products)`.
+  static String formatAdvanceDeductionSummary(String? products) {
+    final trimmed = (products ?? '').trim();
+    if (trimmed.startsWith('Advance payments deducted')) {
+      return trimmed;
+    }
+    final isGeneric =
+        trimmed.isEmpty ||
+        trimmed == '—' ||
+        trimmed == 'N/A (Advance Collection)' ||
+        trimmed.toLowerCase() == 'advance wallet deduction';
+    if (isGeneric) return 'Advance payments deducted';
+    return 'Advance payments deducted for ($trimmed)';
+  }
 
   factory PaymentLedgerEntry.fromMap(Map<String, dynamic> map) {
+    final method = map['payment_method'] as String;
+    var summary = map['items_summary'] as String? ?? '';
+    if (method == 'Advance Wallet Deduction') {
+      summary = formatAdvanceDeductionSummary(summary);
+    }
+    final editedRaw = map['edited_at'] as String?;
     return PaymentLedgerEntry(
       paymentId: map['payment_id'] as String,
       invoiceNumber: map['invoice_number'] as String?,
@@ -235,9 +284,15 @@ class PaymentLedgerEntry {
       zamindarName: (map['zamindar_name'] as String?) ?? '',
       kisaanName: map['kisaan_name'] as String?,
       amountPaid: (map['amount_paid'] as num).toDouble(),
-      paymentMethod: map['payment_method'] as String,
+      paymentMethod: method,
       season: map['season'] as String,
-      itemsSummary: map['items_summary'] as String? ?? '',
+      itemsSummary: summary,
+      editedAt: editedRaw != null && editedRaw.isNotEmpty
+          ? DateTime.tryParse(editedRaw)
+          : null,
+      editedBy: map['edited_by'] as String?,
+      originalAmount: (map['original_amount'] as num?)?.toDouble(),
+      notes: map['notes'] as String?,
     );
   }
 }

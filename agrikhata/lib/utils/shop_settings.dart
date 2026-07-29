@@ -8,6 +8,9 @@ class ShopSettings {
   static const shopAddressKey = 'shop_address';
   static const shopPhoneKey = 'shop_phone';
   static const darkThemeKey = 'dark_theme';
+  static const showThumbprintBlockThermalKey =
+      'show_thumbprint_block_thermal';
+  static const cashOpeningBalanceKey = 'cash_opening_balance';
 
   static const defaultShopName = 'Shop Name';
   static const notConfiguredLabel = 'Not configured yet';
@@ -71,6 +74,18 @@ class ShopSettings {
     await prefs.setBool(darkThemeKey, enabled);
   }
 
+  /// Whether thermal (80mm) receipts include the ink thumbprint/sign block.
+  /// Defaults to enabled when unset.
+  static Future<bool> getShowThumbprintBlockOnThermal() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(showThumbprintBlockThermalKey) ?? true;
+  }
+
+  static Future<void> setShowThumbprintBlockOnThermal(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(showThumbprintBlockThermalKey, enabled);
+  }
+
   /// Subtitle for Settings rows: saved value, or [notConfiguredLabel].
   static String displayOrNotConfigured(String value) {
     final trimmed = value.trim();
@@ -78,5 +93,16 @@ class ShopSettings {
       return notConfiguredLabel;
     }
     return trimmed;
+  }
+
+  /// Opening cash-drawer float used by Cash in Hand KPI.
+  static Future<double> getCashOpeningBalance() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getDouble(cashOpeningBalanceKey) ?? 0.0;
+  }
+
+  static Future<void> setCashOpeningBalance(double amount) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(cashOpeningBalanceKey, amount < 0 ? 0 : amount);
   }
 }

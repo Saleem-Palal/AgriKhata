@@ -1,7 +1,7 @@
-import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Data/agri_header.dart';
 import 'package:agrikhata/Database/database_helper.dart';
 import 'package:agrikhata/screens/products_screen.dart';
+import 'package:agrikhata/theme/theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
@@ -64,6 +64,7 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
   static const _accentRed = Color(0xFFA32D2D);
   static const _border = Color(0xFFE2EBE0);
   static const _inputBorder = Color(0xFFC6DEC9);
+
   /// Forest-green outline (Tailwind emerald-800 equivalent).
   static const _emerald800 = Color(0xFF065F46);
 
@@ -214,8 +215,7 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
 
   Future<void> _pickExpiry(int index) async {
     final line = _lines[index];
-    final initial =
-        line.expiryDate ?? _defaultPurchaseExpiryDate();
+    final initial = line.expiryDate ?? _defaultPurchaseExpiryDate();
     final picked = await showDatePicker(
       context: context,
       initialDate: initial,
@@ -243,8 +243,9 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
   void _applyProductToLine(_PurchaseLine line, ProductItem product) {
     line.product = product;
     line.productController.text = product.name;
-    line.rateController.text =
-        product.costPrice > 0 ? product.costPrice.toString() : '';
+    line.rateController.text = product.costPrice > 0
+        ? product.costPrice.toString()
+        : '';
     line.expiryDate = product.expiryDate;
     line.expiryController.text = _formatDate(line.expiryDate!);
     line.productFieldEpoch++;
@@ -263,7 +264,6 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
   }
 
   Future<void> _showQuickAddProductDialog() async {
-    final messenger = ScaffoldMessenger.of(context);
     final created = await showDialog<ProductItem>(
       context: context,
       barrierDismissible: false,
@@ -291,19 +291,18 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
                     if (saving) return;
                     setDialogState(() => saving = true);
                     try {
-                      final id =
-                          await DatabaseHelper.instance.insertProduct(draft);
-                      final product =
-                          await DatabaseHelper.instance.getProduct(id);
+                      final id = await DatabaseHelper.instance.insertProduct(
+                        draft,
+                      );
+                      final product = await DatabaseHelper.instance.getProduct(
+                        id,
+                      );
                       if (!dialogContext.mounted) return;
                       if (product == null) {
                         setDialogState(() => saving = false);
-                        messenger.showSnackBar(
-                          const SnackBar(
-                            content: Text(
-                              'Product was saved but could not be loaded.',
-                            ),
-                          ),
+                        AppToast.showError(
+                          context,
+                          'Product was saved but could not be loaded.',
                         );
                         return;
                       }
@@ -311,9 +310,7 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
                     } catch (e) {
                       if (!dialogContext.mounted) return;
                       setDialogState(() => saving = false);
-                      messenger.showSnackBar(
-                        SnackBar(content: Text('Failed to save product: $e')),
-                      );
+                      AppToast.showError(context, 'Failed to save product: $e');
                     }
                   },
                 ),
@@ -330,10 +327,10 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
     setState(() {
       final exists = _products.any((p) => p.id == created.id);
       if (!exists) {
-        _products = [..._products, created]
-          ..sort(
-            (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
-          );
+        _products = [
+          ..._products,
+          created,
+        ]..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
       } else {
         _products = _products
             .map((p) => p.id == created.id ? created : p)
@@ -421,13 +418,7 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
 
       if (!mounted) return;
       _resetForm();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Purchase $invoiceNo saved successfully.'),
-          behavior: SnackBarBehavior.floating,
-          backgroundColor: _secondary,
-        ),
-      );
+      AppToast.showSuccess(context, 'Purchase $invoiceNo saved successfully.');
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = 'Failed to save purchase: $e');
@@ -467,36 +458,11 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
           AgriHeader(
             breadcrumbs: const ['Inventory', 'Purchase Invoice'],
             actions: [
-              ElevatedButton.icon(
+              AppButton.primary(
+                label: _saving ? 'Saving…' : 'Save Purchase',
+                icon: Icons.save_outlined,
+                loading: _saving,
                 onPressed: _saving ? null : _savePurchase,
-                icon: _saving
-                    ? const SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Colors.white,
-                        ),
-                      )
-                    : const Icon(Icons.save_outlined, size: 16),
-                label: Text(_saving ? 'Saving…' : 'Save Purchase'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: _primary,
-                  foregroundColor: Colors.white,
-                  disabledBackgroundColor: _primary.withValues(alpha: 0.6),
-                  elevation: 0,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(9),
-                  ),
-                  textStyle: const TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
               ),
             ],
           ),
@@ -667,9 +633,7 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
               maxLines: 3,
               minLines: 2,
               style: const TextStyle(fontSize: 12.5, color: _primary),
-              decoration: _inputDecoration(
-                hint: 'Invoice summary (optional)',
-              ),
+              decoration: _inputDecoration(hint: 'Invoice summary (optional)'),
             ),
             const SizedBox(height: 16),
             _fieldLabel('Payment Type'),
@@ -1029,8 +993,7 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
             SizedBox(
               width: 36,
               child: IconButton(
-                onPressed:
-                    _lines.length <= 1 ? null : () => _removeLine(index),
+                onPressed: _lines.length <= 1 ? null : () => _removeLine(index),
                 icon: const Icon(Icons.delete_outline, size: 18),
                 color: _accentRed,
                 tooltip: 'Remove row',
@@ -1060,8 +1023,9 @@ class _PurchaseScreenState extends State<PurchaseScreen> {
         setState(() {
           line.product = p;
           line.productController.text = p.name;
-          line.rateController.text =
-              p.costPrice > 0 ? p.costPrice.toString() : '';
+          line.rateController.text = p.costPrice > 0
+              ? p.costPrice.toString()
+              : '';
           line.expiryDate = _defaultPurchaseExpiryDate();
           line.expiryController.text = _formatDate(line.expiryDate!);
         });

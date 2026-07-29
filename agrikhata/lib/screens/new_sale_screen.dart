@@ -1,15 +1,25 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
-import 'package:url_launcher/url_launcher.dart';
+import '../controllers/sale_controller.dart';
 import '../models/sale_models.dart';
 import '../models/ledger_models.dart';
+import '../models/product_model.dart';
 import '../Widgets/sale_widgets.dart';
+import '../Widgets/sales/print_success_dialog.dart';
+import '../Widgets/sales/pos_confirm_dialog.dart';
 import '../Database/database_helper.dart' as db;
+import '../services/partner_service.dart';
+import '../services/print_service.dart';
+import '../services/session_context.dart';
+import '../services/whatsapp_urdu_service.dart';
 import '../utils/season_utils.dart';
 import '../utils/smart_recommendations.dart';
 import '../utils/advance_checkout_overlay.dart';
-import '../utils/pdf_generator.dart';
-import '../utils/pdf_share.dart';
+import '../utils/shop_settings.dart';
+import '../theme/theme.dart';
+
+enum _PartnerPricePreset { cost, retail, seasonal }
 
 class NewSaleScreen extends StatefulWidget {
   final int? preSelectedZamindarId;
@@ -36,13 +46,17 @@ enum _AdvanceKind { cash, diesel, petrol }
 
 class _NewSaleScreenState extends State<NewSaleScreen> {
   // Controllers
+  final SaleController _saleController = SaleController();
   final TextEditingController _zamindarSearchController =
       TextEditingController();
   final TextEditingController _kisaanSearchController = TextEditingController();
   final TextEditingController _productSearchController =
       TextEditingController();
+
   /// Autocomplete's internal field controller — used to clear the visible input.
   TextEditingController? _productFieldController;
+  FocusNode? _productAutocompleteFocusNode;
+  final FocusNode _screenFocusNode = FocusNode(debugLabel: 'newSaleScreen');
   final TextEditingController _qtyController = TextEditingController(text: '1');
   final TextEditingController _priceController = TextEditingController(
     text: '0',
@@ -68,12 +82,15 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
   Kisaan? _selectedKisaan;
   Product? _selectedProduct;
   final List<CartItem> _cartItems = [];
+  String? _selectedCartItemId;
   PaymentMethod _paymentMethod = PaymentMethod.credit;
   String? _selectedSalePaymentTerm;
   double _overallDiscount = 0;
   String _invoiceNumber =
       'INV-1000'; // Display only - actual number generated at save time
   bool _isWalkInCustomer = false;
+  bool _isPartnerSelfUse = false;
+  _PartnerPricePreset _partnerPricePreset = _PartnerPricePreset.cost;
   DateTime _selectedDateTime = DateTime.now();
   bool _isDateTimeLocked = false;
   bool _isEditMode = false;
@@ -86,6 +103,8 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
   List<Product> _products = [];
   bool _isLoading = true;
   bool _isSaving = false;
+  /// Sync lock so Enter + button click cannot double-submit before setState.
+  bool _checkoutLock = false;
 
   // Smart recommendations (async, season-stage + stock aware)
   List<Recommendation> _smartRecommendations = [];
@@ -100,6 +119,38 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
 
     // Keep zamindar/product pickers in sync across the app without clearing cart state.
     db.DatabaseHelper.instance.addListener(_onDatabaseChanged);
+  }
+
+  @override
+  void didUpdateWidget(covariant NewSaleScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Leaving edit mode (parent cleared editInvoiceNumber) must flush cart so
+    // prior invoice lines never bleed into the next fresh sale.
+    if (oldWidget.editInvoiceNumber != null &&
+        widget.editInvoiceNumber == null) {
+      _flushEditSessionIntoFreshSale();
+    } else if (widget.editInvoiceNumber != null &&
+        widget.editInvoiceNumber != oldWidget.editInvoiceNumber) {
+      _loadEditData(widget.editInvoiceNumber!);
+    }
+  }
+
+  void _flushEditSessionIntoFreshSale() {
+    SaleController.flushCartSession(cartItems: _cartItems);
+    setState(() {
+      _isEditMode = false;
+      _editingInvoiceNumber = null;
+      _selectedCartItemId = null;
+      _isDateTimeLocked = false;
+      _selectedDateTime = DateTime.now();
+      _overallDiscount = 0;
+      _overallDiscountController.text = '0';
+      _paymentMethod = PaymentMethod.credit;
+      _selectedSalePaymentTerm = null;
+      _cashReceivedController.text = '0';
+      _checkoutMode = _CheckoutMode.productSale;
+      _advanceKind = _AdvanceKind.cash;
+    });
   }
 
   void _onDatabaseChanged() => _syncReferenceData();
@@ -264,12 +315,19 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       } else {
         // Explicitly reset edit state for a fresh new sale
         // This prevents lingering edit state from poisoning new sales
+        if (_isEditMode || _editingInvoiceNumber != null) {
+          SaleController.flushCartSession(cartItems: _cartItems);
+        }
         setState(() {
           _isEditMode = false;
           _editingInvoiceNumber = null;
+          _selectedCartItemId = null;
         });
       }
 
+      if (_selectedZamindar != null) {
+        await _refreshPartnerSelfUseFlag(_selectedZamindar);
+      }
       if (_selectedKisaan != null) {
         await _loadSmartRecommendations();
       }
@@ -277,13 +335,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       debugPrint('Error loading data from database: $e');
       setState(() => _isLoading = false);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to load data: $e'),
-            backgroundColor: Colors.red,
-            duration: Duration(minutes: 1),
-          ),
-        );
+        AppToast.showError(context, 'Failed to load data: $e');
       }
     }
   }
@@ -296,6 +348,9 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       if (invoiceData == null) {
         throw Exception('Invoice not found');
       }
+
+      final seasonLabel = invoiceData['season'] as String?;
+      await db.DatabaseHelper.instance.assertSeasonEditable(seasonLabel);
 
       setState(() {
         _isEditMode = true;
@@ -328,36 +383,83 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
             : PaymentMethod.cash;
 
         _selectedSalePaymentTerm = invoiceData['paymentTerm'] as String?;
-        final collected =
-            (invoiceData['totalCollected'] as num?)?.toDouble() ?? 0.0;
-        _cashReceivedController.text = collected > 0
-            ? collected.toStringAsFixed(0)
+        final saleOriginCash =
+            (invoiceData['saleOriginCashCollected'] as num?)?.toDouble() ??
+            (invoiceData['paidAmount'] as num?)?.toDouble() ??
+            0.0;
+        _cashReceivedController.text = saleOriginCash > 0
+            ? saleOriginCash.toStringAsFixed(0)
             : '0';
 
         // Set date time
         _selectedDateTime = DateTime.parse(invoiceData['dateTime'] as String);
         _isDateTimeLocked = true;
 
-        // Load cart items
+        // Load cart items — each line gets a unique id (never share a timestamp).
+        // Persist base + seasonal separately (insertSale stores both columns).
         final items = invoiceData['items'] as List<Map<String, dynamic>>;
         _cartItems.clear();
+        _selectedCartItemId = null;
         for (final item in items) {
           final productName = item['productName'] as String;
-          final product = _products.firstWhere(
-            (p) => p.name == productName,
-            orElse: () => _products.first,
+          final soldUnitPrice = moneyRound(
+            (item['unitPrice'] as num).toDouble(),
+          );
+          final seasonalFromDb = moneyRound(
+            (item['seasonalIncrement'] as num?)?.toDouble() ?? 0,
+          );
+          final discount = moneyRound(
+            (item['discount'] as num?)?.toDouble() ?? 0,
+          );
+          final qty = ((item['qty'] as num).toDouble()).round();
+
+          Product? catalog;
+          for (final p in _products) {
+            if (p.name == productName) {
+              catalog = p;
+              break;
+            }
+          }
+
+          // Prefer explicit DB seasonal; otherwise, if After Harvest and the
+          // sold price exceeds catalog base, treat the delta as seasonal so
+          // re-save does not bake seasonal twice into unit price.
+          double basePrice = soldUnitPrice;
+          double seasonalInc = seasonalFromDb;
+          if (seasonalFromDb > 0) {
+            basePrice = moneyRound(soldUnitPrice - seasonalFromDb);
+            if (basePrice < 0) basePrice = 0;
+          } else if (_selectedSalePaymentTerm == 'After Harvest' &&
+              catalog != null &&
+              soldUnitPrice > catalog.basePrice) {
+            basePrice = moneyRound(catalog.basePrice);
+            seasonalInc = moneyRound(soldUnitPrice - catalog.basePrice);
+          }
+
+          final product = Product(
+            id: catalog?.id ?? '',
+            name: productName,
+            type: catalog?.type ?? _productTypeFromInvoiceLabel(
+              item['productType'] as String?,
+            ),
+            basePrice: basePrice,
+            unit: catalog?.unit ?? 'unit',
+            brand: catalog?.brand ?? '',
+            costPrice: catalog?.costPrice ?? 0,
+            availableStock: catalog?.availableStock ?? 0,
+            seasonalIncrement: catalog?.seasonalIncrement ?? 0,
           );
 
           _cartItems.add(
             CartItem(
-              id: DateTime.now().millisecondsSinceEpoch.toString(),
+              id: _saleController.nextCartItemId(),
               product: product,
-              quantity: ((item['qty'] as num).toDouble()).round(),
+              quantity: qty,
               seasonalIncrement:
                   (_selectedSalePaymentTerm == 'After Harvest')
-                  ? (item['seasonalIncrement'] as num?)?.toDouble() ?? 0
+                  ? seasonalInc
                   : 0,
-              discount: (item['discount'] as num?)?.toDouble() ?? 0,
+              discount: discount,
             ),
           );
         }
@@ -368,24 +470,25 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       }
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Invoice loaded for editing'),
-            backgroundColor: SaleColors.darkGreen,
-          ),
-        );
+        AppToast.showSuccess(context, 'Invoice loaded for editing');
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to load invoice: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-        Navigator.pop(context);
+        AppToast.showError(context, 'Failed to load invoice: $e');
+        // Embedded in Shell (not a pushed route) — never Navigator.pop here.
+        await _resetFormForNewSale();
       }
     }
+  }
+
+  ProductType _productTypeFromInvoiceLabel(String? raw) {
+    final label = (raw ?? '').toLowerCase();
+    if (label.contains('fertilizer')) return ProductType.fertilizer;
+    if (label.contains('pesticide') || label.contains('herbicide')) {
+      return ProductType.pesticide;
+    }
+    if (label.contains('seed')) return ProductType.seed;
+    return ProductType.other;
   }
 
   Zamindar _convertZamindar(db.Zamindar dbZamindar, List<Kisaan> kisaans) {
@@ -592,11 +695,50 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     setState(() {
       _selectedProduct = product;
       _productSearchController.text = product.name;
-      _priceController.text = product.basePrice.toStringAsFixed(0);
+      _priceController.text = _resolveUnitPrice(product).toStringAsFixed(0);
       // Autofill seasonal increment from product; leave empty for hint if unset
       _seasonalIncrementController.text = product.hasSeasonalIncrement
           ? product.seasonalIncrement.toStringAsFixed(0)
           : '';
+    });
+  }
+
+  double _resolveUnitPrice(Product product) {
+    if (!_isPartnerSelfUse) return product.basePrice;
+    switch (_partnerPricePreset) {
+      case _PartnerPricePreset.cost:
+        return product.costPrice > 0 ? product.costPrice : product.basePrice;
+      case _PartnerPricePreset.retail:
+        return product.basePrice;
+      case _PartnerPricePreset.seasonal:
+        return product.basePrice +
+            (product.hasSeasonalIncrement ? product.seasonalIncrement : 0);
+    }
+  }
+
+  Future<void> _refreshPartnerSelfUseFlag(Zamindar? zamindar) async {
+    if (zamindar == null || zamindar.id.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _isPartnerSelfUse = false;
+        _partnerPricePreset = _PartnerPricePreset.cost;
+      });
+      return;
+    }
+    final linked = await PartnerService.instance.isPartnerLinkedZamindar(
+      int.tryParse(zamindar.id),
+    );
+    if (!mounted) return;
+    setState(() {
+      _isPartnerSelfUse = linked;
+      if (linked) {
+        _partnerPricePreset = _PartnerPricePreset.cost;
+        if (_selectedProduct != null) {
+          _priceController.text = _resolveUnitPrice(
+            _selectedProduct!,
+          ).toStringAsFixed(0);
+        }
+      }
     });
   }
 
@@ -607,8 +749,20 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     return await db.DatabaseHelper.instance.getProduct(id);
   }
 
-  // Helper method to check if product has sufficient stock
-  Future<bool> _checkProductStock(Product product, int requestedQty) async {
+  // Helper method to check if product has sufficient stock.
+  // CASH_ADVANCE / FUEL_DISBURSAL never go through this path (advance mode),
+  // but we still guard if a zero-margin loan kind is ever passed.
+  Future<bool> _checkProductStock(
+    Product product,
+    int requestedQty, {
+    String? serviceKind,
+  }) async {
+    if (SaleController.bypassesStockValidation(
+      serviceKind ?? ProductServiceKind.inventory,
+    )) {
+      return true;
+    }
+
     final dbProduct = await _getProductFromDatabase(product.id);
     if (dbProduct == null) return false;
 
@@ -616,40 +770,24 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
 
     // Check if out of stock
     if (availableStock == 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('❌ ${product.name} is OUT OF STOCK!'),
-          backgroundColor: Colors.red,
-          duration: Duration(minutes: 1),
-        ),
-      );
+      AppToast.showError(context, '❌ ${product.name} is OUT OF STOCK!');
       return false;
     }
 
     // Check if requested quantity exceeds available stock
     if (requestedQty > availableStock) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            '⚠️ ${product.name}: Only $availableStock ${product.unit} available! Requested: $requestedQty',
-          ),
-          backgroundColor: Colors.orange,
-          duration: Duration(minutes: 1),
-        ),
+      AppToast.showWarning(
+        context,
+        '⚠️ ${product.name}: Only $availableStock ${product.unit} available! Requested: $requestedQty',
       );
       return false;
     }
 
     // Check if stock is low (below threshold)
     if (availableStock <= dbProduct.lowStockThreshold) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            '⚠️ LOW STOCK ALERT: ${product.name} has only $availableStock ${product.unit} left!',
-          ),
-          backgroundColor: Colors.orange.shade700,
-          duration: Duration(minutes: 1),
-        ),
+      AppToast.showWarning(
+        context,
+        '⚠️ LOW STOCK ALERT: ${product.name} has only $availableStock ${product.unit} left!',
       );
       // Allow adding even if low stock, just show warning
     }
@@ -679,24 +817,14 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         final formattedBalance = outstandingBalance.toStringAsFixed(0);
 
         if (isOverLimit) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                '⚠️ CREDIT LIMIT EXCEEDED: ${zamindar.name} has Rs $formattedBalance outstanding!',
-              ),
-              backgroundColor: Colors.red.shade700,
-              duration: Duration(minutes: 1),
-            ),
+          AppToast.showError(
+            context,
+            '⚠️ CREDIT LIMIT EXCEEDED: ${zamindar.name} has Rs $formattedBalance outstanding!',
           );
         } else if (outstandingBalance > 0) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                '⚠️ OUTSTANDING AMOUNT: ${zamindar.name} has Rs $formattedBalance pending!',
-              ),
-              backgroundColor: Colors.orange.shade700,
-              duration: Duration(minutes: 1),
-            ),
+          AppToast.showWarning(
+            context,
+            '⚠️ OUTSTANDING AMOUNT: ${zamindar.name} has Rs $formattedBalance pending!',
           );
         }
       }
@@ -709,13 +837,9 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     if (_selectedProduct == null) return;
 
     final qty = int.tryParse(_qtyController.text) ?? 1;
-    final price =
-        double.tryParse(_priceController.text.replaceAll(',', '')) ?? 0;
+    final price = SaleController.parseMoney(_priceController.text);
     final seasonalInc = _showSeasonalIncrement
-        ? (double.tryParse(
-                _seasonalIncrementController.text.replaceAll(',', ''),
-              ) ??
-              0)
+        ? SaleController.parseMoney(_seasonalIncrementController.text)
         : 0.0;
 
     // Check stock before adding to cart
@@ -723,14 +847,15 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     if (!hasStock) return; // Don't add to cart if out of stock or insufficient
 
     setState(() {
+      final lineId = _saleController.nextCartItemId();
       _cartItems.add(
         CartItem(
-          id: 'c${DateTime.now().millisecondsSinceEpoch}',
+          id: lineId,
           product: Product(
             id: _selectedProduct!.id,
             name: _selectedProduct!.name,
             type: _selectedProduct!.type,
-            basePrice: price,
+            basePrice: moneyRound(price),
             unit: _selectedProduct!.unit,
             brand: _selectedProduct!.brand,
             costPrice: _selectedProduct!.costPrice,
@@ -738,10 +863,11 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
             seasonalIncrement: _selectedProduct!.seasonalIncrement,
           ),
           quantity: qty,
-          seasonalIncrement: seasonalInc,
+          seasonalIncrement: moneyRound(seasonalInc),
           discount: 0,
         ),
       );
+      _selectedCartItemId = lineId;
 
       // Reset form (including Autocomplete's visible field)
       _selectedProduct = null;
@@ -762,15 +888,17 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     if (!hasStock) return; // Don't add to cart if out of stock or insufficient
 
     setState(() {
+      final lineId = _saleController.nextCartItemId();
       _cartItems.add(
         CartItem(
-          id: 'c${DateTime.now().millisecondsSinceEpoch}',
+          id: lineId,
           product: rec.product,
           quantity: qty,
           seasonalIncrement: 0,
           discount: 0,
         ),
       );
+      _selectedCartItemId = lineId;
     });
 
     // Refresh remaining allowances after cart append.
@@ -779,19 +907,42 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
 
   void _removeCartItem(String id) {
     setState(() {
-      _cartItems.removeWhere((item) => item.id == id);
+      SaleController.removeCartItemById(_cartItems, id);
+      if (_selectedCartItemId == id) {
+        _selectedCartItemId = _cartItems.isNotEmpty
+            ? _cartItems.last.id
+            : null;
+      }
     });
     if (_selectedKisaan != null) {
       _loadSmartRecommendations();
     }
   }
 
+  void _removeSelectedOrLastCartItem() {
+    if (_cartItems.isEmpty || _isSaving) return;
+    // Delete only — never bind Backspace (it must edit text fields).
+    if (_isTypingInTextField) return;
+    final id = _selectedCartItemId ?? _cartItems.last.id;
+    _removeCartItem(id);
+  }
+
   void _updateCartItemQuantity(String id, int change) {
     setState(() {
-      final item = _cartItems.firstWhere((i) => i.id == id);
+      final index = _cartItems.indexWhere((i) => i.id == id);
+      if (index < 0) return;
+      final item = _cartItems[index];
       final newQty = item.quantity + change;
       if (newQty > 0) {
         item.quantity = newQty;
+        _selectedCartItemId = id;
+      } else {
+        _cartItems.removeAt(index);
+        if (_selectedCartItemId == id) {
+          _selectedCartItemId = _cartItems.isNotEmpty
+              ? _cartItems.last.id
+              : null;
+        }
       }
     });
     if (_selectedKisaan != null) {
@@ -801,15 +952,19 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
 
   void _updateCartItemDiscount(String id, double discount) {
     setState(() {
-      final item = _cartItems.firstWhere((i) => i.id == id);
-      item.discount = discount;
+      final index = _cartItems.indexWhere((i) => i.id == id);
+      if (index < 0) return;
+      _cartItems[index].discount = moneyRound(discount);
+      _selectedCartItemId = id;
     });
   }
 
   void _updateCartItemSeasonalIncrement(String id, double increment) {
     setState(() {
-      final item = _cartItems.firstWhere((i) => i.id == id);
-      item.seasonalIncrement = increment;
+      final index = _cartItems.indexWhere((i) => i.id == id);
+      if (index < 0) return;
+      _cartItems[index].seasonalIncrement = moneyRound(increment);
+      _selectedCartItemId = id;
     });
   }
 
@@ -859,7 +1014,8 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         _editingInvoiceNumber = null;
         _invoiceNumber = nextInvoice;
 
-        _cartItems.clear();
+        SaleController.flushCartSession(cartItems: _cartItems);
+        _selectedCartItemId = null;
         _selectedZamindar = null;
         _selectedKisaan = null;
         _selectedProduct = null;
@@ -892,12 +1048,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     } catch (e) {
       debugPrint('Error resetting sale form: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to refresh form: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        AppToast.showError(context, 'Failed to refresh form: $e');
       }
     }
   }
@@ -976,26 +1127,33 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     });
   }
 
-  /// Handles the Discard button action.
+  /// Handles the Discard button action (with confirm).
   Future<void> _handleDiscard() async {
+    if (_isSaving || _isLoading) return;
+    final confirmed = await PosConfirmDialog.ask(
+      context: context,
+      title: 'Discard this sale?',
+      message:
+          'Clear all fields and cart items? This cannot be undone.\n\n'
+          'Press Enter for Yes, Esc for No.',
+      yesLabel: 'Yes — Clear (Enter)',
+      noLabel: 'No (Esc)',
+      danger: true,
+    );
+    if (!confirmed || !mounted) return;
     await _resetFormForNewSale();
   }
 
-  /// Strips formatting and normalizes Pakistani mobile numbers for wa.me.
-  static String? _normalizeWhatsAppNumber(String? raw) {
-    if (raw == null) return null;
-    var digits = raw.replaceAll(RegExp(r'\D'), '');
-    if (digits.isEmpty) return null;
-    if (digits.startsWith('00')) {
-      digits = digits.substring(2);
+  /// Esc shortcut: never wipe the cart while typing in a field.
+  Future<void> _handleEscapeShortcut() async {
+    if (_isSaving || _isLoading) return;
+    if (_isTypingInTextField) {
+      // Blur the field instead of discarding the whole sale.
+      FocusManager.instance.primaryFocus?.unfocus();
+      _screenFocusNode.requestFocus();
+      return;
     }
-    if (digits.startsWith('0') && digits.length == 11) {
-      digits = '92${digits.substring(1)}';
-    } else if (digits.length == 10 && digits.startsWith('3')) {
-      digits = '92$digits';
-    }
-    if (digits.length < 10) return null;
-    return digits;
+    await _handleDiscard();
   }
 
   LedgerEntry _buildInvoiceLedgerEntry({
@@ -1042,62 +1200,51 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       status: status,
       season: seasonString,
       isWalkInCustomer: isWalkIn,
+      createdByUserId: SessionContext.userId,
+      createdByUserName: SessionContext.footprintLabel,
+      createdAt: DateTime.now(),
     );
   }
 
-  Future<void> _shareInvoiceWhatsAppPdf({
+  Future<void> _shareInvoiceWhatsAppReceipt({
     required LedgerEntry entry,
-    required bool isEdited,
     String? whatsappNumber,
   }) async {
-    final file = await PdfGenerator.saveInvoiceToFile(
-      entry,
-      isEdited: isEdited,
-    );
-
-    final message =
-        'Invoice ${entry.invoiceNumber} — ${entry.stakeholderName}\n'
-        'Total: Rs ${entry.total.toStringAsFixed(0)}\n'
-        'Paid: Rs ${entry.paid.toStringAsFixed(0)}\n'
-        'Outstanding: Rs ${entry.outstanding.toStringAsFixed(0)}\n'
-        'AgriKhata';
-
-    await PdfShare.sharePdfFile(
-      file: file,
-      fileName: 'invoice_${entry.invoiceNumber}.pdf',
-      text: message,
-      subject: 'AgriKhata Invoice ${entry.invoiceNumber}',
-    );
-
-    final phone = _normalizeWhatsAppNumber(whatsappNumber);
-    if (phone != null) {
-      final uri = Uri.parse(
-        'https://wa.me/$phone?text=${Uri.encodeComponent(message)}',
-      );
-      final launched = await launchUrl(
-        uri,
-        mode: LaunchMode.externalApplication,
-      );
-      if (!launched && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'PDF ready. Could not open WhatsApp for $phone — '
-              'pick WhatsApp in the share sheet.',
-            ),
-            backgroundColor: Colors.orange.shade800,
-          ),
+    final phone = whatsappNumber?.trim() ?? '';
+    if (WhatsAppUrduService.normalizePhone(phone) == null) {
+      if (mounted) {
+        AppToast.showWarning(
+          context,
+          'No WhatsApp number on file for this customer.',
         );
       }
-    } else if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'PDF ready to share. No WhatsApp number on file for this customer.',
-          ),
-          backgroundColor: Colors.orange,
-        ),
-      );
+      return;
+    }
+
+    final shopName = await ShopSettings.getShopName();
+    final shopPhone = await ShopSettings.getShopPhone();
+    final shopAddress = await ShopSettings.getShopAddress();
+    final itemsSummary = entry.items.map((item) {
+      final qty = item.quantity == item.quantity.roundToDouble()
+          ? item.quantity.toStringAsFixed(0)
+          : item.quantity.toStringAsFixed(2);
+      return '${item.productName} × $qty ${item.unit} = Rs ${item.total.toStringAsFixed(0)}';
+    }).toList();
+
+    final launched = await WhatsAppUrduService.sendSaleReceipt(
+      phone: phone,
+      zamindarName: entry.stakeholderName,
+      shopName: shopName,
+      shopPhone: shopPhone,
+      shopAddress: shopAddress,
+      invoiceNo: entry.invoiceNumber,
+      totalAmount: entry.total,
+      itemsSummary: itemsSummary,
+      servedBy: entry.createdByUserName,
+    );
+
+    if (!launched && mounted) {
+      AppToast.showWarning(context, 'Could not open WhatsApp for this number.');
     }
   }
 
@@ -1105,393 +1252,406 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
 
   Future<void> _saveAndWhatsAppPdf() => _completeSale(shareWhatsAppPdf: true);
 
-  Future<void> _completeSale({bool shareWhatsAppPdf = false}) async {
-    if (_isAdvanceMode) {
-      await _completeKisaanAdvance(shareWhatsAppPdf: shareWhatsAppPdf);
+  Future<void> _showPostCheckoutPrintDialog({
+    required LedgerEntry entry,
+    required bool isCreditSale,
+    required bool isEdited,
+  }) async {
+    final action = await PrintSuccessDialog.show(
+      context: context,
+      invoiceNumber: entry.invoiceNumber,
+      stakeholderName: entry.stakeholderName,
+      isCreditSale: isCreditSale,
+    );
+
+    if (!mounted || action == null || action == PostCheckoutPrintAction.skip) {
       return;
     }
-
-    // Validation: Check if Walk-In Customer or Zamindar is selected
-    if (!_isWalkInCustomer && _selectedZamindar == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Please select a Zamindar or enable Walk-In Customer'),
-          backgroundColor: Colors.red,
-          duration: Duration(minutes: 1),
-        ),
-      );
-      return;
-    }
-
-    // Validation: Check if Walk-In Customer name is provided
-    if (_isWalkInCustomer &&
-        _walkInCustomerNameController.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Please enter customer name for walk-in customer'),
-          backgroundColor: Colors.red,
-          duration: Duration(minutes: 1),
-        ),
-      );
-      return;
-    }
-
-    // Validation: Check if cart has items
-    if (_cartItems.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Cart is empty. Please add products to the cart.'),
-          backgroundColor: Colors.red,
-          duration: Duration(minutes: 1),
-        ),
-      );
-      return;
-    }
-
-    final summary = _getSummary();
-    final double totalPayable = summary.totalPayable;
-    double cashReceived = 0;
-    if (_paymentMethod == PaymentMethod.credit) {
-      cashReceived =
-          double.tryParse(
-            _cashReceivedController.text.replaceAll(RegExp(r'[^0-9.]'), ''),
-          ) ??
-          0;
-      if (cashReceived < 0) cashReceived = 0;
-      if (cashReceived > totalPayable) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Cash received cannot exceed total payable'),
-            backgroundColor: Colors.red,
-            duration: Duration(minutes: 1),
-          ),
-        );
-        return;
-      }
-      if (!_isWalkInCustomer &&
-          (_selectedZamindar?.paymentTerms.isNotEmpty ?? false) &&
-          (_selectedSalePaymentTerm == null ||
-              _selectedSalePaymentTerm!.isEmpty)) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Please select a payment term for this credit sale'),
-            backgroundColor: Colors.red,
-            duration: Duration(minutes: 1),
-          ),
-        );
-        return;
-      }
-    }
-
-    // Start saving
-    setState(() => _isSaving = true);
 
     try {
-      // ========================================================
-      // STEP 1: Extract and Format Metadata Fields from UI State
-      // ========================================================
-
-      // Invoice Number - Get from database to ensure uniqueness
-      final String invoiceNumber = _isEditMode
-          ? _editingInvoiceNumber!
-          : await db.DatabaseHelper.instance.getNextInvoiceNumber();
-
-      // Zamindar Name
-      final String zamindarName = _isWalkInCustomer
-          ? _walkInCustomerNameController.text.trim()
-          : _selectedZamindar!.name;
-
-      // Kisaan Name
-      final String? kisaanName = _selectedKisaan?.name ?? 'Self';
-
-      // Financial Breakdown
-      final double subtotal = summary.subtotal;
-      final double itemDiscountsTotal = summary.itemDiscounts;
-      final double seasonalIncrementTotal = _showSeasonalIncrement
-          ? summary.totalSeasonalIncrements
-          : 0.0;
-      final double overallDiscount = _overallDiscount;
-      // Credit: cash received is immediate payment; remainder is udhaar.
-      // Cash: full amount is paid (advance wallet may draw down inside insertSale).
-      final double paidAmount = _paymentMethod == PaymentMethod.cash
-          ? totalPayable
-          : cashReceived;
-      final String paymentMethod = _paymentMethod == PaymentMethod.cash
-          ? 'Cash'
-          : 'Credit';
-      final String? paymentTerm = _paymentMethod == PaymentMethod.credit
-          ? _selectedSalePaymentTerm
-          : null;
-
-      debugPrint(
-        'SALE DEBUG: Invoice=$invoiceNumber, Zamindar=$zamindarName, Kisaan=$kisaanName',
-      );
-      debugPrint(
-        'SALE DEBUG: Subtotal=$subtotal, ItemDisc=$itemDiscountsTotal, SeasonalInc=$seasonalIncrementTotal',
-      );
-      debugPrint(
-        'SALE DEBUG: OverallDisc=$overallDiscount, TotalPayable=$totalPayable, Paid=$paidAmount, Term=$paymentTerm',
-      );
-
-      // ========================================================
-      // STEP 2: Convert Cart Items to New Schema Format
-      // ========================================================
-
-      final saleItems = _cartItems.map((cartItem) {
-        final productId = int.tryParse(cartItem.product.id);
-
-        // Calculate effective unit price (base + seasonal increment for credit sales)
-        final double basePrice = cartItem.product.basePrice;
-        final double seasonalInc = _showSeasonalIncrement
-            ? cartItem.seasonalIncrement
-            : 0.0;
-        final double effectiveUnitPrice = basePrice + seasonalInc;
-
-        return db.SaleLineItem(
-          productId: productId,
-          productName: cartItem.product.name,
-          qty: cartItem.quantity.toDouble(),
-          unitPrice: effectiveUnitPrice,
-          discount: cartItem.discount,
-        );
-      }).toList();
-
-      // Get product type from first cart item (or default to 'Fertilizer')
-      final String productType = _cartItems.isNotEmpty
-          ? _cartItems.first.product.type.toString().split('.').last
-          : 'Fertilizer';
-
-      // Get season string for the selected date
-      final String seasonString = SeasonUtils.getSeasonString(
-        _selectedDateTime,
-      );
-
-      debugPrint(
-        'SALE DEBUG: Converted ${saleItems.length} cart items to SaleLineItem format',
-      );
-      debugPrint('SALE DEBUG: Season=$seasonString');
-
-      // ========================================================
-      // STEP 3: Save to New Three-Table Schema
-      // ========================================================
-
-      if (_isEditMode && _editingInvoiceNumber != null) {
-        // UPDATE EXISTING SALE
-        debugPrint(
-          'SALE DEBUG: Updating existing sale with invoice=$invoiceNumber',
-        );
-
-        await db.DatabaseHelper.instance.updateSaleInNewSchema(
-          invoiceNumber: invoiceNumber,
-          dateTime: _selectedDateTime,
-          zamindarName: zamindarName,
-          kisaanName: kisaanName,
-          items: saleItems,
-          overallDiscount: overallDiscount,
-          paidAmount: paidAmount,
-          paymentMethod: paymentMethod,
-          productType: productType,
-          season: seasonString,
-          paymentTerm: paymentTerm,
-        );
-
-        debugPrint('SALE DEBUG: Successfully updated sale in new schema');
-      } else {
-        // INSERT NEW SALE
-        debugPrint(
-          'SALE DEBUG: Inserting new sale with invoice=$invoiceNumber',
-        );
-
-        final checkoutResult = await db.DatabaseHelper.instance.insertSale(
-          invoiceNumber: invoiceNumber,
-          dateTime: _selectedDateTime,
-          zamindarName: zamindarName,
-          kisaanName: kisaanName,
-          items: saleItems,
-          overallDiscount: overallDiscount,
-          paidAmount: paidAmount,
-          paymentMethod: paymentMethod,
-          productType: productType,
-          season: seasonString,
-          paymentTerm: paymentTerm,
-        );
-
-        debugPrint('SALE DEBUG: Successfully inserted sale into new schema');
-
-        if (checkoutResult['hadAdvanceDeduction'] == true) {
-          AdvanceCheckoutOverlay.instance.show(
-            zamindarName: checkoutResult['zamindarName'] as String,
-            kisaanName: checkoutResult['kisaanName'] as String?,
-            totalAdvanceBefore: (checkoutResult['totalAdvanceBefore'] as num)
-                .toDouble(),
-            deductedAmount: (checkoutResult['deductedAmount'] as num)
-                .toDouble(),
-            remainingAdvance: (checkoutResult['remainingAdvance'] as num)
-                .toDouble(),
-            remainingPhysicalCash:
-                (checkoutResult['remainingPhysicalCash'] as num).toDouble(),
-          );
+      if (action == PostCheckoutPrintAction.thermal) {
+        await PrintService.printThermalSaleReceipt(entry);
+        if (mounted) {
+          AppToast.showSuccess(context, 'Thermal receipt sent to printer');
+        }
+      } else if (action == PostCheckoutPrintAction.a4) {
+        await PrintService.printA4Invoice(entry, isEdited: isEdited);
+        if (mounted) {
+          AppToast.showSuccess(context, 'A4 statement sent to printer');
         }
       }
-
-      // ========================================================
-      // STEP 4: WhatsApp PDF (optional), then Success & Reset UI
-      // ========================================================
-
-      if (!mounted) return;
-
-      final wasEditMode = _isEditMode;
-      final whatsappNumber = _isWalkInCustomer
-          ? null
-          : _selectedZamindar?.whatsappNumber;
-
-      if (shareWhatsAppPdf) {
-        try {
-          final entry = _buildInvoiceLedgerEntry(
-            invoiceNumber: invoiceNumber,
-            zamindarName: zamindarName,
-            kisaanName: kisaanName,
-            totalPayable: totalPayable,
-            paidAmount: paidAmount,
-            seasonString: seasonString,
-            isWalkIn: _isWalkInCustomer,
-          );
-          await _shareInvoiceWhatsAppPdf(
-            entry: entry,
-            isEdited: wasEditMode,
-            whatsappNumber: whatsappNumber,
-          );
-        } catch (e) {
-          debugPrint('WhatsApp PDF share failed: $e');
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('Sale saved, but PDF/WhatsApp share failed: $e'),
-                backgroundColor: Colors.orange.shade800,
-                duration: const Duration(seconds: 5),
-              ),
-            );
-          }
-        }
-      }
-
-      if (!mounted) return;
-
-      final actionText = wasEditMode ? 'updated' : 'saved';
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            shareWhatsAppPdf
-                ? 'Sale $actionText & invoice PDF ready. Total: Rs ${totalPayable.toStringAsFixed(0)}'
-                : 'Sale $actionText successfully! Total: Rs ${totalPayable.toStringAsFixed(0)}',
-          ),
-          backgroundColor: SaleColors.darkGreen,
-          duration: Duration(seconds: 3),
-        ),
-      );
-
-      // Unlock UI before reset/sync (_syncReferenceData skips while saving).
-      setState(() => _isSaving = false);
-
-      // Must clear Shell editInvoiceNumber — otherwise reload re-enters edit
-      // mode and the old invoice number sticks on screen.
-      await _resetFormForNewSale();
-
-      // If parent key-recreated this screen, we're done (fresh init loads data).
-      if (!mounted) return;
-
-      // Refresh stock / reference lists without reloading edit state.
-      try {
-        await _syncReferenceData();
-      } catch (e) {
-        debugPrint('Error syncing reference data after save: $e');
-      }
-
-      // TODO: Add thermal printer / receipt generation logic here
-    } catch (e, stackTrace) {
-      debugPrint('❌ CRITICAL ERROR saving sale: $e');
-      debugPrint('Stack trace: $stackTrace');
-
+    } catch (e) {
+      debugPrint('Post-checkout print failed: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to save sale: $e'),
-            backgroundColor: Colors.red,
-            duration: Duration(minutes: 1),
-          ),
-        );
-      }
-    } finally {
-      // CRITICAL: Always stop the loading indicator in the finally block
-      // This prevents the infinite progress indicator deadlock
-      if (mounted && _isSaving) {
-        setState(() {
-          _isSaving = false;
-        });
+        AppToast.showError(context, 'Print failed: $e');
       }
     }
   }
 
+  Future<void> _completeSale({bool shareWhatsAppPdf = false}) async {
+    // Guard against rapid Enter / double-clicks submitting twice.
+    if (_isSaving || _checkoutLock) return;
+    _checkoutLock = true;
+
+    try {
+      if (_isAdvanceMode) {
+        await _completeKisaanAdvance(shareWhatsAppPdf: shareWhatsAppPdf);
+        return;
+      }
+
+      // Validation: Check if Walk-In Customer or Zamindar is selected
+      if (!_isWalkInCustomer && _selectedZamindar == null) {
+        AppToast.showError(
+          context,
+          'Please select a Zamindar or enable Walk-In Customer',
+        );
+        return;
+      }
+
+      // Validation: Check if Walk-In Customer name is provided
+      if (_isWalkInCustomer &&
+          _walkInCustomerNameController.text.trim().isEmpty) {
+        AppToast.showError(
+          context,
+          'Please enter customer name for walk-in customer',
+        );
+        return;
+      }
+
+      // Validation: Check if cart has items
+      if (_cartItems.isEmpty) {
+        AppToast.showError(
+          context,
+          'Cart is empty. Please add products to the cart.',
+        );
+        return;
+      }
+
+      final summary = _getSummary();
+      final double totalPayable = summary.totalPayable;
+      double cashReceived = 0;
+      if (_paymentMethod == PaymentMethod.credit) {
+        cashReceived = SaleController.parseMoney(_cashReceivedController.text);
+        if (cashReceived < 0) cashReceived = 0;
+        if (cashReceived > totalPayable) {
+          AppToast.showError(
+            context,
+            'Cash received cannot exceed total payable',
+          );
+          return;
+        }
+        if (!_isWalkInCustomer &&
+            (_selectedZamindar?.paymentTerms.isNotEmpty ?? false) &&
+            (_selectedSalePaymentTerm == null ||
+                _selectedSalePaymentTerm!.isEmpty)) {
+          AppToast.showError(
+            context,
+            'Please select a payment term for this credit sale',
+          );
+          return;
+        }
+      }
+
+      // Start saving
+      setState(() => _isSaving = true);
+
+      try {
+        // ========================================================
+        // STEP 1: Extract and Format Metadata Fields from UI State
+        // ========================================================
+
+        // Invoice Number - Get from database to ensure uniqueness
+        final String invoiceNumber = _isEditMode
+            ? _editingInvoiceNumber!
+            : await db.DatabaseHelper.instance.getNextInvoiceNumber();
+
+        // Zamindar Name
+        final String zamindarName = _isWalkInCustomer
+            ? _walkInCustomerNameController.text.trim()
+            : _selectedZamindar!.name;
+
+        // Kisaan Name
+        final String kisaanName = _selectedKisaan?.name ?? 'Self';
+
+        // Financial Breakdown — paisa-safe rounding before DB write
+        final double subtotal = moneyRound(summary.subtotal);
+        final double itemDiscountsTotal = moneyRound(summary.itemDiscounts);
+        final double seasonalIncrementTotal = _showSeasonalIncrement
+            ? moneyRound(summary.totalSeasonalIncrements)
+            : 0.0;
+        final double overallDiscount = moneyRound(_overallDiscount);
+        // Credit: cash received is immediate payment; remainder is udhaar.
+        // Cash: full amount is paid (advance wallet may draw down inside insertSale).
+        final double paidAmount = moneyRound(
+          _paymentMethod == PaymentMethod.cash ? totalPayable : cashReceived,
+        );
+        final String paymentMethod = _paymentMethod == PaymentMethod.cash
+            ? 'Cash'
+            : 'Credit';
+        final String? paymentTerm = _paymentMethod == PaymentMethod.credit
+            ? _selectedSalePaymentTerm
+            : null;
+
+        debugPrint(
+          'SALE DEBUG: Invoice=$invoiceNumber, Zamindar=$zamindarName, Kisaan=$kisaanName',
+        );
+        debugPrint(
+          'SALE DEBUG: Subtotal=$subtotal, ItemDisc=$itemDiscountsTotal, SeasonalInc=$seasonalIncrementTotal',
+        );
+        debugPrint(
+          'SALE DEBUG: OverallDisc=$overallDiscount, TotalPayable=$totalPayable, Paid=$paidAmount, Term=$paymentTerm',
+        );
+
+        // ========================================================
+        // STEP 2: Convert Cart Items to New Schema Format
+        // ========================================================
+
+        final saleItems = _cartItems.map((cartItem) {
+          final parsed = int.tryParse(cartItem.product.id);
+          final productId = (parsed != null && parsed > 0) ? parsed : null;
+
+          // Persist base + seasonal separately so edit reload round-trips.
+          final double basePrice = moneyRound(cartItem.product.basePrice);
+          final double seasonalInc = _showSeasonalIncrement
+              ? moneyRound(cartItem.seasonalIncrement)
+              : 0.0;
+
+          return db.SaleLineItem(
+            productId: productId,
+            productName: cartItem.product.name,
+            qty: cartItem.quantity.toDouble(),
+            unitPrice: basePrice,
+            seasonalIncrement: seasonalInc,
+            discount: moneyRound(cartItem.discount),
+          );
+        }).toList();
+
+        // Get product type from first cart item (or default to 'Fertilizer')
+        final String productType = _cartItems.isNotEmpty
+            ? _cartItems.first.product.type.toString().split('.').last
+            : 'Fertilizer';
+
+        // Get season string for the selected date
+        final String seasonString = SeasonUtils.getSeasonString(
+          _selectedDateTime,
+        );
+
+        debugPrint(
+          'SALE DEBUG: Converted ${saleItems.length} cart items to SaleLineItem format',
+        );
+        debugPrint('SALE DEBUG: Season=$seasonString');
+
+        // ========================================================
+        // STEP 3: Save to New Three-Table Schema
+        // ========================================================
+
+        if (_isEditMode && _editingInvoiceNumber != null) {
+          // UPDATE EXISTING SALE
+          debugPrint(
+            'SALE DEBUG: Updating existing sale with invoice=$invoiceNumber',
+          );
+
+          await db.DatabaseHelper.instance.updateSaleInNewSchema(
+            invoiceNumber: invoiceNumber,
+            dateTime: _selectedDateTime,
+            zamindarName: zamindarName,
+            kisaanName: kisaanName,
+            items: saleItems,
+            overallDiscount: overallDiscount,
+            paidAmount: paidAmount,
+            paymentMethod: paymentMethod,
+            productType: productType,
+            season: seasonString,
+            paymentTerm: paymentTerm,
+          );
+
+          debugPrint('SALE DEBUG: Successfully updated sale in new schema');
+        } else {
+          // INSERT NEW SALE
+          debugPrint(
+            'SALE DEBUG: Inserting new sale with invoice=$invoiceNumber',
+          );
+
+          final checkoutResult = await db.DatabaseHelper.instance.insertSale(
+            invoiceNumber: invoiceNumber,
+            dateTime: _selectedDateTime,
+            zamindarName: zamindarName,
+            kisaanName: kisaanName,
+            items: saleItems,
+            overallDiscount: overallDiscount,
+            paidAmount: paidAmount,
+            paymentMethod: paymentMethod,
+            productType: productType,
+            season: seasonString,
+            paymentTerm: paymentTerm,
+          );
+
+          debugPrint('SALE DEBUG: Successfully inserted sale into new schema');
+
+          if (checkoutResult['hadAdvanceDeduction'] == true) {
+            AdvanceCheckoutOverlay.instance.show(
+              zamindarName: checkoutResult['zamindarName'] as String,
+              kisaanName: checkoutResult['kisaanName'] as String?,
+              totalAdvanceBefore: (checkoutResult['totalAdvanceBefore'] as num)
+                  .toDouble(),
+              deductedAmount: (checkoutResult['deductedAmount'] as num)
+                  .toDouble(),
+              remainingAdvance: (checkoutResult['remainingAdvance'] as num)
+                  .toDouble(),
+              remainingPhysicalCash:
+                  (checkoutResult['remainingPhysicalCash'] as num).toDouble(),
+            );
+          }
+        }
+
+        // ========================================================
+        // STEP 4: WhatsApp PDF (optional), print actions, then reset
+        // ========================================================
+
+        if (!mounted) return;
+
+        final wasEditMode = _isEditMode;
+        final wasCreditSale = _paymentMethod == PaymentMethod.credit;
+        final whatsappNumber = _isWalkInCustomer
+            ? null
+            : _selectedZamindar?.whatsappNumber;
+
+        final entry = _buildInvoiceLedgerEntry(
+          invoiceNumber: invoiceNumber,
+          zamindarName: zamindarName,
+          kisaanName: kisaanName,
+          totalPayable: totalPayable,
+          paidAmount: paidAmount,
+          seasonString: seasonString,
+          isWalkIn: _isWalkInCustomer,
+        );
+
+        if (shareWhatsAppPdf) {
+          try {
+            await _shareInvoiceWhatsAppReceipt(
+              entry: entry,
+              whatsappNumber: whatsappNumber,
+            );
+          } catch (e) {
+            debugPrint('WhatsApp receipt share failed: $e');
+            if (mounted) {
+              AppToast.showWarning(
+                context,
+                'Sale saved, but WhatsApp receipt failed: $e',
+              );
+            }
+          }
+        }
+
+        if (!mounted) return;
+
+        final actionText = wasEditMode ? 'updated' : 'saved';
+        AppToast.showSuccess(
+          context,
+          shareWhatsAppPdf
+              ? 'Sale $actionText & WhatsApp receipt opened. Total: Rs ${totalPayable.toStringAsFixed(0)}'
+              : 'Sale $actionText successfully! Total: Rs ${totalPayable.toStringAsFixed(0)}',
+        );
+
+        // Unlock UI before reset/sync (_syncReferenceData skips while saving).
+        setState(() => _isSaving = false);
+
+        await _showPostCheckoutPrintDialog(
+          entry: entry,
+          isCreditSale: wasCreditSale,
+          isEdited: wasEditMode,
+        );
+
+        if (!mounted) return;
+
+        // Must clear Shell editInvoiceNumber — otherwise reload re-enters edit
+        // mode and the old invoice number sticks on screen.
+        await _resetFormForNewSale();
+
+        // If parent key-recreated this screen, we're done (fresh init loads data).
+        if (!mounted) return;
+
+        // Refresh stock / reference lists without reloading edit state.
+        try {
+          await _syncReferenceData();
+        } catch (e) {
+          debugPrint('Error syncing reference data after save: $e');
+        }
+      } catch (e, stackTrace) {
+        debugPrint('❌ CRITICAL ERROR saving sale: $e');
+        debugPrint('Stack trace: $stackTrace');
+
+        if (mounted) {
+          AppToast.showError(context, 'Failed to save sale: $e');
+        }
+      } finally {
+        // CRITICAL: Always stop the loading indicator in the finally block
+        // This prevents the infinite progress indicator deadlock
+        if (mounted && _isSaving) {
+          setState(() {
+            _isSaving = false;
+          });
+        }
+      }
+    } finally {
+      _checkoutLock = false;
+    }
+  }
+
   Future<void> _completeKisaanAdvance({bool shareWhatsAppPdf = false}) async {
+    if (_isSaving) return;
+
     if (_isEditMode) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Cannot record an advance while editing an invoice'),
-          backgroundColor: Colors.red,
-          duration: Duration(minutes: 1),
-        ),
+      AppToast.showError(
+        context,
+        'Cannot record an advance while editing an invoice',
       );
       return;
     }
 
     if (_isWalkInCustomer || _selectedZamindar == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Select a Zamindar (and Kisaan) before saving a Cash / Fuel Advance',
-          ),
-          backgroundColor: Colors.red,
-          duration: Duration(minutes: 1),
-        ),
+      AppToast.showError(
+        context,
+        'Select a Zamindar (and Kisaan) before saving a Cash / Fuel Advance',
       );
       return;
     }
 
     final zamindarId = int.tryParse(_selectedZamindar!.id);
     if (zamindarId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Invalid Zamindar selection'),
-          backgroundColor: Colors.red,
-          duration: Duration(minutes: 1),
-        ),
-      );
+      AppToast.showError(context, 'Invalid Zamindar selection');
       return;
     }
 
-    final amount = _advanceAmountValue;
+    final amount = moneyRound(_advanceAmountValue);
     if (amount <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Enter a valid Total Value (Rs.) greater than zero'),
-          backgroundColor: Colors.red,
-          duration: Duration(minutes: 1),
-        ),
+      AppToast.showError(
+        context,
+        'Enter a valid Total Value (Rs.) greater than zero',
       );
       return;
     }
 
     final liters = _advanceLitersValue;
     if (_isFuelAdvance && (liters == null || liters <= 0)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Enter Quantity (Liters) for this fuel advance'),
-          backgroundColor: Colors.red,
-          duration: Duration(minutes: 1),
-        ),
+      AppToast.showError(
+        context,
+        'Enter Quantity (Liters) for this fuel advance',
       );
       return;
     }
+
+    // Advances are zero-margin loans: no stock check, Rs 0 profit contribution.
+    assert(
+      SaleController.profitContribution(
+            serviceKind: ProductServiceKind.fromSaleTransactionType(
+              _advanceTransactionType,
+            ),
+            saleAmount: amount,
+            catalogCost: 0,
+          ) ==
+          0,
+    );
 
     setState(() => _isSaving = true);
 
@@ -1540,22 +1700,16 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
             liters: _isFuelAdvance ? liters : null,
             remarks: remarks,
           );
-          await _shareInvoiceWhatsAppPdf(
+          await _shareInvoiceWhatsAppReceipt(
             entry: entry,
-            isEdited: false,
             whatsappNumber: whatsappNumber,
           );
         } catch (e) {
-          debugPrint('WhatsApp PDF share failed: $e');
+          debugPrint('WhatsApp receipt share failed: $e');
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(
-                  'Advance saved, but PDF/WhatsApp share failed: $e',
-                ),
-                backgroundColor: Colors.orange.shade800,
-                duration: const Duration(seconds: 5),
-              ),
+            AppToast.showWarning(
+              context,
+              'Advance saved, but WhatsApp receipt failed: $e',
             );
           }
         }
@@ -1563,18 +1717,13 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
 
       if (!mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            shareWhatsAppPdf
-                ? '$_advanceDisplayLabel saved & invoice PDF ready. '
-                      'Total: Rs ${amount.toStringAsFixed(0)}'
-                : '$_advanceDisplayLabel saved on khata. '
-                      'Total: Rs ${amount.toStringAsFixed(0)}',
-          ),
-          backgroundColor: SaleColors.darkGreen,
-          duration: const Duration(seconds: 3),
-        ),
+      AppToast.showSuccess(
+        context,
+        shareWhatsAppPdf
+            ? '$_advanceDisplayLabel saved & WhatsApp receipt opened. '
+                  'Total: Rs ${amount.toStringAsFixed(0)}'
+            : '$_advanceDisplayLabel saved on khata. '
+                  'Total: Rs ${amount.toStringAsFixed(0)}',
       );
 
       setState(() => _isSaving = false);
@@ -1591,13 +1740,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       debugPrint('Stack trace: $stackTrace');
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to save advance: $e'),
-            backgroundColor: Colors.red,
-            duration: const Duration(minutes: 1),
-          ),
-        );
+        AppToast.showError(context, 'Failed to save advance: $e');
       }
     } finally {
       if (mounted && _isSaving) {
@@ -1615,9 +1758,10 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     double? liters,
     required String remarks,
   }) {
-    final label = liters != null
-        ? '$_advanceDisplayLabel (${liters.toStringAsFixed(liters == liters.roundToDouble() ? 0 : 2)} L)'
-        : _advanceDisplayLabel;
+    final label = db.SaleTransactionType.khaataReceiptLabel(
+      _advanceTransactionType,
+      liters: liters,
+    );
     final description = remarks.isNotEmpty ? '$label — $remarks' : label;
 
     return LedgerEntry(
@@ -1643,6 +1787,9 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       isWalkInCustomer: false,
       description: description,
       purchaseTerms: 'After Harvest',
+      createdByUserId: SessionContext.userId,
+      createdByUserName: SessionContext.footprintLabel,
+      createdAt: DateTime.now(),
     );
   }
 
@@ -1659,6 +1806,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     _zamindarSearchController.dispose();
     _kisaanSearchController.dispose();
     _productSearchController.dispose();
+    _screenFocusNode.dispose();
     _qtyController.dispose();
     _priceController.dispose();
     _seasonalIncrementController.dispose();
@@ -1673,60 +1821,100 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     super.dispose();
   }
 
+  bool get _isTypingInTextField {
+    final focus = FocusManager.instance.primaryFocus;
+    final ctx = focus?.context;
+    if (ctx == null) return false;
+    if (ctx.widget is EditableText) return true;
+    return ctx.findAncestorWidgetOfExactType<EditableText>() != null;
+  }
+
+  void _focusProductSearch() {
+    _productAutocompleteFocusNode?.requestFocus();
+  }
+
+  void _onShortcutCheckout() {
+    if (_isSaving || _isLoading) return;
+    // Avoid accidental checkout while typing qty/price/name fields.
+    if (_isTypingInTextField) return;
+    _saveAndPrint();
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Theme(
-      data: Theme.of(context).copyWith(
-        visualDensity: VisualDensity.compact,
-        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        inputDecorationTheme: Theme.of(context).inputDecorationTheme.copyWith(
-          isDense: true,
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: 10,
-            vertical: 8,
-          ),
-        ),
-      ),
-      child: Scaffold(
-        backgroundColor: SaleColors.canvasBg,
-        body: _isLoading
-            ? const Center(
-                child: CircularProgressIndicator(
-                  valueColor: AlwaysStoppedAnimation<Color>(
-                    SaleColors.darkGreen,
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.enter): _onShortcutCheckout,
+        const SingleActivator(LogicalKeyboardKey.numpadEnter):
+            _onShortcutCheckout,
+        const SingleActivator(LogicalKeyboardKey.escape): () {
+          _handleEscapeShortcut();
+        },
+        const SingleActivator(LogicalKeyboardKey.f2): _focusProductSearch,
+        // Delete removes cart lines. Backspace is intentionally NOT bound so
+        // text fields can erase/edit characters normally.
+        const SingleActivator(LogicalKeyboardKey.delete):
+            _removeSelectedOrLastCartItem,
+      },
+      child: Focus(
+        focusNode: _screenFocusNode,
+        autofocus: true,
+        child: Theme(
+          data: Theme.of(context).copyWith(
+            visualDensity: VisualDensity.compact,
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            inputDecorationTheme: Theme.of(context).inputDecorationTheme
+                .copyWith(
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 8,
                   ),
                 ),
-              )
-            : Column(
-                children: [
-                  _buildTopBar(),
-                  Expanded(
-                    child: LayoutBuilder(
-                      builder: (context, constraints) {
-                        final stackColumns = constraints.maxWidth < 900;
-                        if (stackColumns) {
-                          return SingleChildScrollView(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                _buildLeftColumn(fullWidth: true),
-                                _buildRightColumn(scrollable: false),
-                              ],
-                            ),
-                          );
-                        }
-                        return Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            _buildLeftColumn(),
-                            Expanded(child: _buildRightColumn()),
-                          ],
-                        );
-                      },
+          ),
+          child: Scaffold(
+            backgroundColor: SaleColors.canvasBg,
+            body: _isLoading
+                ? const Center(
+                    child: CircularProgressIndicator(
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        SaleColors.darkGreen,
+                      ),
                     ),
+                  )
+                : Column(
+                    children: [
+                      _buildTopBar(),
+                      Expanded(
+                        child: LayoutBuilder(
+                          builder: (context, constraints) {
+                            final stackColumns = constraints.maxWidth < 900;
+                            if (stackColumns) {
+                              return SingleChildScrollView(
+                                child: Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.stretch,
+                                  children: [
+                                    _buildLeftColumn(fullWidth: true),
+                                    _buildRightColumn(scrollable: false),
+                                  ],
+                                ),
+                              );
+                            }
+                            return Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                _buildLeftColumn(),
+                                Expanded(child: _buildRightColumn()),
+                              ],
+                            );
+                          },
+                        ),
+                      ),
+                    ],
                   ),
-                ],
-              ),
+          ),
+        ),
       ),
     );
   }
@@ -1901,160 +2089,36 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         : dateFormat.format(_selectedDateTime);
     final season = SeasonUtils.getSeasonString(_selectedDateTime);
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-      decoration: const BoxDecoration(
-        color: SaleColors.cardBg,
-        border: Border(
-          bottom: BorderSide(color: SaleColors.borderLight, width: 0.5),
+    return AppTopHeader(
+      title: 'New sale',
+      subtitle: '$displayDate — $season Season',
+      actions: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+          decoration: BoxDecoration(
+            color: AppColors.background,
+            border: Border.all(color: AppColors.inputBorder, width: 0.5),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Text(
+            _invoiceNumber,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: AppTextStyles.pageSubtitle,
+          ),
         ),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text(
-                  'New sale',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w500,
-                    color: SaleColors.textDark,
-                  ),
-                ),
-                const SizedBox(height: 1),
-                Text(
-                  '$displayDate — $season Season',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: SaleColors.textLight,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Flexible(
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              reverse: true,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 5,
-                    ),
-                    decoration: BoxDecoration(
-                      color: SaleColors.canvasBg,
-                      border: Border.all(
-                        color: SaleColors.borderMid,
-                        width: 0.5,
-                      ),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text(
-                      _invoiceNumber,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: SaleColors.textLight,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Material(
-                    color: Colors.transparent,
-                    child: InkWell(
-                      onTap: _handleDiscard,
-                      borderRadius: BorderRadius.circular(10),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 8,
-                        ),
-                        decoration: BoxDecoration(
-                          color: SaleColors.cardBg,
-                          border: Border.all(
-                            color: SaleColors.borderMid,
-                            width: 0.5,
-                          ),
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: const Text(
-                          'Discard',
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: SaleColors.textDark,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Material(
-                    color: Colors.transparent,
-                    child: InkWell(
-                      onTap: _isSaving ? null : _saveAndPrint,
-                      borderRadius: BorderRadius.circular(10),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 18,
-                          vertical: 8,
-                        ),
-                        decoration: BoxDecoration(
-                          color: _isSaving
-                              ? SaleColors.darkGreen.withOpacity(0.6)
-                              : SaleColors.darkGreen,
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (_isSaving)
-                              const SizedBox(
-                                width: 13,
-                                height: 13,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  valueColor: AlwaysStoppedAnimation<Color>(
-                                    Colors.white,
-                                  ),
-                                ),
-                              )
-                            else
-                              const Icon(
-                                Icons.check,
-                                size: 13,
-                                color: Colors.white,
-                              ),
-                            const SizedBox(width: 6),
-                            Text(
-                              _isSaving ? 'Saving...' : 'Save & Print',
-                              style: const TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w500,
-                                color: Colors.white,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
+        AppButton.secondary(
+          label: 'Discard',
+          icon: Icons.close,
+          onPressed: _handleDiscard,
+        ),
+        AppButton.primary(
+          label: _isSaving ? 'Saving...' : 'Save & Print',
+          icon: Icons.check,
+          loading: _isSaving,
+          onPressed: _isSaving ? null : _saveAndPrint,
+        ),
+      ],
     );
   }
 
@@ -2070,6 +2134,10 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         if (!_isWalkInCustomer) ...[
           _buildSelectZamindarCard(),
           const SizedBox(height: 10),
+          if (_isPartnerSelfUse && !_isAdvanceMode) ...[
+            _buildPartnerSelfUsePricingCard(),
+            const SizedBox(height: 10),
+          ],
           if (_selectedZamindar != null) ...[
             _buildSelectKisaanCard(),
             if (!_isAdvanceMode) ...[
@@ -2089,9 +2157,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           ? const BoxConstraints(maxWidth: double.infinity)
           : const BoxConstraints(maxWidth: 360),
       padding: EdgeInsets.fromLTRB(14, 12, fullWidth ? 14 : 8, 12),
-      child: fullWidth
-          ? content
-          : SingleChildScrollView(child: content),
+      child: fullWidth ? content : SingleChildScrollView(child: content),
     );
   }
 
@@ -2187,11 +2253,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(
-                  Icons.info_rounded,
-                  size: 15,
-                  color: SaleColors.midGreen,
-                ),
+                Icon(Icons.info_rounded, size: 15, color: SaleColors.midGreen),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
@@ -2524,6 +2586,101 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     );
   }
 
+  Widget _buildPartnerSelfUsePricingCard() {
+    Widget chip(_PartnerPricePreset preset, String label) {
+      final selected = _partnerPricePreset == preset;
+      return Expanded(
+        child: Material(
+          color: selected ? SaleColors.darkGreen : Colors.white,
+          borderRadius: BorderRadius.circular(8),
+          child: InkWell(
+            onTap: () {
+              setState(() {
+                _partnerPricePreset = preset;
+                if (_selectedProduct != null) {
+                  _priceController.text = _resolveUnitPrice(
+                    _selectedProduct!,
+                  ).toStringAsFixed(0);
+                }
+              });
+            },
+            borderRadius: BorderRadius.circular(8),
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: selected
+                      ? SaleColors.darkGreen
+                      : SaleColors.borderLight,
+                  width: 0.5,
+                ),
+              ),
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w600,
+                  color: selected ? Colors.white : SaleColors.textDark,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFFEAF3DE),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFF97C459), width: 0.5),
+      ),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(
+                Icons.handshake_outlined,
+                size: 16,
+                color: SaleColors.darkGreen,
+              ),
+              SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  'Partner Self-Use pricing',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: SaleColors.darkGreen,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Linked partner Zamindar — choose Cost, Retail, or Seasonal increment.',
+            style: TextStyle(fontSize: 11, color: Color(0xFF2D6A4F)),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              chip(_PartnerPricePreset.cost, 'Cost Price'),
+              const SizedBox(width: 6),
+              chip(_PartnerPricePreset.retail, 'Retail'),
+              const SizedBox(width: 6),
+              chip(_PartnerPricePreset.seasonal, 'Seasonal'),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildWalkInToggleCard() {
     return Container(
       decoration: BoxDecoration(
@@ -2589,6 +2746,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                     // Clear zamindar selection
                     _selectedZamindar = null;
                     _selectedKisaan = null;
+                    _isPartnerSelfUse = false;
                     _zamindarSearchController.clear();
                     _kisaanSearchController.clear();
                     _clearSmartRecommendations();
@@ -2852,6 +3010,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
             });
             // Check credit limit after selection
             _checkZamindarCreditLimit(selection);
+            _refreshPartnerSelfUseFlag(selection);
             if (_selectedKisaan != null) {
               _loadSmartRecommendations();
             }
@@ -3234,10 +3393,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
               children: [
                 Expanded(flex: 4, child: _buildProductAutocomplete()),
                 const SizedBox(width: 8),
-                SizedBox(
-                  width: 118,
-                  child: _buildQtyStepperField(),
-                ),
+                SizedBox(width: 118, child: _buildQtyStepperField()),
                 const SizedBox(width: 8),
                 SizedBox(
                   width: 84,
@@ -3328,12 +3484,13 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           displayStringForOption: (Product option) => option.name,
           fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
             _productFieldController = controller;
+            _productAutocompleteFocusNode = focusNode;
             return TextFormField(
               controller: controller,
               focusNode: focusNode,
               style: const TextStyle(fontSize: 13, color: SaleColors.textDark),
               decoration: InputDecoration(
-                hintText: 'Search or select product...',
+                hintText: 'Search or select product... (F2)',
                 hintStyle: const TextStyle(
                   fontSize: 13,
                   color: SaleColors.textLight,
@@ -3390,7 +3547,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                     padding: EdgeInsets.zero,
                     shrinkWrap: true,
                     itemCount: options.length,
-                    separatorBuilder: (_, __) => const Divider(
+                    separatorBuilder: (_, _) => const Divider(
                       height: 0.5,
                       thickness: 0.5,
                       color: SaleColors.borderLight,
@@ -3549,10 +3706,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           ),
           child: Row(
             children: [
-              _buildQtyStepButton(
-                icon: Icons.remove,
-                onTap: _decrementQty,
-              ),
+              _buildQtyStepButton(icon: Icons.remove, onTap: _decrementQty),
               Expanded(
                 child: TextFormField(
                   controller: _qtyController,
@@ -3570,10 +3724,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                   ),
                 ),
               ),
-              _buildQtyStepButton(
-                icon: Icons.add,
-                onTap: _incrementQty,
-              ),
+              _buildQtyStepButton(icon: Icons.add, onTap: _incrementQty),
             ],
           ),
         ),
@@ -3670,211 +3821,129 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
   Widget _buildCartTable() {
     final showSeasonalIncrement = _showSeasonalIncrement;
 
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: DataTable(
-        horizontalMargin: 10,
-        columnSpacing: 14,
-        headingRowHeight: 32,
-        dataRowMinHeight: 36,
-        dataRowMaxHeight: 40,
-        headingRowColor: WidgetStateProperty.all(SaleColors.canvasBg),
-        dividerThickness: 0.5,
-        decoration: const BoxDecoration(
-          border: Border(
-            bottom: BorderSide(color: SaleColors.borderLight, width: 0.5),
-          ),
-        ),
-        columns: [
-          const DataColumn(
-            label: Text(
-              'Product',
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w500,
-                color: SaleColors.textMuted,
-              ),
-            ),
-          ),
-          const DataColumn(
-            label: Text(
-              'Type',
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w500,
-                color: SaleColors.textMuted,
-              ),
-            ),
-          ),
-          const DataColumn(
-            label: Text(
-              'Qty',
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w500,
-                color: SaleColors.textMuted,
-              ),
-            ),
-          ),
-          const DataColumn(
-            label: Text(
-              'Unit price',
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w500,
-                color: SaleColors.textMuted,
-              ),
-            ),
-          ),
-          if (showSeasonalIncrement)
-            const DataColumn(
-              label: Text(
-                'Seasonal Inc',
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w500,
-                  color: SaleColors.textMuted,
-                ),
-              ),
-            ),
-          const DataColumn(
-            label: Text(
-              'Discount',
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w500,
-                color: SaleColors.textMuted,
-              ),
-            ),
-          ),
-          const DataColumn(
-            label: Text(
-              'Subtotal',
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w500,
-                color: SaleColors.textMuted,
-              ),
-            ),
-          ),
-          const DataColumn(label: SizedBox.shrink()),
-        ],
-        rows: _cartItems.map((item) {
-          return DataRow(
+    final columns = <AppDataColumn>[
+      const AppDataColumn(title: 'Product', flex: 22),
+      const AppDataColumn(title: 'Type', flex: 12),
+      const AppDataColumn(title: 'Qty', flex: 12),
+      const AppDataColumn(title: 'Unit price', flex: 12),
+      if (showSeasonalIncrement)
+        const AppDataColumn(title: 'Seasonal Inc', flex: 12),
+      const AppDataColumn(title: 'Discount', flex: 12),
+      const AppDataColumn(title: 'Subtotal', flex: 12),
+      const AppDataColumn(title: '', flex: 6),
+    ];
+
+    return AppDataTable(
+      showCardChrome: false,
+      minWidth: showSeasonalIncrement ? 820 : 720,
+      columns: columns,
+      rows: [
+        for (final item in _cartItems)
+          AppDataRow(
+            onTap: () => setState(() => _selectedCartItemId = item.id),
+            backgroundColor: _selectedCartItemId == item.id
+                ? const Color(0xFFEAF3DE)
+                : null,
             cells: [
-              DataCell(
-                SizedBox(
-                  width: 160,
-                  child: Text(
-                    item.product.name,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500,
-                      color: SaleColors.textDark,
-                    ),
-                  ),
+              Text(
+                item.product.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: SaleColors.textDark,
                 ),
               ),
-              DataCell(ProductTypeBadge(type: item.product.type)),
-              DataCell(
-                QuantityControl(
-                  quantity: item.quantity,
-                  onIncrement: () => _updateCartItemQuantity(item.id, 1),
-                  onDecrement: () => _updateCartItemQuantity(item.id, -1),
-                ),
+              ProductTypeBadge(type: item.product.type),
+              QuantityControl(
+                quantity: item.quantity,
+                onIncrement: () => _updateCartItemQuantity(item.id, 1),
+                onDecrement: () => _updateCartItemQuantity(item.id, -1),
               ),
-              DataCell(
-                Text(
-                  CurrencyFormatter.format(item.product.basePrice),
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: SaleColors.textDark,
-                  ),
+              Text(
+                CurrencyFormatter.format(item.product.basePrice),
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: SaleColors.textDark,
                 ),
               ),
               if (showSeasonalIncrement)
-                DataCell(
-                  InlineEditableField(
-                    value: item.seasonalIncrement,
-                    onChanged: (val) =>
-                        _updateCartItemSeasonalIncrement(item.id, val),
-                    width: 80,
-                  ),
-                ),
-              DataCell(
                 InlineEditableField(
-                  value: item.discount,
-                  onChanged: (val) => _updateCartItemDiscount(item.id, val),
+                  value: item.seasonalIncrement,
+                  onChanged: (val) =>
+                      _updateCartItemSeasonalIncrement(item.id, val),
+                  width: 80,
+                ),
+              InlineEditableField(
+                value: item.discount,
+                onChanged: (val) => _updateCartItemDiscount(item.id, val),
+              ),
+              Text(
+                CurrencyFormatter.format(item.subtotal),
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: SaleColors.textDark,
                 ),
               ),
-              DataCell(
-                Text(
-                  CurrencyFormatter.format(item.subtotal),
-                  style: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                    color: SaleColors.textDark,
-                  ),
-                ),
-              ),
-              DataCell(
-                Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    onTap: () => _removeCartItem(item.id),
-                    borderRadius: BorderRadius.circular(5),
-                    child: Container(
-                      width: 22,
-                      height: 22,
-                      decoration: BoxDecoration(
-                        border: Border.all(
-                          color: SaleColors.borderLight,
-                          width: 0.5,
-                        ),
-                        borderRadius: BorderRadius.circular(5),
+              Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: () => _removeCartItem(item.id),
+                  borderRadius: BorderRadius.circular(5),
+                  child: Container(
+                    width: 22,
+                    height: 22,
+                    decoration: BoxDecoration(
+                      border: Border.all(
+                        color: SaleColors.borderLight,
+                        width: 0.5,
                       ),
-                      child: const Center(
-                        child: Icon(
-                          Icons.close,
-                          size: 14,
-                          color: SaleColors.deleteBtnColor,
-                        ),
+                      borderRadius: BorderRadius.circular(5),
+                    ),
+                    child: const Center(
+                      child: Icon(
+                        Icons.close,
+                        size: 14,
+                        color: SaleColors.deleteBtnColor,
                       ),
                     ),
                   ),
                 ),
               ),
             ],
-          );
-        }).toList(),
-      ),
+          ),
+      ],
     );
   }
 
   Widget _buildSummaryCard() {
     final summary = _getSummary();
-    final showSeasonalIncrement =
-        !_isAdvanceMode && _showSeasonalIncrement;
+    final showSeasonalIncrement = !_isAdvanceMode && _showSeasonalIncrement;
     final totalPayable = _isAdvanceMode
         ? _advanceAmountValue
         : summary.totalPayable;
 
     void onPaymentMethodChanged(PaymentMethod method) {
+      final result = SaleController.applyPaymentMethodSwitch(
+        next: method,
+        zamindarPaymentTerms: _selectedZamindar?.paymentTerms ?? const [],
+      );
       setState(() {
-        _paymentMethod = method;
-        if (method == PaymentMethod.cash) {
-          _selectedSalePaymentTerm = null;
-          _cashReceivedController.text = '0';
+        _paymentMethod = result.paymentMethod;
+        _selectedSalePaymentTerm = result.paymentTerm;
+        _cashReceivedController.text = result.cashReceivedText;
+        // Cart lines stay intact — only seasonal increments / cash fields change.
+        // Ledger posts are rewritten once at save via updateSaleInNewSchema /
+        // insertSale (no duplicate cash-drawer entries on UI toggle).
+        if (result.clearSeasonalIncrements) {
           _clearSeasonalIncrements();
-        } else if (_selectedZamindar != null &&
-            _selectedZamindar!.paymentTerms.length == 1) {
-          _selectedSalePaymentTerm =
-              _selectedZamindar!.paymentTerms.first;
-          if (_selectedSalePaymentTerm != 'After Harvest') {
-            _clearSeasonalIncrements();
-          }
         }
       });
+      if (method == PaymentMethod.credit && _selectedZamindar != null) {
+        _checkZamindarCreditLimit(_selectedZamindar!);
+      }
     }
 
     return Container(
@@ -3933,7 +4002,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
               color: Colors.white.withValues(alpha: 0.15),
             ),
             Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
                   child: Column(
@@ -3958,23 +4027,21 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                           height: 1.15,
                         ),
                       ),
-                      const SizedBox(height: 8),
-                      _buildOverallDiscountRow(),
                     ],
                   ),
                 ),
                 const SizedBox(width: 12),
-                Flexible(
-                  child: PaymentMethodToggle(
-                    compact: true,
-                    selectedMethod: _paymentMethod,
-                    onChanged: !_isWalkInCustomer
-                        ? onPaymentMethodChanged
-                        : (_) {},
-                  ),
+                PaymentMethodToggle(
+                  compact: true,
+                  selectedMethod: _paymentMethod,
+                  onChanged: !_isWalkInCustomer
+                      ? onPaymentMethodChanged
+                      : (_) {},
                 ),
               ],
             ),
+            const SizedBox(height: 8),
+            _buildOverallDiscountRow(),
             if (_paymentMethod == PaymentMethod.credit &&
                 !_isWalkInCustomer) ...[
               const SizedBox(height: 10),
@@ -4037,60 +4104,10 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
               const SizedBox(width: 8),
               Expanded(
                 flex: 2,
-                child: Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    onTap: _isSaving ? null : _saveAndWhatsAppPdf,
-                    borderRadius: BorderRadius.circular(9),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        vertical: 10,
-                        horizontal: 8,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.1),
-                        border: Border.all(
-                          color: Colors.white.withValues(alpha: 0.2),
-                          width: 0.5,
-                        ),
-                        borderRadius: BorderRadius.circular(9),
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          if (_isSaving)
-                            const SizedBox(
-                              width: 12,
-                              height: 12,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                valueColor: AlwaysStoppedAnimation<Color>(
-                                  SaleColors.textLight,
-                                ),
-                              ),
-                            )
-                          else
-                            const Icon(
-                              Icons.chat_outlined,
-                              size: 14,
-                              color: SaleColors.textLight,
-                            ),
-                          const SizedBox(width: 6),
-                          const Flexible(
-                            child: Text(
-                              'WhatsApp',
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w500,
-                                color: SaleColors.textLight,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
+                child: AppButton.whatsapp(
+                  label: 'Share Receipt on WhatsApp',
+                  loading: _isSaving,
+                  onPressed: _isSaving ? null : _saveAndWhatsAppPdf,
                 ),
               ),
             ],
@@ -4423,12 +4440,10 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
               fillColor: Colors.white.withValues(alpha: 0.1),
             ),
             onChanged: (val) {
-              final parsed = double.tryParse(val.replaceAll(',', ''));
-              if (parsed != null) {
-                setState(() {
-                  _overallDiscount = parsed;
-                });
-              }
+              final parsed = SaleController.parseMoney(val);
+              setState(() {
+                _overallDiscount = parsed;
+              });
             },
           ),
         ),

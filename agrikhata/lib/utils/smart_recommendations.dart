@@ -192,10 +192,11 @@ class SmartRecommendationEngine {
     final crop = kisaan.crop;
     final acres = kisaan.acres;
 
-    final activeRules = catalog
-        .where((r) => r.matchesCrop(crop) && r.isActiveForDay(daysElapsed))
-        .toList()
-      ..sort((a, b) => a.priority.compareTo(b.priority));
+    final activeRules =
+        catalog
+            .where((r) => r.matchesCrop(crop) && r.isActiveForDay(daysElapsed))
+            .toList()
+          ..sort((a, b) => a.priority.compareTo(b.priority));
 
     final results = <SmartRecommendationResult>[];
     final usedProductIds = <String>{};
@@ -204,7 +205,9 @@ class SmartRecommendationEngine {
       if (results.length >= maxResults) break;
 
       final candidates = inStockProducts
-          .where((p) => !usedProductIds.contains(p.id) && rule.matchesProduct(p))
+          .where(
+            (p) => !usedProductIds.contains(p.id) && rule.matchesProduct(p),
+          )
           .toList();
       if (candidates.isEmpty) continue;
 
@@ -299,6 +302,7 @@ class SmartRecommendationEngine {
 
 /// Thin product wrapper that carries live available_stock for capping.
 class ProductWithStock extends Product {
+  @override
   final int availableStock;
 
   ProductWithStock({

@@ -7,7 +7,12 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import '../models/audit_log_model.dart';
+import '../models/partner_model.dart';
+import '../models/user_model.dart';
+import '../services/session_context.dart';
 import '../utils/season_utils.dart';
+import '../utils/shop_settings.dart';
 import 'migration_framework.dart';
 
 /// Singleton database helper for the AgriKhata local relational database.
@@ -24,7 +29,7 @@ class DatabaseHelper with ChangeNotifier {
   static final DatabaseHelper instance = DatabaseHelper._internal();
 
   /// Current on-disk schema version. Bump only when adding a new `_migrateToV*`.
-  static const int schemaVersion = 28;
+  static const int schemaVersion = 36;
 
   static final NumberFormat _indianCurrencyFormat = NumberFormat('#,##,##0');
 
@@ -69,12 +74,25 @@ class DatabaseHelper with ChangeNotifier {
     }
   }
 
+  /// Absolute path to the on-disk SQLite file (`agrikhata.db`).
+  Future<String> get databaseFilePath async {
+    final supportDir = await getApplicationSupportDirectory();
+    await supportDir.create(recursive: true);
+    return p.join(supportDir.path, 'agrikhata.db');
+  }
+
+  /// Re-opens the database after an external file replace (cloud restore).
+  Future<Database> reopenAfterRestore() async {
+    await close();
+    final db = await database;
+    notifyListeners();
+    return db;
+  }
+
   Future<Database> _initDatabase() async {
     // Use Application Support (writable under MSIX); getDatabasesPath() can
     // resolve inside the read-only package and cause SQLITE_CANTOPEN (14).
-    final supportDir = await getApplicationSupportDirectory();
-    await supportDir.create(recursive: true);
-    final path = p.join(supportDir.path, 'agrikhata.db');
+    final path = await databaseFilePath;
 
     return databaseFactory.openDatabase(
       path,
@@ -102,6 +120,12 @@ class DatabaseHelper with ChangeNotifier {
           await db.execute(_createExpensesTable());
           await db.execute(_createEmployeesTable());
           await db.execute(_createEmployeeAttendanceTable());
+          await db.execute(_createPartnersTable());
+          await db.execute(_createPartnerDrawingsTable());
+          await db.execute(_createPartnerTransactionsTable());
+          await db.execute(_createArchivedSeasonsTable());
+          await db.execute(_createUsersTable());
+          await db.execute(_createAuditLogsTable());
           await _createIndexes(db);
           await _createLedgerSyncTriggers(db);
         },
@@ -110,9 +134,14 @@ class DatabaseHelper with ChangeNotifier {
           await db.execute('PRAGMA foreign_keys = ON');
           await _ensureWholesalerLedgerSchema(db);
           await _ensureWholesalerPaymentsSchema(db);
+          await _ensureWholesalerProfileSchema(db);
           await _ensureExpensesSchema(db);
           await _ensureEmployeeSchema(db);
           await _ensureSalesAdvanceSchema(db);
+          await _ensurePartnerSchema(db);
+          await _ensureArchivedSeasonsSchema(db);
+          await _ensureUserAuthSchema(db);
+          await _ensurePaymentEditAuditSchema(db);
           await _createLedgerSyncTriggers(db);
         },
         onUpgrade: (db, oldVersion, newVersion) async {
@@ -290,6 +319,55 @@ class DatabaseHelper with ChangeNotifier {
           toVersion: 28,
           description: 'employees + attendance + expense payroll link',
           run: _migrateToV28,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 29,
+          description: 'partners + partner_drawings equity tables',
+          run: _migrateToV29,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 30,
+          description: 'users + audit_logs + created_by actor stamps',
+          run: _migrateToV30,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 31,
+          description: 'immutable created_at footprint on transactional tables',
+          run: _migrateToV31,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 32,
+          description: 'partner equity ledger + out-of-pocket columns',
+          run: _migrateToV32,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 33,
+          description: 'archived seasons lock for settled ledgers',
+          run: _migrateToV33,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 34,
+          description:
+              'advance loans: ADVANCE_LOAN_RECORD ledger + receipt labels',
+          run: _migrateToV34,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 35,
+          description: 'wholesaler address + soft-archive is_active',
+          run: _migrateToV35,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 36,
+          description: 'payment edit audit columns (edited_at/by, original_amount, notes)',
+          run: _migrateToV36,
           verifyIntegrity: false,
         ),
       ],
@@ -677,6 +755,153 @@ class DatabaseHelper with ChangeNotifier {
   Future<void> _migrateToV28(Database db, MigrationLog log) async {
     log.step('ensure employee + attendance schema');
     await _ensureEmployeeSchema(db);
+  }
+
+  Future<void> _migrateToV29(Database db, MigrationLog log) async {
+    log.step('ensure partners + partner_drawings schema');
+    await _ensurePartnerSchema(db);
+  }
+
+  Future<void> _migrateToV30(Database db, MigrationLog log) async {
+    log.step('ensure users + audit_logs + created_by columns');
+    await _ensureUserAuthSchema(db);
+  }
+
+  Future<void> _migrateToV31(Database db, MigrationLog log) async {
+    log.step('ensure created_at actor footprint columns');
+    await _ensureUserAuthSchema(db);
+  }
+
+  Future<void> _migrateToV32(Database db, MigrationLog log) async {
+    log.step('ensure partner equity ledger schema');
+    await _ensurePartnerSchema(db);
+  }
+
+  Future<void> _migrateToV33(Database db, MigrationLog log) async {
+    log.step('ensure archived_seasons table');
+    await _ensureArchivedSeasonsSchema(db);
+  }
+
+  /// v35: wholesaler directory address + soft-archive flag.
+  Future<void> _migrateToV35(Database db, MigrationLog log) async {
+    await _ensureWholesalerProfileSchema(db, log: log);
+  }
+
+  /// v36: payment edit audit trail + optional notes.
+  Future<void> _migrateToV36(Database db, MigrationLog log) async {
+    await _ensurePaymentEditAuditSchema(db, log: log);
+  }
+
+  /// Adds edit-audit columns on [PaymentsTable] (idempotent).
+  Future<void> _ensurePaymentEditAuditSchema(
+    Database db, {
+    MigrationLog? log,
+  }) async {
+    await addColumnIfMissing(
+      db,
+      table: PaymentsTable.name,
+      column: PaymentsTable.editedAt,
+      columnDefSql: '${PaymentsTable.editedAt} TEXT',
+      log: log,
+    );
+    await addColumnIfMissing(
+      db,
+      table: PaymentsTable.name,
+      column: PaymentsTable.editedBy,
+      columnDefSql: '${PaymentsTable.editedBy} TEXT',
+      log: log,
+    );
+    await addColumnIfMissing(
+      db,
+      table: PaymentsTable.name,
+      column: PaymentsTable.originalAmount,
+      columnDefSql: '${PaymentsTable.originalAmount} INTEGER',
+      log: log,
+    );
+    await addColumnIfMissing(
+      db,
+      table: PaymentsTable.name,
+      column: PaymentsTable.notes,
+      columnDefSql: '${PaymentsTable.notes} TEXT',
+      log: log,
+    );
+  }
+
+  Future<void> _ensureWholesalerProfileSchema(
+    Database db, {
+    MigrationLog? log,
+  }) async {
+    await addColumnIfMissing(
+      db,
+      table: WholesalerTable.name,
+      column: WholesalerTable.address,
+      columnDefSql: '${WholesalerTable.address} TEXT',
+      log: log,
+    );
+    await addColumnIfMissing(
+      db,
+      table: WholesalerTable.name,
+      column: WholesalerTable.isActive,
+      columnDefSql: '${WholesalerTable.isActive} INTEGER NOT NULL DEFAULT 1',
+      log: log,
+    );
+  }
+
+  /// v34: zero-margin advance loans — recreate sale→ledger triggers with
+  /// [ADVANCE_LOAN_RECORD] category + khaata receipt descriptions; backfill
+  /// existing advance ledger rows and sale_items labels.
+  Future<void> _migrateToV34(Database db, MigrationLog log) async {
+    log.step('recreate ledger sync triggers (ADVANCE_LOAN_RECORD)');
+    await _createLedgerSyncTriggers(db);
+
+    log.step('backfill advance ledger categories');
+    await db.rawUpdate('''
+      UPDATE ${LedgerTransactionTable.name}
+      SET ${LedgerTransactionTable.category} = 'ADVANCE_LOAN_RECORD'
+      WHERE UPPER(${LedgerTransactionTable.category}) IN (
+        'CASH_ADVANCE', 'DIESEL_ADVANCE', 'PETROL_ADVANCE'
+      )
+    ''');
+
+    log.step('backfill advance sale_items receipt labels');
+    await db.rawUpdate('''
+      UPDATE ${SaleItemsTable.name}
+      SET ${SaleItemsTable.productName} = 'Advance Loan (Khaata Record)'
+      WHERE ${SaleItemsTable.invoiceNumber} IN (
+        SELECT ${SalesTable.invoiceNumber} FROM ${SalesTable.name}
+        WHERE ${SalesTable.transactionType} = '${SaleTransactionType.cashAdvance}'
+      )
+        AND ${SaleItemsTable.productType} = 'Advance'
+    ''');
+    await db.rawUpdate('''
+      UPDATE ${SaleItemsTable.name}
+      SET ${SaleItemsTable.productName} =
+        'Fuel Slip (Khaata Record)' ||
+        CASE
+          WHEN COALESCE(
+            (SELECT s.${SalesTable.fuelQuantity}
+             FROM ${SalesTable.name} s
+             WHERE s.${SalesTable.invoiceNumber}
+               = ${SaleItemsTable.name}.${SaleItemsTable.invoiceNumber}),
+            0
+          ) > 0
+          THEN ' (' || (
+            SELECT CAST(s.${SalesTable.fuelQuantity} AS TEXT)
+            FROM ${SalesTable.name} s
+            WHERE s.${SalesTable.invoiceNumber}
+              = ${SaleItemsTable.name}.${SaleItemsTable.invoiceNumber}
+          ) || ' L)'
+          ELSE ''
+        END
+      WHERE ${SaleItemsTable.invoiceNumber} IN (
+        SELECT ${SalesTable.invoiceNumber} FROM ${SalesTable.name}
+        WHERE ${SalesTable.transactionType} IN (
+          '${SaleTransactionType.dieselAdvance}',
+          '${SaleTransactionType.petrolAdvance}'
+        )
+      )
+        AND ${SaleItemsTable.productType} = 'Advance'
+    ''');
   }
 
   /// v24: cascade ledger/payments on invoice delete, add cached current_balance,
@@ -1580,6 +1805,150 @@ END
     ''');
   }
 
+  /// Creates partners / partner_drawings / partner_transactions (idempotent).
+  Future<void> _ensurePartnerSchema(Database db) async {
+    await db.execute(_createPartnersTable());
+    await db.execute(_createPartnerDrawingsTable());
+    await db.execute(_createPartnerTransactionsTable());
+    await addColumnIfMissing(
+      db,
+      table: PartnerTable.name,
+      column: PartnerTable.createdAt,
+      columnDefSql: "${PartnerTable.createdAt} TEXT NOT NULL DEFAULT ''",
+    );
+    await addColumnIfMissing(
+      db,
+      table: PartnerTable.name,
+      column: PartnerTable.outOfPocketInjections,
+      columnDefSql:
+          '${PartnerTable.outOfPocketInjections} REAL NOT NULL DEFAULT 0',
+    );
+    await addColumnIfMissing(
+      db,
+      table: PartnerTable.name,
+      column: PartnerTable.totalDrawings,
+      columnDefSql: '${PartnerTable.totalDrawings} REAL NOT NULL DEFAULT 0',
+    );
+    await addColumnIfMissing(
+      db,
+      table: PartnerTable.name,
+      column: PartnerTable.permanentCapitalWithdrawals,
+      columnDefSql:
+          '${PartnerTable.permanentCapitalWithdrawals} REAL NOT NULL DEFAULT 0',
+    );
+    await addColumnIfMissing(
+      db,
+      table: PartnerTable.name,
+      column: PartnerTable.unsettledProfit,
+      columnDefSql: '${PartnerTable.unsettledProfit} REAL NOT NULL DEFAULT 0',
+    );
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_partners_active
+      ON ${PartnerTable.name}(${PartnerTable.isActive})
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_partner_drawings_partner
+      ON ${PartnerDrawingTable.name}(${PartnerDrawingTable.partnerId})
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_partner_tx_partner
+      ON ${PartnerTransactionTable.name}(${PartnerTransactionTable.partnerId})
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_partner_tx_type
+      ON ${PartnerTransactionTable.name}(${PartnerTransactionTable.type})
+    ''');
+  }
+
+  Future<void> _ensureArchivedSeasonsSchema(Database db) async {
+    await db.execute(_createArchivedSeasonsTable());
+  }
+
+  /// Creates users / audit_logs and actor stamp columns (idempotent).
+  Future<void> _ensureUserAuthSchema(Database db) async {
+    await db.execute(_createUsersTable());
+    await db.execute(_createAuditLogsTable());
+
+    Future<void> addActorCols(String table) async {
+      await addColumnIfMissing(
+        db,
+        table: table,
+        column: ActorColumns.createdByUserId,
+        columnDefSql: '${ActorColumns.createdByUserId} TEXT',
+      );
+      await addColumnIfMissing(
+        db,
+        table: table,
+        column: ActorColumns.createdByUserName,
+        columnDefSql: '${ActorColumns.createdByUserName} TEXT',
+      );
+      await addColumnIfMissing(
+        db,
+        table: table,
+        column: ActorColumns.createdAt,
+        columnDefSql: '${ActorColumns.createdAt} TEXT',
+      );
+    }
+
+    await addActorCols(SalesTable.name);
+    await addActorCols(PurchaseInvoicesTable.name);
+    await addActorCols(ProductTable.name);
+    await addActorCols(ExpenseTable.name);
+    await addActorCols(PartnerDrawingTable.name);
+    await addActorCols(StockMovementTable.name);
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_users_role
+      ON ${UserTable.name}(${UserTable.role})
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_users_pin
+      ON ${UserTable.name}(${UserTable.pinCode})
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_user
+      ON ${AuditLogTable.name}(${AuditLogTable.userId}, ${AuditLogTable.timestamp})
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_ref
+      ON ${AuditLogTable.name}(${AuditLogTable.actionType}, ${AuditLogTable.referenceId})
+    ''');
+  }
+
+  /// Hardcodes an immutable actor footprint into an INSERT payload.
+  ///
+  /// Stores `id`, `"Name (Role)"`, and write-time `created_at` — never a live
+  /// lookup key for historical display.
+  void _applyActorStamp(Map<String, Object?> row) {
+    row[ActorColumns.createdAt] = _formatDateTime(DateTime.now());
+    final user = SessionContext.currentUser;
+    if (user == null) return;
+    row[ActorColumns.createdByUserId] = user.id;
+    row[ActorColumns.createdByUserName] = user.footprintLabel;
+  }
+
+  Future<void> _writeAuditLog({
+    required String actionType,
+    required String referenceId,
+    required String description,
+    DatabaseExecutor? executor,
+  }) async {
+    final user = SessionContext.currentUser;
+    if (user == null) return;
+    final db = executor ?? await database;
+    final id =
+        'a_${DateTime.now().microsecondsSinceEpoch}_${Random().nextInt(99999)}';
+    await db.insert(AuditLogTable.name, {
+      AuditLogTable.id: id,
+      AuditLogTable.userId: user.id,
+      AuditLogTable.userName: user.footprintLabel,
+      AuditLogTable.actionType: actionType,
+      AuditLogTable.referenceId: referenceId,
+      AuditLogTable.description: description,
+      AuditLogTable.timestamp: DateTime.now().toIso8601String(),
+    });
+  }
+
   /// Adds Cash/Fuel Advance columns on [SalesTable] (idempotent).
   /// Called from onOpen and v25 — must stay quiet when columns already exist.
   Future<void> _ensureSalesAdvanceSchema(Database db) async {
@@ -1828,7 +2197,8 @@ END
         where:
             '${LedgerTransactionTable.invoiceNumber} = ? AND '
             'UPPER(${LedgerTransactionTable.category}) IN '
-            "('SALE', 'CASH_ADVANCE', 'DIESEL_ADVANCE', 'PETROL_ADVANCE')",
+            "('SALE', 'ADVANCE_LOAN_RECORD', 'CASH_ADVANCE', "
+            "'DIESEL_ADVANCE', 'PETROL_ADVANCE')",
         whereArgs: [invoiceNumber],
         limit: 1,
       );
@@ -2034,6 +2404,16 @@ END
       CREATE INDEX IF NOT EXISTS idx_payments_zamindar_id
       ON ${PaymentsTable.name}(${PaymentsTable.zamindarId})
     ''');
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_partners_active
+      ON ${PartnerTable.name}(${PartnerTable.isActive})
+    ''');
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_partner_drawings_partner
+      ON ${PartnerDrawingTable.name}(${PartnerDrawingTable.partnerId})
+    ''');
   }
 
   /// Native SQLite triggers keep sales/payments/purchases ledgers in sync.
@@ -2057,7 +2437,17 @@ END
         WHEN NEW.${PaymentsTable.invoiceNumber} IS NULL
           THEN 'Advance payment received'
         WHEN NEW.${PaymentsTable.paymentMethod} = 'Advance Wallet Deduction'
-          THEN 'Advance wallet deduction'
+          THEN 'Advance payments deducted for (' || COALESCE((
+            SELECT GROUP_CONCAT(
+              item.${SaleItemsTable.productName}
+                || ' x'
+                || CAST(item.${SaleItemsTable.quantity} AS TEXT),
+              ', '
+            )
+            FROM ${SaleItemsTable.name} item
+            WHERE item.${SaleItemsTable.invoiceNumber}
+                = NEW.${PaymentsTable.invoiceNumber}
+          ), '—') || ')'
         ELSE 'Payment received via ' || NEW.${PaymentsTable.paymentMethod}
       END
     ''';
@@ -2067,18 +2457,38 @@ END
           '${SaleTransactionType.cashAdvance}',
           '${SaleTransactionType.dieselAdvance}',
           '${SaleTransactionType.petrolAdvance}'
-        ) THEN NEW.${SalesTable.transactionType}
+        ) THEN 'ADVANCE_LOAN_RECORD'
         ELSE 'SALE'
       END
     ''';
     const saleDescriptionCase = '''
       CASE
         WHEN NEW.${SalesTable.transactionType} = '${SaleTransactionType.cashAdvance}'
-          THEN 'Cash Advance: ' || COALESCE(NEW.${SalesTable.remarks}, '')
+          THEN 'Advance Loan (Khaata Record)' ||
+            CASE
+              WHEN NULLIF(TRIM(COALESCE(NEW.${SalesTable.remarks}, '')), '')
+                IS NOT NULL
+              THEN ': ' || TRIM(NEW.${SalesTable.remarks})
+              ELSE ''
+            END
         WHEN NEW.${SalesTable.transactionType} = '${SaleTransactionType.dieselAdvance}'
-          THEN 'Diesel Advance (' || NEW.${SalesTable.fuelQuantity} || 'L)'
+          THEN 'Fuel Slip (Khaata Record) (' ||
+            NEW.${SalesTable.fuelQuantity} || ' L)' ||
+            CASE
+              WHEN NULLIF(TRIM(COALESCE(NEW.${SalesTable.remarks}, '')), '')
+                IS NOT NULL
+              THEN ': ' || TRIM(NEW.${SalesTable.remarks})
+              ELSE ''
+            END
         WHEN NEW.${SalesTable.transactionType} = '${SaleTransactionType.petrolAdvance}'
-          THEN 'Petrol Advance (' || NEW.${SalesTable.fuelQuantity} || 'L)'
+          THEN 'Fuel Slip (Khaata Record) (' ||
+            NEW.${SalesTable.fuelQuantity} || ' L)' ||
+            CASE
+              WHEN NULLIF(TRIM(COALESCE(NEW.${SalesTable.remarks}, '')), '')
+                IS NOT NULL
+              THEN ': ' || TRIM(NEW.${SalesTable.remarks})
+              ELSE ''
+            END
         ELSE 'Product Sale Invoice'
       END
     ''';
@@ -2192,7 +2602,17 @@ END
           END,
           CASE
             WHEN p.${PaymentsTable.paymentMethod} = 'Advance Wallet Deduction'
-              THEN 'Advance wallet deduction'
+              THEN 'Advance payments deducted for (' || COALESCE((
+                SELECT GROUP_CONCAT(
+                  item.${SaleItemsTable.productName}
+                    || ' x'
+                    || CAST(item.${SaleItemsTable.quantity} AS TEXT),
+                  ', '
+                )
+                FROM ${SaleItemsTable.name} item
+                WHERE item.${SaleItemsTable.invoiceNumber}
+                    = p.${PaymentsTable.invoiceNumber}
+              ), '—') || ')'
             ELSE 'Payment received via ' || p.${PaymentsTable.paymentMethod}
           END,
           p.${PaymentsTable.amountPaid},
@@ -2528,7 +2948,10 @@ END
       ${ProductTable.uom} TEXT NOT NULL,
       ${ProductTable.expiryDate} TEXT NOT NULL,
       ${ProductTable.lowStockThreshold} INTEGER NOT NULL DEFAULT 10,
-      ${ProductTable.description} TEXT
+      ${ProductTable.description} TEXT,
+      ${ActorColumns.createdByUserId} TEXT,
+      ${ActorColumns.createdByUserName} TEXT,
+      ${ActorColumns.createdAt} TEXT
     )
   ''';
   String _createLedgerTransactionsTable() =>
@@ -2577,6 +3000,9 @@ END
       ${SalesTable.remarks} TEXT,
       ${SalesTable.zamindarId} INTEGER,
       ${SalesTable.kisaanId} INTEGER,
+      ${ActorColumns.createdByUserId} TEXT,
+      ${ActorColumns.createdByUserName} TEXT,
+      ${ActorColumns.createdAt} TEXT,
       FOREIGN KEY (${SalesTable.zamindarId}) REFERENCES ${ZamindarTable.name}(${ZamindarTable.id})
         ON DELETE RESTRICT,
       FOREIGN KEY (${SalesTable.kisaanId}) REFERENCES ${KisaanTable.name}(${KisaanTable.id})
@@ -2612,6 +3038,10 @@ END
       ${PaymentsTable.amountPaid} INTEGER NOT NULL,
       ${PaymentsTable.paymentMethod} TEXT NOT NULL,
       ${PaymentsTable.season} TEXT NOT NULL,
+      ${PaymentsTable.editedAt} TEXT,
+      ${PaymentsTable.editedBy} TEXT,
+      ${PaymentsTable.originalAmount} INTEGER,
+      ${PaymentsTable.notes} TEXT,
       FOREIGN KEY (${PaymentsTable.invoiceNumber}) REFERENCES ${SalesTable.name}(${SalesTable.invoiceNumber})
         ON UPDATE CASCADE ON DELETE CASCADE,
       FOREIGN KEY (${PaymentsTable.zamindarId}) REFERENCES ${ZamindarTable.name}(${ZamindarTable.id})
@@ -2633,6 +3063,9 @@ END
       ${StockMovementTable.referenceId} TEXT,
       ${StockMovementTable.dateTime} TEXT NOT NULL,
       ${StockMovementTable.notes} TEXT,
+      ${ActorColumns.createdByUserId} TEXT,
+      ${ActorColumns.createdByUserName} TEXT,
+      ${ActorColumns.createdAt} TEXT,
       FOREIGN KEY (${StockMovementTable.productId}) REFERENCES ${ProductTable.name}(${ProductTable.id})
         ON DELETE CASCADE
     )
@@ -2645,7 +3078,9 @@ END
       ${WholesalerTable.nameColumn} TEXT NOT NULL,
       ${WholesalerTable.city} TEXT NOT NULL,
       ${WholesalerTable.phone} TEXT NOT NULL,
-      ${WholesalerTable.balance} REAL NOT NULL DEFAULT 0
+      ${WholesalerTable.address} TEXT,
+      ${WholesalerTable.balance} REAL NOT NULL DEFAULT 0,
+      ${WholesalerTable.isActive} INTEGER NOT NULL DEFAULT 1
     )
   ''';
 
@@ -2662,6 +3097,9 @@ END
       ${PurchaseInvoicesTable.amountPaid} INTEGER NOT NULL DEFAULT 0,
       ${PurchaseInvoicesTable.outstanding} INTEGER NOT NULL DEFAULT 0,
       ${PurchaseInvoicesTable.description} TEXT,
+      ${ActorColumns.createdByUserId} TEXT,
+      ${ActorColumns.createdByUserName} TEXT,
+      ${ActorColumns.createdAt} TEXT,
       FOREIGN KEY (${PurchaseInvoicesTable.wholesalerId})
         REFERENCES ${WholesalerTable.name}(${WholesalerTable.id})
     )
@@ -2727,7 +3165,10 @@ END
       ${ExpenseTable.remarks} TEXT,
       ${ExpenseTable.expenseDate} TEXT NOT NULL,
       ${ExpenseTable.employeeId} INTEGER,
-      ${ExpenseTable.payrollType} TEXT
+      ${ExpenseTable.payrollType} TEXT,
+      ${ActorColumns.createdByUserId} TEXT,
+      ${ActorColumns.createdByUserName} TEXT,
+      ${ActorColumns.createdAt} TEXT
     )
   ''';
 
@@ -2759,6 +3200,109 @@ END
     )
   ''';
 
+  String _createPartnersTable() =>
+      '''
+    CREATE TABLE IF NOT EXISTS ${PartnerTable.name} (
+      ${PartnerTable.id} INTEGER PRIMARY KEY AUTOINCREMENT,
+      ${PartnerTable.nameColumn} TEXT NOT NULL,
+      ${PartnerTable.phone} TEXT NOT NULL DEFAULT '',
+      ${PartnerTable.userAccountId} TEXT,
+      ${PartnerTable.zamindarId} INTEGER,
+      ${PartnerTable.initialCapital} REAL NOT NULL DEFAULT 0,
+      ${PartnerTable.outOfPocketInjections} REAL NOT NULL DEFAULT 0,
+      ${PartnerTable.reinvestedProfit} REAL NOT NULL DEFAULT 0,
+      ${PartnerTable.totalDrawings} REAL NOT NULL DEFAULT 0,
+      ${PartnerTable.permanentCapitalWithdrawals} REAL NOT NULL DEFAULT 0,
+      ${PartnerTable.unsettledProfit} REAL NOT NULL DEFAULT 0,
+      ${PartnerTable.activeDrawings} REAL NOT NULL DEFAULT 0,
+      ${PartnerTable.isActive} INTEGER NOT NULL DEFAULT 1,
+      ${PartnerTable.createdAt} TEXT NOT NULL DEFAULT '',
+      FOREIGN KEY (${PartnerTable.zamindarId})
+        REFERENCES ${ZamindarTable.name}(${ZamindarTable.id})
+        ON DELETE SET NULL
+    )
+  ''';
+
+  String _createPartnerDrawingsTable() =>
+      '''
+    CREATE TABLE IF NOT EXISTS ${PartnerDrawingTable.name} (
+      ${PartnerDrawingTable.id} INTEGER PRIMARY KEY AUTOINCREMENT,
+      ${PartnerDrawingTable.partnerId} INTEGER NOT NULL,
+      ${PartnerDrawingTable.amount} REAL NOT NULL,
+      ${PartnerDrawingTable.type} TEXT NOT NULL,
+      ${PartnerDrawingTable.date} TEXT NOT NULL,
+      ${PartnerDrawingTable.notes} TEXT,
+      ${PartnerDrawingTable.isSettled} INTEGER NOT NULL DEFAULT 0,
+      ${ActorColumns.createdByUserId} TEXT,
+      ${ActorColumns.createdByUserName} TEXT,
+      ${ActorColumns.createdAt} TEXT,
+      FOREIGN KEY (${PartnerDrawingTable.partnerId})
+        REFERENCES ${PartnerTable.name}(${PartnerTable.id})
+        ON DELETE CASCADE
+    )
+  ''';
+
+  String _createPartnerTransactionsTable() =>
+      '''
+    CREATE TABLE IF NOT EXISTS ${PartnerTransactionTable.name} (
+      ${PartnerTransactionTable.id} INTEGER PRIMARY KEY AUTOINCREMENT,
+      ${PartnerTransactionTable.partnerId} INTEGER NOT NULL,
+      ${PartnerTransactionTable.type} TEXT NOT NULL,
+      ${PartnerTransactionTable.amount} REAL NOT NULL,
+      ${PartnerTransactionTable.date} TEXT NOT NULL,
+      ${PartnerTransactionTable.paymentChannel} TEXT,
+      ${PartnerTransactionTable.reference} TEXT,
+      ${PartnerTransactionTable.notes} TEXT,
+      ${PartnerTransactionTable.seasonLabel} TEXT,
+      ${PartnerTransactionTable.equityPctBefore} REAL,
+      ${PartnerTransactionTable.equityPctAfter} REAL,
+      ${PartnerTransactionTable.invoiceNumber} TEXT,
+      ${ActorColumns.createdByUserId} TEXT,
+      ${ActorColumns.createdByUserName} TEXT,
+      ${ActorColumns.createdAt} TEXT,
+      FOREIGN KEY (${PartnerTransactionTable.partnerId})
+        REFERENCES ${PartnerTable.name}(${PartnerTable.id})
+        ON DELETE CASCADE
+    )
+  ''';
+
+  String _createArchivedSeasonsTable() =>
+      '''
+    CREATE TABLE IF NOT EXISTS ${ArchivedSeasonTable.name} (
+      ${ArchivedSeasonTable.seasonLabel} TEXT PRIMARY KEY,
+      ${ArchivedSeasonTable.archivedAt} TEXT NOT NULL,
+      ${ArchivedSeasonTable.notes} TEXT
+    )
+  ''';
+
+  String _createUsersTable() =>
+      '''
+    CREATE TABLE IF NOT EXISTS ${UserTable.name} (
+      ${UserTable.id} TEXT PRIMARY KEY,
+      ${UserTable.nameColumn} TEXT NOT NULL,
+      ${UserTable.phone} TEXT NOT NULL DEFAULT '',
+      ${UserTable.email} TEXT,
+      ${UserTable.role} TEXT NOT NULL,
+      ${UserTable.pinCode} TEXT NOT NULL,
+      ${UserTable.partnerId} TEXT,
+      ${UserTable.isActive} INTEGER NOT NULL DEFAULT 1,
+      ${UserTable.createdAt} TEXT NOT NULL
+    )
+  ''';
+
+  String _createAuditLogsTable() =>
+      '''
+    CREATE TABLE IF NOT EXISTS ${AuditLogTable.name} (
+      ${AuditLogTable.id} TEXT PRIMARY KEY,
+      ${AuditLogTable.userId} TEXT NOT NULL,
+      ${AuditLogTable.userName} TEXT NOT NULL,
+      ${AuditLogTable.actionType} TEXT NOT NULL,
+      ${AuditLogTable.referenceId} TEXT NOT NULL,
+      ${AuditLogTable.description} TEXT NOT NULL,
+      ${AuditLogTable.timestamp} TEXT NOT NULL
+    )
+  ''';
+
   Future<void> _backfillStockMovementsFromSales(Database db) async {
     final existing = await db.rawQuery(
       'SELECT COUNT(*) AS c FROM ${StockMovementTable.name}',
@@ -2774,7 +3318,10 @@ END
         s.${SalesTable.invoiceNumber} AS invoice_number,
         s.${SalesTable.dateTime} AS date_time,
         CASE
-          WHEN z.${ZamindarTable.id} IS NULL THEN 'Walk-in Customer'
+          WHEN z.${ZamindarTable.id} IS NULL THEN COALESCE(
+            NULLIF(TRIM(s.${SalesTable.remarks}), ''),
+            'Walk-in Customer'
+          )
           ELSE z.${ZamindarTable.nameColumn}
         END AS party_label
       FROM ${SaleItemsTable.name} si
@@ -3401,7 +3948,9 @@ END
 
   Future<int> insertProduct(ProductItem product) async {
     final db = await database;
-    final result = await db.insert(ProductTable.name, product.toMap());
+    final row = product.toMap();
+    _applyActorStamp(row);
+    final result = await db.insert(ProductTable.name, row);
     if (product.availableStock > 0) {
       await _insertStockMovement(
         db,
@@ -3413,6 +3962,13 @@ END
         dateTime: DateTime.now(),
       );
     }
+    final actor = SessionContext.currentUser;
+    await _writeAuditLog(
+      actionType: AuditActionType.addProduct,
+      referenceId: result.toString(),
+      description:
+          'Product "${product.name}" added by ${actor?.name ?? 'Unknown'} (${actor?.roleLabel ?? 'Staff'})',
+    );
     notifyListeners();
     return result;
   }
@@ -3513,6 +4069,8 @@ END
         ) AS kisaan_name,
         si.${SaleItemsTable.productName} AS product_name,
         si.${SaleItemsTable.quantity} AS quantity,
+        si.${SaleItemsTable.unitPrice} AS unit_price,
+        si.${SaleItemsTable.subtotal} AS line_total,
         COALESCE(NULLIF(TRIM(p.${ProductTable.uom}), ''), 'Bags') AS uom
       FROM ${SaleItemsTable.name} si
       INNER JOIN ${SalesTable.name} s
@@ -3547,6 +4105,8 @@ END
             kisaanName: kisaanRaw.isNotEmpty ? kisaanRaw : 'Self',
             productName: productName,
             quantity: (row['quantity'] as num?)?.round() ?? 0,
+            unitPrice: (row['unit_price'] as num?)?.round() ?? 0,
+            lineTotal: (row['line_total'] as num?)?.round() ?? 0,
             uom: uomRaw.isNotEmpty ? uomRaw : 'Bags',
           );
         })
@@ -3683,6 +4243,8 @@ END
         referenceType: row[StockMovementTable.referenceType] as String? ?? '',
         referenceId: row[StockMovementTable.referenceId] as String?,
         notes: row[StockMovementTable.notes] as String?,
+        createdByUserName:
+            row[ActorColumns.createdByUserName] as String?,
       );
     }).toList();
   }
@@ -3699,7 +4261,7 @@ END
     String? notes,
   }) async {
     if (quantity <= 0) return;
-    await txn.insert(StockMovementTable.name, {
+    final row = <String, Object?>{
       StockMovementTable.productId: productId,
       StockMovementTable.movementType: movementType,
       StockMovementTable.quantity: quantity,
@@ -3708,22 +4270,18 @@ END
       StockMovementTable.referenceId: referenceId,
       StockMovementTable.dateTime: _formatDateTime(dateTime),
       StockMovementTable.notes: notes,
-    });
+    };
+    _applyActorStamp(row);
+    await txn.insert(StockMovementTable.name, row);
   }
 
   Future<String> _resolveSalePartyLabel(
     DatabaseExecutor txn,
     String zamindarName,
   ) async {
-    final rows = await txn.query(
-      ZamindarTable.name,
-      columns: [ZamindarTable.id],
-      where: '${ZamindarTable.nameColumn} = ?',
-      whereArgs: [zamindarName],
-      limit: 1,
-    );
-    if (rows.isEmpty) return 'Walk-in Customer';
-    return zamindarName;
+    final trimmed = zamindarName.trim();
+    if (trimmed.isEmpty) return 'Walk-in Customer';
+    return trimmed;
   }
 
   // -----------------------------
@@ -3759,13 +4317,22 @@ END
     int? limit,
   }) async {
     final db = await database;
+    await _ensurePaymentEditAuditSchema(db);
     final limitClause = limit != null ? ' LIMIT $limit' : '';
     return db.rawQuery(
       '''
-      SELECT lt.*, k.${KisaanTable.nameColumn} AS kisaan_name
+      SELECT
+        lt.*,
+        k.${KisaanTable.nameColumn} AS kisaan_name,
+        p.${PaymentsTable.editedAt} AS payment_edited_at,
+        p.${PaymentsTable.editedBy} AS payment_edited_by,
+        p.${PaymentsTable.originalAmount} AS payment_original_amount,
+        p.${PaymentsTable.notes} AS payment_notes
       FROM ${LedgerTransactionTable.name} lt
       LEFT JOIN ${KisaanTable.name} k
         ON lt.${LedgerTransactionTable.kisaanId} = k.${KisaanTable.id}
+      LEFT JOIN ${PaymentsTable.name} p
+        ON p.${PaymentsTable.paymentId} = lt.${LedgerTransactionTable.paymentId}
       WHERE lt.${LedgerTransactionTable.zamindarId} = ?
       ORDER BY lt.${LedgerTransactionTable.dateTime} DESC$limitClause
     ''',
@@ -3895,20 +4462,7 @@ END
   /// Uses the same sales/payments aggregation as dashboard & balances.
   Future<int> getTotalPaymentsReceived(int zamindarId) async {
     final db = await database;
-    final zamindarRows = await db.query(
-      ZamindarTable.name,
-      columns: [ZamindarTable.nameColumn],
-      where: '${ZamindarTable.id} = ?',
-      whereArgs: [zamindarId],
-      limit: 1,
-    );
-    if (zamindarRows.isEmpty) return 0;
-    final zamindarName =
-        zamindarRows.first[ZamindarTable.nameColumn] as String? ?? '';
-    final totals = await _aggregateSalesBalancesForZamindarName(
-      db,
-      zamindarName,
-    );
+    final totals = await _aggregateSalesBalancesForZamindarId(db, zamindarId);
     return totals['totalPayments']!;
   }
 
@@ -4037,7 +4591,7 @@ END
 
     final zamindarRows = await db.query(
       ZamindarTable.name,
-      columns: [ZamindarTable.creditLimit, ZamindarTable.nameColumn],
+      columns: [ZamindarTable.creditLimit],
       where: '${ZamindarTable.id} = ?',
       whereArgs: [zamindarId],
       limit: 1,
@@ -4047,13 +4601,8 @@ END
 
     final creditLimit =
         (zamindarRows.first[ZamindarTable.creditLimit] as int?) ?? 0;
-    final zamindarName =
-        zamindarRows.first[ZamindarTable.nameColumn] as String? ?? '';
 
-    final totals = await _aggregateSalesBalancesForZamindarName(
-      db,
-      zamindarName,
-    );
+    final totals = await _aggregateSalesBalancesForZamindarId(db, zamindarId);
     final totalSales = totals['totalSales']!;
     final totalPayments = totals['totalPayments']!;
     final outstandingBalance = totals['outstandingBalance']!;
@@ -4091,6 +4640,177 @@ END
   Future<int> recalculateZamindarBalance(int zamindarId) async {
     final db = await database;
     return _recalculateZamindarBalanceOn(db, zamindarId);
+  }
+
+  /// Recalculates every zamindar outstanding cache from live invoice math.
+  Future<void> recalculateAllZamindarBalances() async {
+    final db = await database;
+    await _recalculateAllZamindarBalances(db);
+    notifyListeners();
+  }
+
+  /// Live outstanding for one zamindar (same formula as ledger KPIs).
+  Future<double> sumOutstandingForZamindar(int zamindarId) async {
+    final db = await database;
+    final totals = await _aggregateSalesBalancesForZamindarId(db, zamindarId);
+    return totals['outstandingBalance']!.toDouble();
+  }
+
+  Future<double> sumTotalReceivablesPublic() async {
+    final db = await database;
+    return _sumTotalReceivables(db);
+  }
+
+  Future<int> countOrphanLedgerRows() async {
+    final db = await database;
+    final rows = await db.rawQuery('''
+      SELECT COUNT(*) AS c FROM ${LedgerTransactionTable.name} lt
+      WHERE lt.${LedgerTransactionTable.invoiceNumber} IS NOT NULL
+        AND TRIM(lt.${LedgerTransactionTable.invoiceNumber}) != ''
+        AND NOT EXISTS (
+          SELECT 1 FROM ${SalesTable.name} s
+          WHERE s.${SalesTable.invoiceNumber}
+            = lt.${LedgerTransactionTable.invoiceNumber}
+        )
+    ''');
+    return (rows.first['c'] as num?)?.toInt() ?? 0;
+  }
+
+  Future<int> countOrphanPaymentRows() async {
+    final db = await database;
+    final rows = await db.rawQuery('''
+      SELECT COUNT(*) AS c FROM ${PaymentsTable.name} p
+      WHERE p.${PaymentsTable.invoiceNumber} IS NOT NULL
+        AND TRIM(p.${PaymentsTable.invoiceNumber}) != ''
+        AND NOT EXISTS (
+          SELECT 1 FROM ${SalesTable.name} s
+          WHERE s.${SalesTable.invoiceNumber}
+            = p.${PaymentsTable.invoiceNumber}
+        )
+    ''');
+    return (rows.first['c'] as num?)?.toInt() ?? 0;
+  }
+
+  Future<int> purgeOrphanFinancialRows() async {
+    final db = await database;
+    var purged = 0;
+    purged += await db.rawDelete('''
+      DELETE FROM ${LedgerTransactionTable.name}
+      WHERE ${LedgerTransactionTable.invoiceNumber} IS NOT NULL
+        AND TRIM(${LedgerTransactionTable.invoiceNumber}) != ''
+        AND NOT EXISTS (
+          SELECT 1 FROM ${SalesTable.name} s
+          WHERE s.${SalesTable.invoiceNumber}
+            = ${LedgerTransactionTable.name}.${LedgerTransactionTable.invoiceNumber}
+        )
+    ''');
+    purged += await db.rawDelete('''
+      DELETE FROM ${PaymentsTable.name}
+      WHERE ${PaymentsTable.invoiceNumber} IS NOT NULL
+        AND TRIM(${PaymentsTable.invoiceNumber}) != ''
+        AND NOT EXISTS (
+          SELECT 1 FROM ${SalesTable.name} s
+          WHERE s.${SalesTable.invoiceNumber}
+            = ${PaymentsTable.name}.${PaymentsTable.invoiceNumber}
+        )
+    ''');
+    if (purged > 0) notifyListeners();
+    return purged;
+  }
+
+  /// Returns `{drift, fixed}` counts for product stock vs movement ledger.
+  Future<Map<String, int>> auditProductStock({bool reconcile = false}) async {
+    final db = await database;
+    final products = await db.query(
+      ProductTable.name,
+      columns: [ProductTable.id, ProductTable.availableStock],
+    );
+    var drift = 0;
+    var fixed = 0;
+    for (final product in products) {
+      final id = product[ProductTable.id] as int;
+      final stock =
+          _readIntValue(product[ProductTable.availableStock]);
+      final movementCountRows = await db.rawQuery(
+        'SELECT COUNT(*) AS c FROM ${StockMovementTable.name} '
+        'WHERE ${StockMovementTable.productId} = ?',
+        [id],
+      );
+      final hasMovements =
+          ((movementCountRows.first['c'] as num?)?.toInt() ?? 0) > 0;
+      if (!hasMovements) continue;
+
+      final derivedRows = await db.rawQuery('''
+        SELECT COALESCE(SUM(
+          CASE
+            WHEN ${StockMovementTable.movementType} = ?
+              THEN ${StockMovementTable.quantity}
+            WHEN ${StockMovementTable.movementType} = ?
+              THEN -${StockMovementTable.quantity}
+            ELSE 0
+          END
+        ), 0) AS derived
+        FROM ${StockMovementTable.name}
+        WHERE ${StockMovementTable.productId} = ?
+      ''', [
+        StockMovementType.stockIn,
+        StockMovementType.stockOut,
+        id,
+      ]);
+      final derived =
+          ((derivedRows.first['derived'] as num?)?.toInt() ?? 0)
+              .clamp(0, 1 << 31);
+      if (stock != derived) {
+        drift++;
+        if (reconcile) {
+          await db.update(
+            ProductTable.name,
+            {ProductTable.availableStock: derived},
+            where: '${ProductTable.id} = ?',
+            whereArgs: [id],
+          );
+          fixed++;
+        }
+      }
+    }
+    if (fixed > 0) notifyListeners();
+    return {'drift': drift, 'fixed': fixed};
+  }
+
+  Future<Map<String, double>> auditWholesalerPayables() async {
+    final db = await database;
+    final storedRows = await db.rawQuery('''
+      SELECT COALESCE(SUM(${WholesalerTable.balance}), 0) AS total
+      FROM ${WholesalerTable.name}
+      WHERE ${WholesalerTable.balance} > 0
+        AND (${WholesalerTable.isActive} IS NULL
+             OR ${WholesalerTable.isActive} = 1)
+    ''');
+    final liveRows = await db.rawQuery('''
+      SELECT COALESCE(SUM(${PurchaseInvoicesTable.outstanding}), 0) AS total
+      FROM ${PurchaseInvoicesTable.name}
+      WHERE ${PurchaseInvoicesTable.outstanding} > 0.005
+    ''');
+    return {
+      'stored': (storedRows.first['total'] as num?)?.toDouble() ?? 0,
+      'live': (liveRows.first['total'] as num?)?.toDouble() ?? 0,
+    };
+  }
+
+  Future<Map<String, double>> sumLedgerDebitCredit() async {
+    final db = await database;
+    final rows = await db.rawQuery('''
+      SELECT
+        COALESCE(SUM(CASE WHEN ${LedgerTransactionTable.type} = 'DEBIT'
+          THEN ${LedgerTransactionTable.amount} ELSE 0 END), 0) AS debits,
+        COALESCE(SUM(CASE WHEN ${LedgerTransactionTable.type} = 'CREDIT'
+          THEN ${LedgerTransactionTable.amount} ELSE 0 END), 0) AS credits
+      FROM ${LedgerTransactionTable.name}
+    ''');
+    return {
+      'debits': (rows.first['debits'] as num?)?.toDouble() ?? 0,
+      'credits': (rows.first['credits'] as num?)?.toDouble() ?? 0,
+    };
   }
 
   Future<int> _recalculateZamindarBalanceOn(
@@ -4380,10 +5100,12 @@ END
   // Wholesalers
   // ---------------------------------------------------------------------------
 
-  Future<List<DbWholesaler>> getAllWholesalers() async {
+  Future<List<DbWholesaler>> getAllWholesalers({bool includeArchived = false}) async {
     final db = await database;
+    await _ensureWholesalerProfileSchema(db);
     final maps = await db.query(
       WholesalerTable.name,
+      where: includeArchived ? null : '${WholesalerTable.isActive} = 1',
       orderBy: '${WholesalerTable.nameColumn} COLLATE NOCASE ASC',
     );
     return maps.map(DbWholesaler.fromMap).toList();
@@ -4429,6 +5151,7 @@ END
       throw ArgumentError('Wholesaler id is required for update');
     }
     final db = await database;
+    await _ensureWholesalerProfileSchema(db);
     final result = await db.update(
       WholesalerTable.name,
       wholesaler.toMap(),
@@ -4437,6 +5160,22 @@ END
     );
     notifyListeners();
     return result;
+  }
+
+  /// Soft-archives a wholesaler so they disappear from the active directory.
+  Future<void> archiveWholesaler(int wholesalerId) async {
+    final db = await database;
+    await _ensureWholesalerProfileSchema(db);
+    final updated = await db.update(
+      WholesalerTable.name,
+      {WholesalerTable.isActive: 0},
+      where: '${WholesalerTable.id} = ?',
+      whereArgs: [wholesalerId],
+    );
+    if (updated == 0) {
+      throw StateError('Wholesaler $wholesalerId not found');
+    }
+    notifyListeners();
   }
 
   /// Inserts a shop operating expense with the current timestamp.
@@ -4455,12 +5194,21 @@ END
 
     final db = await database;
     await _ensureExpensesSchema(db);
-    final id = await db.insert(ExpenseTable.name, {
+    final row = <String, Object?>{
       ExpenseTable.category: trimmedCategory,
       ExpenseTable.amount: amount,
       ExpenseTable.remarks: remarks.trim(),
       ExpenseTable.expenseDate: _formatDateTime(DateTime.now()),
-    });
+    };
+    _applyActorStamp(row);
+    final id = await db.insert(ExpenseTable.name, row);
+    final actor = SessionContext.currentUser;
+    await _writeAuditLog(
+      actionType: AuditActionType.recordExpense,
+      referenceId: id.toString(),
+      description:
+          'Expense "$trimmedCategory" recorded by ${actor?.name ?? 'Unknown'} (${actor?.roleLabel ?? 'Staff'})',
+    );
     notifyListeners();
     return id;
   }
@@ -4501,6 +5249,589 @@ END
           '${ExpenseTable.expenseDate} DESC, ${ExpenseTable.id} DESC',
     );
     return maps.map(DbExpense.fromMap).toList();
+  }
+
+  /// Expenses with [ExpenseTable.expenseDate] inside `[start, end]` inclusive.
+  Future<List<DbExpense>> getExpensesInRange({
+    required DateTime start,
+    required DateTime end,
+  }) async {
+    final db = await database;
+    await _ensureExpensesSchema(db);
+    final maps = await db.query(
+      ExpenseTable.name,
+      where:
+          '${ExpenseTable.expenseDate} >= ? AND ${ExpenseTable.expenseDate} <= ?',
+      whereArgs: [_formatDateTime(start), _formatDateTime(end)],
+      orderBy:
+          '${ExpenseTable.expenseDate} DESC, ${ExpenseTable.id} DESC',
+    );
+    return maps.map(DbExpense.fromMap).toList();
+  }
+
+  Future<bool> isSeasonArchived(String seasonLabel) async {
+    final label = seasonLabel.trim();
+    if (label.isEmpty) return false;
+    final db = await database;
+    await _ensureArchivedSeasonsSchema(db);
+    final rows = await db.query(
+      ArchivedSeasonTable.name,
+      columns: [ArchivedSeasonTable.seasonLabel],
+      where: '${ArchivedSeasonTable.seasonLabel} = ?',
+      whereArgs: [label],
+      limit: 1,
+    );
+    return rows.isNotEmpty;
+  }
+
+  Future<void> archiveSeason(String seasonLabel, {String? notes}) async {
+    final label = seasonLabel.trim();
+    if (label.isEmpty) {
+      throw ArgumentError('Season label is required to archive');
+    }
+    final db = await database;
+    await _ensureArchivedSeasonsSchema(db);
+    await db.insert(
+      ArchivedSeasonTable.name,
+      {
+        ArchivedSeasonTable.seasonLabel: label,
+        ArchivedSeasonTable.archivedAt: _formatDateTime(DateTime.now()),
+        ArchivedSeasonTable.notes: notes,
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+  }
+
+  Future<void> assertSeasonEditable(String? seasonLabel) async {
+    final label = (seasonLabel ?? '').trim();
+    if (label.isEmpty) return;
+    if (await isSeasonArchived(label)) {
+      throw StateError(
+        'Season "$label" is locked & archived. '
+        'Past invoices for this closed season cannot be edited.',
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Users & audit footprints
+  // ---------------------------------------------------------------------------
+
+  Future<bool> hasAnyUsers() async {
+    final db = await database;
+    await _ensureUserAuthSchema(db);
+    final rows = await db.rawQuery(
+      'SELECT COUNT(*) AS c FROM ${UserTable.name}',
+    );
+    return ((rows.first['c'] as num?)?.toInt() ?? 0) > 0;
+  }
+
+  /// True when an active Owner row exists (gates first-launch onboarding).
+  Future<bool> hasOwner() async {
+    final db = await database;
+    await _ensureUserAuthSchema(db);
+    final rows = await db.rawQuery(
+      'SELECT COUNT(*) AS c FROM ${UserTable.name} '
+      'WHERE ${UserTable.role} = ? AND ${UserTable.isActive} = 1',
+      [UserRole.owner],
+    );
+    return ((rows.first['c'] as num?)?.toInt() ?? 0) > 0;
+  }
+
+  Future<UserModel?> getOwnerUser() async {
+    final db = await database;
+    await _ensureUserAuthSchema(db);
+    final maps = await db.query(
+      UserTable.name,
+      where: '${UserTable.role} = ? AND ${UserTable.isActive} = 1',
+      whereArgs: [UserRole.owner],
+      orderBy: '${UserTable.createdAt} ASC',
+      limit: 1,
+    );
+    if (maps.isEmpty) return null;
+    return UserModel.fromMap(maps.first);
+  }
+
+  Future<List<UserModel>> getUsers() async {
+    final db = await database;
+    await _ensureUserAuthSchema(db);
+    final maps = await db.query(
+      UserTable.name,
+      orderBy: '''
+        CASE ${UserTable.role}
+          WHEN '${UserRole.owner}' THEN 0
+          WHEN '${UserRole.partner}' THEN 1
+          WHEN '${UserRole.manager}' THEN 2
+          ELSE 3
+        END,
+        ${UserTable.nameColumn} COLLATE NOCASE ASC
+      ''',
+    );
+    return maps.map(UserModel.fromMap).toList();
+  }
+
+  Future<UserModel?> getUserById(String id) async {
+    final db = await database;
+    await _ensureUserAuthSchema(db);
+    final maps = await db.query(
+      UserTable.name,
+      where: '${UserTable.id} = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (maps.isEmpty) return null;
+    return UserModel.fromMap(maps.first);
+  }
+
+  Future<UserModel?> findUserByPin(String pinCode) async {
+    final db = await database;
+    await _ensureUserAuthSchema(db);
+    final maps = await db.query(
+      UserTable.name,
+      where: '${UserTable.pinCode} = ? AND ${UserTable.isActive} = 1',
+      whereArgs: [pinCode],
+      limit: 1,
+    );
+    if (maps.isEmpty) return null;
+    return UserModel.fromMap(maps.first);
+  }
+
+  Future<bool> isPinInUse(String pinCode, {String? excludeUserId}) async {
+    final db = await database;
+    await _ensureUserAuthSchema(db);
+    final maps = await db.query(
+      UserTable.name,
+      columns: [UserTable.id],
+      where: excludeUserId == null
+          ? '${UserTable.pinCode} = ?'
+          : '${UserTable.pinCode} = ? AND ${UserTable.id} != ?',
+      whereArgs: excludeUserId == null ? [pinCode] : [pinCode, excludeUserId],
+      limit: 1,
+    );
+    return maps.isNotEmpty;
+  }
+
+  Future<UserModel> insertUser(UserModel user) async {
+    final db = await database;
+    await _ensureUserAuthSchema(db);
+    if (await isPinInUse(user.pinCode)) {
+      throw StateError('This PIN is already assigned to another account');
+    }
+    await db.insert(UserTable.name, user.toMap());
+    notifyListeners();
+    return user;
+  }
+
+  Future<UserModel> updateUser(UserModel user) async {
+    final db = await database;
+    await _ensureUserAuthSchema(db);
+    if (await isPinInUse(user.pinCode, excludeUserId: user.id)) {
+      throw StateError('This PIN is already assigned to another account');
+    }
+    await db.update(
+      UserTable.name,
+      user.toMap(),
+      where: '${UserTable.id} = ?',
+      whereArgs: [user.id],
+    );
+    notifyListeners();
+    return user;
+  }
+
+  Future<void> setUserActive(String userId, bool isActive) async {
+    final db = await database;
+    await _ensureUserAuthSchema(db);
+    final existing = await getUserById(userId);
+    if (existing == null) return;
+    if (existing.isOwner && !isActive) {
+      throw StateError('The Owner account cannot be deactivated');
+    }
+    await db.update(
+      UserTable.name,
+      {UserTable.isActive: isActive ? 1 : 0},
+      where: '${UserTable.id} = ?',
+      whereArgs: [userId],
+    );
+    notifyListeners();
+  }
+
+  Future<List<AuditLogModel>> getAuditLogsForUser(
+    String userId, {
+    int limit = 50,
+  }) async {
+    final db = await database;
+    await _ensureUserAuthSchema(db);
+    final maps = await db.query(
+      AuditLogTable.name,
+      where: '${AuditLogTable.userId} = ?',
+      whereArgs: [userId],
+      orderBy: '${AuditLogTable.timestamp} DESC',
+      limit: limit,
+    );
+    return maps.map(AuditLogModel.fromMap).toList();
+  }
+
+  Future<AuditLogModel?> getLatestAuditLogForUser(String userId) async {
+    final logs = await getAuditLogsForUser(userId, limit: 1);
+    return logs.isEmpty ? null : logs.first;
+  }
+
+  Future<Map<String, AuditLogModel?>> getLatestAuditLogsByUserIds(
+    List<String> userIds,
+  ) async {
+    final result = <String, AuditLogModel?>{
+      for (final id in userIds) id: null,
+    };
+    if (userIds.isEmpty) return result;
+    final db = await database;
+    await _ensureUserAuthSchema(db);
+    final placeholders = List.filled(userIds.length, '?').join(',');
+    final maps = await db.rawQuery(
+      '''
+      SELECT a.*
+      FROM ${AuditLogTable.name} a
+      INNER JOIN (
+        SELECT ${AuditLogTable.userId} AS uid, MAX(${AuditLogTable.timestamp}) AS max_ts
+        FROM ${AuditLogTable.name}
+        WHERE ${AuditLogTable.userId} IN ($placeholders)
+        GROUP BY ${AuditLogTable.userId}
+      ) latest
+        ON latest.uid = a.${AuditLogTable.userId}
+       AND latest.max_ts = a.${AuditLogTable.timestamp}
+      ''',
+      userIds,
+    );
+    for (final map in maps) {
+      final log = AuditLogModel.fromMap(map);
+      result[log.userId] = log;
+    }
+    return result;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Partners & equity drawings
+  // ---------------------------------------------------------------------------
+
+  Future<List<PartnerModel>> getPartners({bool activeOnly = false}) async {
+    final db = await database;
+    await _ensurePartnerSchema(db);
+    final maps = await db.query(
+      PartnerTable.name,
+      where: activeOnly ? '${PartnerTable.isActive} = 1' : null,
+      orderBy: '${PartnerTable.nameColumn} COLLATE NOCASE ASC',
+    );
+    return maps.map(PartnerModel.fromMap).toList();
+  }
+
+  Future<PartnerModel?> getPartnerById(String id) async {
+    final parsed = int.tryParse(id);
+    if (parsed == null) return null;
+    final db = await database;
+    await _ensurePartnerSchema(db);
+    final maps = await db.query(
+      PartnerTable.name,
+      where: '${PartnerTable.id} = ?',
+      whereArgs: [parsed],
+      limit: 1,
+    );
+    if (maps.isEmpty) return null;
+    return PartnerModel.fromMap(maps.first);
+  }
+
+  Future<PartnerModel?> getPartnerByZamindarId(String zamindarId) async {
+    final parsed = int.tryParse(zamindarId);
+    if (parsed == null) return null;
+    final db = await database;
+    await _ensurePartnerSchema(db);
+    final maps = await db.query(
+      PartnerTable.name,
+      where:
+          '${PartnerTable.zamindarId} = ? AND ${PartnerTable.isActive} = 1',
+      whereArgs: [parsed],
+      limit: 1,
+    );
+    if (maps.isEmpty) return null;
+    return PartnerModel.fromMap(maps.first);
+  }
+
+  Future<PartnerModel> insertPartner(PartnerModel partner) async {
+    final name = partner.name.trim();
+    if (name.isEmpty) {
+      throw ArgumentError('Partner name is required');
+    }
+    if (partner.initialCapital < 0) {
+      throw ArgumentError('Initial capital cannot be negative');
+    }
+
+    final db = await database;
+    await _ensurePartnerSchema(db);
+    final id = await db.insert(PartnerTable.name, {
+      PartnerTable.nameColumn: name,
+      PartnerTable.phone: partner.phone.trim(),
+      PartnerTable.userAccountId: partner.userAccountId,
+      PartnerTable.zamindarId: partner.zamindarId == null
+          ? null
+          : int.tryParse(partner.zamindarId!),
+      PartnerTable.initialCapital: partner.initialCapital,
+      PartnerTable.outOfPocketInjections: partner.outOfPocketInjections,
+      PartnerTable.reinvestedProfit: partner.reinvestedProfit,
+      PartnerTable.totalDrawings: partner.totalDrawings,
+      PartnerTable.permanentCapitalWithdrawals:
+          partner.permanentCapitalWithdrawals,
+      PartnerTable.unsettledProfit: partner.unsettledProfit,
+      PartnerTable.activeDrawings: partner.activeDrawings,
+      PartnerTable.isActive: partner.isActive ? 1 : 0,
+      PartnerTable.createdAt: _formatDateTime(partner.createdAt),
+    });
+    notifyListeners();
+    return partner.copyWith(id: id.toString());
+  }
+
+  Future<PartnerModel> updatePartner(PartnerModel partner) async {
+    final parsed = int.tryParse(partner.id);
+    if (parsed == null) {
+      throw ArgumentError('Invalid partner id');
+    }
+    final db = await database;
+    await _ensurePartnerSchema(db);
+    await db.update(
+      PartnerTable.name,
+      {
+        PartnerTable.nameColumn: partner.name.trim(),
+        PartnerTable.phone: partner.phone.trim(),
+        PartnerTable.userAccountId: partner.userAccountId,
+        PartnerTable.zamindarId: partner.zamindarId == null
+            ? null
+            : int.tryParse(partner.zamindarId!),
+        PartnerTable.initialCapital: partner.initialCapital,
+        PartnerTable.outOfPocketInjections: partner.outOfPocketInjections,
+        PartnerTable.reinvestedProfit: partner.reinvestedProfit,
+        PartnerTable.totalDrawings: partner.totalDrawings,
+        PartnerTable.permanentCapitalWithdrawals:
+            partner.permanentCapitalWithdrawals,
+        PartnerTable.unsettledProfit: partner.unsettledProfit,
+        PartnerTable.activeDrawings: partner.activeDrawings,
+        PartnerTable.isActive: partner.isActive ? 1 : 0,
+        PartnerTable.createdAt: _formatDateTime(partner.createdAt),
+      },
+      where: '${PartnerTable.id} = ?',
+      whereArgs: [parsed],
+    );
+    notifyListeners();
+    return partner;
+  }
+
+  Future<PartnerTransactionModel> insertPartnerTransaction({
+    required String partnerId,
+    required String type,
+    required double amount,
+    required DateTime date,
+    String? paymentChannel,
+    String? reference,
+    String? notes,
+    String? seasonLabel,
+    double? equityPctBefore,
+    double? equityPctAfter,
+    String? invoiceNumber,
+  }) async {
+    final pid = int.tryParse(partnerId);
+    if (pid == null) throw ArgumentError('Invalid partner id');
+    final db = await database;
+    await _ensurePartnerSchema(db);
+    final row = <String, Object?>{
+      PartnerTransactionTable.partnerId: pid,
+      PartnerTransactionTable.type: type,
+      PartnerTransactionTable.amount: amount,
+      PartnerTransactionTable.date: _formatDateTime(date),
+      PartnerTransactionTable.paymentChannel: paymentChannel,
+      PartnerTransactionTable.reference: reference,
+      PartnerTransactionTable.notes: notes,
+      PartnerTransactionTable.seasonLabel: seasonLabel,
+      PartnerTransactionTable.equityPctBefore: equityPctBefore,
+      PartnerTransactionTable.equityPctAfter: equityPctAfter,
+      PartnerTransactionTable.invoiceNumber: invoiceNumber,
+    };
+    _applyActorStamp(row);
+    final id = await db.insert(PartnerTransactionTable.name, row);
+    notifyListeners();
+    return PartnerTransactionModel(
+      id: id.toString(),
+      partnerId: partnerId,
+      type: type,
+      amount: amount,
+      date: date,
+      paymentChannel: paymentChannel,
+      reference: reference,
+      notes: notes,
+      seasonLabel: seasonLabel,
+      equityPctBefore: equityPctBefore,
+      equityPctAfter: equityPctAfter,
+      invoiceNumber: invoiceNumber,
+      createdByUserId: SessionContext.userId ?? '',
+      createdByUserName: SessionContext.footprintLabel ?? '',
+      createdAt: DateTime.now(),
+    );
+  }
+
+  Future<List<PartnerTransactionModel>> getPartnerTransactions({
+    String? type,
+    String? partnerId,
+  }) async {
+    final db = await database;
+    await _ensurePartnerSchema(db);
+    final where = <String>[];
+    final args = <Object?>[];
+    if (type != null) {
+      where.add('${PartnerTransactionTable.type} = ?');
+      args.add(type);
+    }
+    if (partnerId != null) {
+      where.add('${PartnerTransactionTable.partnerId} = ?');
+      args.add(int.tryParse(partnerId));
+    }
+    final maps = await db.query(
+      PartnerTransactionTable.name,
+      where: where.isEmpty ? null : where.join(' AND '),
+      whereArgs: args.isEmpty ? null : args,
+      orderBy:
+          '${PartnerTransactionTable.date} DESC, ${PartnerTransactionTable.id} DESC',
+    );
+    return maps.map(PartnerTransactionModel.fromMap).toList();
+  }
+
+  Future<PartnerDrawingModel> recordPartnerDrawing({
+    required String partnerId,
+    required double amount,
+    required String type,
+    String? notes,
+    DateTime? date,
+  }) async {
+    if (amount <= 0) {
+      throw ArgumentError('Drawing amount must be greater than zero');
+    }
+    final normalized = type.toUpperCase();
+    if (normalized != PartnerDrawingType.taken &&
+        normalized != PartnerDrawingType.returned) {
+      throw ArgumentError('Drawing type must be TAKEN or RETURNED');
+    }
+
+    final partner = await getPartnerById(partnerId);
+    if (partner == null) {
+      throw StateError('Partner not found');
+    }
+
+    final db = await database;
+    await _ensurePartnerSchema(db);
+    final when = date ?? DateTime.now();
+    final drawingRow = <String, Object?>{
+      PartnerDrawingTable.partnerId: int.parse(partnerId),
+      PartnerDrawingTable.amount: amount,
+      PartnerDrawingTable.type: normalized,
+      PartnerDrawingTable.date: _formatDateTime(when),
+      PartnerDrawingTable.notes: notes?.trim(),
+      PartnerDrawingTable.isSettled: 0,
+    };
+    _applyActorStamp(drawingRow);
+    final drawingId = await db.insert(PartnerDrawingTable.name, drawingRow);
+
+    final delta =
+        normalized == PartnerDrawingType.taken ? amount : -amount;
+    final nextDrawings = partner.activeDrawings + delta;
+    final nextTotal = normalized == PartnerDrawingType.taken
+        ? partner.totalDrawings + amount
+        : (partner.totalDrawings - amount).clamp(0, double.infinity);
+    await db.update(
+      PartnerTable.name,
+      {
+        PartnerTable.activeDrawings: nextDrawings < 0 ? 0 : nextDrawings,
+        PartnerTable.totalDrawings: nextTotal,
+      },
+      where: '${PartnerTable.id} = ?',
+      whereArgs: [int.parse(partnerId)],
+    );
+    final actor = SessionContext.currentUser;
+    await _writeAuditLog(
+      actionType: AuditActionType.drawingEntry,
+      referenceId: drawingId.toString(),
+      description:
+          'Drawing $normalized for ${partner.name} by ${actor?.name ?? 'Unknown'} (${actor?.roleLabel ?? 'Staff'})',
+    );
+    notifyListeners();
+
+    return PartnerDrawingModel(
+      id: drawingId.toString(),
+      partnerId: partnerId,
+      amount: amount,
+      type: normalized,
+      date: when,
+      notes: notes?.trim(),
+      createdByUserId:
+          drawingRow[ActorColumns.createdByUserId]?.toString() ?? '',
+      createdByUserName:
+          drawingRow[ActorColumns.createdByUserName] as String? ?? '',
+      createdAt: DateTime.tryParse(
+            drawingRow[ActorColumns.createdAt] as String? ?? '',
+          ) ??
+          when,
+    );
+  }
+
+  Future<void> settlePartnerDrawing(String drawingId) async {
+    final parsed = int.tryParse(drawingId);
+    if (parsed == null) return;
+    final db = await database;
+    await _ensurePartnerSchema(db);
+
+    final rows = await db.query(
+      PartnerDrawingTable.name,
+      where: '${PartnerDrawingTable.id} = ?',
+      whereArgs: [parsed],
+      limit: 1,
+    );
+    if (rows.isEmpty) return;
+    final drawing = PartnerDrawingModel.fromMap(rows.first);
+    if (drawing.isSettled) return;
+
+    await db.update(
+      PartnerDrawingTable.name,
+      {PartnerDrawingTable.isSettled: 1},
+      where: '${PartnerDrawingTable.id} = ?',
+      whereArgs: [parsed],
+    );
+
+    // Settling a TAKEN drawing clears that amount from active drawings debt.
+    if (drawing.isTaken) {
+      final partner = await getPartnerById(drawing.partnerId);
+      if (partner != null) {
+        final next = partner.activeDrawings - drawing.amount;
+        await db.update(
+          PartnerTable.name,
+          {
+            PartnerTable.activeDrawings: next < 0 ? 0 : next,
+          },
+          where: '${PartnerTable.id} = ?',
+          whereArgs: [int.parse(drawing.partnerId)],
+        );
+      }
+    }
+    notifyListeners();
+  }
+
+  Future<List<PartnerDrawingModel>> getPartnerDrawings({
+    String? partnerId,
+  }) async {
+    final db = await database;
+    await _ensurePartnerSchema(db);
+    final maps = await db.query(
+      PartnerDrawingTable.name,
+      where: partnerId == null
+          ? null
+          : '${PartnerDrawingTable.partnerId} = ?',
+      whereArgs: partnerId == null ? null : [int.tryParse(partnerId)],
+      orderBy:
+          '${PartnerDrawingTable.date} DESC, ${PartnerDrawingTable.id} DESC',
+    );
+    return maps.map(PartnerDrawingModel.fromMap).toList();
   }
 
   // ---------------------------------------------------------------------------
@@ -4715,14 +6046,16 @@ END
     final note = remarks.trim().isEmpty
         ? 'Kharchi/Advance — ${employee.name}'
         : 'Kharchi/Advance — ${employee.name}: ${remarks.trim()}';
-    final id = await db.insert(ExpenseTable.name, {
+    final row = <String, Object?>{
       ExpenseTable.category: 'Employee Salaries',
       ExpenseTable.amount: amount,
       ExpenseTable.remarks: note,
       ExpenseTable.expenseDate: _formatDateTime(date ?? DateTime.now()),
       ExpenseTable.employeeId: employeeId,
       ExpenseTable.payrollType: ExpensePayrollType.kharchi,
-    });
+    };
+    _applyActorStamp(row);
+    final id = await db.insert(ExpenseTable.name, row);
     notifyListeners();
     return id;
   }
@@ -4751,7 +6084,7 @@ END
     late final int expenseId;
     await db.transaction((txn) async {
       // Amount can be 0 when advances already covered earnings.
-      expenseId = await txn.insert(ExpenseTable.name, {
+      final row = <String, Object?>{
         ExpenseTable.category: 'Employee Salaries',
         ExpenseTable.amount: net > 0 ? net : 0,
         ExpenseTable.remarks:
@@ -4760,7 +6093,9 @@ END
         ExpenseTable.expenseDate: _formatDateTime(DateTime.now()),
         ExpenseTable.employeeId: employeeId,
         ExpenseTable.payrollType: ExpensePayrollType.settlement,
-      });
+      };
+      _applyActorStamp(row);
+      expenseId = await txn.insert(ExpenseTable.name, row);
     });
     notifyListeners();
     return expenseId;
@@ -5204,6 +6539,174 @@ END
     notifyListeners();
   }
 
+  /// Updates a manual khata payment (amount / date / method / notes / receipt).
+  /// Restores or deducts vendor balance by the amount delta and syncs ledger.
+  Future<void> updateWholesalerPayment({
+    required int paymentId,
+    required double amount,
+    required String method,
+    required DateTime date,
+    String notes = '',
+    String? referenceNo,
+  }) async {
+    if (amount <= 0) {
+      throw ArgumentError('Payment amount must be greater than zero');
+    }
+
+    final db = await database;
+    await _ensureWholesalerPaymentsSchema(db);
+    await db.transaction((txn) async {
+      final rows = await txn.query(
+        WholesalerPaymentsTable.name,
+        where: '${WholesalerPaymentsTable.id} = ?',
+        whereArgs: [paymentId],
+        limit: 1,
+      );
+      if (rows.isEmpty) {
+        throw StateError('Payment $paymentId not found');
+      }
+      final row = rows.first;
+      final source =
+          row[WholesalerPaymentsTable.paymentSource] as String? ?? '';
+      if (source != WholesalerPaymentSource.manualKhataPayment) {
+        throw StateError(
+          'Only manual khata payments can be edited. '
+          'Edit the linked purchase invoice instead.',
+        );
+      }
+
+      final wholesalerId = row[WholesalerPaymentsTable.wholesalerId] as int;
+      final oldAmount =
+          (row[WholesalerPaymentsTable.amount] as num?)?.toDouble() ?? 0;
+      final oldRef =
+          row[WholesalerPaymentsTable.referenceNo] as String? ?? '';
+      final newRef = (referenceNo ?? oldRef).trim().isEmpty
+          ? oldRef
+          : referenceNo!.trim();
+      final delta = amount - oldAmount;
+
+      final balanceRows = await txn.query(
+        WholesalerTable.name,
+        columns: [WholesalerTable.balance],
+        where: '${WholesalerTable.id} = ?',
+        whereArgs: [wholesalerId],
+        limit: 1,
+      );
+      if (balanceRows.isEmpty) {
+        throw StateError('Wholesaler $wholesalerId not found');
+      }
+      final current =
+          (balanceRows.first[WholesalerTable.balance] as num?)?.toDouble() ??
+              0;
+      final newBalance = (current - delta).clamp(0.0, double.infinity);
+
+      await txn.rawUpdate(
+        'UPDATE ${WholesalerTable.name} '
+        'SET ${WholesalerTable.balance} = ? '
+        'WHERE ${WholesalerTable.id} = ?',
+        [newBalance, wholesalerId],
+      );
+
+      await txn.update(
+        WholesalerPaymentsTable.name,
+        {
+          WholesalerPaymentsTable.amount: amount.round(),
+          WholesalerPaymentsTable.paymentMethod: method,
+          WholesalerPaymentsTable.referenceNo: newRef.isEmpty ? null : newRef,
+          WholesalerPaymentsTable.date: _formatDateTime(date),
+          WholesalerPaymentsTable.notes: notes.trim().isEmpty
+              ? null
+              : notes.trim(),
+        },
+        where: '${WholesalerPaymentsTable.id} = ?',
+        whereArgs: [paymentId],
+      );
+
+      // No UPDATE trigger — sync ledger credit row in place.
+      await txn.delete(
+        WholesalerLedgerTable.name,
+        where:
+            '${WholesalerLedgerTable.wholesalerId} = ? AND '
+            '${WholesalerLedgerTable.referenceId} = ? AND '
+            '${WholesalerLedgerTable.transactionType} = ?',
+        whereArgs: [
+          wholesalerId,
+          oldRef,
+          WholesalerLedgerTxnType.payment,
+        ],
+      );
+      await _insertWholesalerLedgerEntry(
+        txn,
+        wholesalerId: wholesalerId,
+        transactionType: WholesalerLedgerTxnType.payment,
+        referenceId: newRef.isEmpty ? null : newRef,
+        date: date,
+        debit: 0,
+        credit: amount,
+        description: notes,
+      );
+    });
+
+    notifyListeners();
+  }
+
+  /// Deletes a manual khata payment and restores the amount to outstanding.
+  Future<void> deleteWholesalerPayment(int paymentId) async {
+    final db = await database;
+    await _ensureWholesalerPaymentsSchema(db);
+    await db.transaction((txn) async {
+      final rows = await txn.query(
+        WholesalerPaymentsTable.name,
+        where: '${WholesalerPaymentsTable.id} = ?',
+        whereArgs: [paymentId],
+        limit: 1,
+      );
+      if (rows.isEmpty) return;
+
+      final row = rows.first;
+      final source =
+          row[WholesalerPaymentsTable.paymentSource] as String? ?? '';
+      if (source != WholesalerPaymentSource.manualKhataPayment) {
+        throw StateError(
+          'Cash purchase outlay payments are reversed by deleting '
+          'the linked purchase invoice.',
+        );
+      }
+
+      final wholesalerId = row[WholesalerPaymentsTable.wholesalerId] as int;
+      final amount =
+          (row[WholesalerPaymentsTable.amount] as num?)?.toDouble() ?? 0;
+
+      final balanceRows = await txn.query(
+        WholesalerTable.name,
+        columns: [WholesalerTable.balance],
+        where: '${WholesalerTable.id} = ?',
+        whereArgs: [wholesalerId],
+        limit: 1,
+      );
+      if (balanceRows.isNotEmpty) {
+        final current =
+            (balanceRows.first[WholesalerTable.balance] as num?)?.toDouble() ??
+                0;
+        await txn.rawUpdate(
+          'UPDATE ${WholesalerTable.name} '
+          'SET ${WholesalerTable.balance} = ? '
+          'WHERE ${WholesalerTable.id} = ?',
+          [current + amount, wholesalerId],
+        );
+      }
+
+      // after_wholesaler_payment_delete purges the ledger credit row.
+      await txn.delete(
+        WholesalerPaymentsTable.name,
+        where: '${WholesalerPaymentsTable.id} = ?',
+        whereArgs: [paymentId],
+      );
+    });
+
+    notifyListeners();
+  }
+
   // ---------------------------------------------------------------------------
   // Purchase invoices
   // ---------------------------------------------------------------------------
@@ -5273,7 +6776,7 @@ END
     await _ensureWholesalerPaymentsSchema(db);
     await db.transaction((txn) async {
       // 1) Header — trigger syncs wholesaler_ledger + vendor balance.
-      await txn.insert(PurchaseInvoicesTable.name, {
+      final purchaseRow = <String, Object?>{
         PurchaseInvoicesTable.invoiceNumber: invoiceNumber,
         PurchaseInvoicesTable.wholesalerId: wholesalerId,
         PurchaseInvoicesTable.dateTime: _formatDateTime(dateTime),
@@ -5285,7 +6788,9 @@ END
         PurchaseInvoicesTable.outstanding: outstanding.round(),
         if (trimmedDescription.isNotEmpty)
           PurchaseInvoicesTable.description: trimmedDescription,
-      });
+      };
+      _applyActorStamp(purchaseRow);
+      await txn.insert(PurchaseInvoicesTable.name, purchaseRow);
 
       // 2) Line items + 3) inventory + 4) stock audit log.
       for (final item in items) {
@@ -5351,6 +6856,13 @@ END
       }
     });
 
+    final actor = SessionContext.currentUser;
+    await _writeAuditLog(
+      actionType: AuditActionType.purchaseEntry,
+      referenceId: invoiceNumber,
+      description:
+          'Purchase $invoiceNumber created by ${actor?.name ?? 'Unknown'} (${actor?.roleLabel ?? 'Staff'})',
+    );
     notifyListeners();
     return invoiceNumber;
   }
@@ -5660,7 +7172,11 @@ END
       '''
       SELECT
         s.*,
-        z.${ZamindarTable.nameColumn} AS ${SalesTable.zamindarName},
+        COALESCE(
+          z.${ZamindarTable.nameColumn},
+          NULLIF(TRIM(s.${SalesTable.remarks}), ''),
+          'Walk-in Customer'
+        ) AS ${SalesTable.zamindarName},
         k.${KisaanTable.nameColumn} AS ${SalesTable.kisaanName}
       FROM ${SalesTable.name} s
       LEFT JOIN ${ZamindarTable.name} z
@@ -5691,7 +7207,8 @@ END
       whereArgs: [invoiceNumber],
     );
 
-    final zamindarName = sale[SalesTable.zamindarName] as String;
+    final zamindarName = sale[SalesTable.zamindarName] as String? ??
+        'Walk-in Customer';
     final kisaanName = sale[SalesTable.kisaanName] as String?;
     final totalPayable = (sale[SalesTable.totalPayable] as num).toDouble();
     final initialPaid = (sale[SalesTable.paidAmount] as num).toDouble();
@@ -5699,8 +7216,32 @@ END
     final dateTimeStr = sale[SalesTable.dateTime] as String;
     final season = sale[SalesTable.season] as String;
 
-    // Calculate total collected
+    // Calculate total collected (all payments) and sale-origin cash only
+    // (excludes post-sale settlements so edit reload won't double-count).
     final totalCollected = _sumPaymentsCollected(initialPaid, paymentsMaps);
+    var saleOriginCash = 0.0;
+    if (paymentsMaps.isEmpty) {
+      saleOriginCash = paymentMethod.toLowerCase() == 'cash'
+          ? initialPaid
+          : (initialPaid > 0 ? initialPaid : 0.0);
+    } else {
+      for (final payment in paymentsMaps) {
+        final method =
+            (payment[PaymentsTable.paymentMethod] as String? ?? '').trim();
+        if (method == 'Advance Wallet Deduction') continue;
+        final paidAt =
+            (payment[PaymentsTable.dateTime] as String? ?? '').trim();
+        if (paidAt.isNotEmpty &&
+            dateTimeStr.isNotEmpty &&
+            paidAt.compareTo(dateTimeStr) > 0) {
+          continue; // post-sale settlement
+        }
+        if (method.toLowerCase() == 'cash') {
+          saleOriginCash +=
+              (payment[PaymentsTable.amountPaid] as num?)?.toDouble() ?? 0.0;
+        }
+      }
+    }
 
     // Convert line items to a format suitable for the edit form
     final items = itemsMaps.map((item) {
@@ -5723,12 +7264,21 @@ END
       'items': items,
       'totalPayable': totalPayable,
       'totalCollected': totalCollected,
+      'saleOriginCashCollected': saleOriginCash,
       'paidAmount': initialPaid,
       'paymentTerm': sale[SalesTable.paymentTerm] as String?,
       'isCredit': paymentMethod.toLowerCase() == 'credit',
       'season': season,
       'dateTime': dateTimeStr,
       'payments': paymentsMaps,
+      'transactionType':
+          sale[SalesTable.transactionType] as String? ??
+          SaleTransactionType.productSale,
+      'remarks': sale[SalesTable.remarks] as String?,
+      'fuelQuantity':
+          (sale[SalesTable.fuelQuantity] as num?)?.toDouble(),
+      'zamindarId': sale[SalesTable.zamindarId] as int?,
+      'kisaanId': sale[SalesTable.kisaanId] as int?,
     };
   }
 
@@ -5789,10 +7339,11 @@ END
   /// Live shop-counter KPIs for [DashboardScreen].
   ///
   /// - Receivables: outstanding invoice balances owed by customers (You Will Get)
-  /// - Payables: wholesaler balances where balance > 0 (You Will Give)
-  /// - Cash in hand: today's cash sales + cash ledger receipts − supplier cash
-  ///   out − cash advances given to kisaans (physical cash left the drawer)
-  /// - Active accounts: non-draft zamindars + wholesalers
+  /// - Payables: active wholesaler balances where balance > 0 (You Will Give)
+  /// - Cash in hand: Opening + all-time spot cash sales + cash recoveries
+  ///   − expenses − partner cash drawings − supplier cash out
+  ///   (advance loans are zero-drawer khaata records and are not deducted)
+  /// - Active accounts: non-draft zamindars + active wholesalers
   Future<DashboardMetrics> getDashboardMetrics() async {
     final db = await database;
     final now = DateTime.now();
@@ -5807,20 +7358,107 @@ END
     final totalReceivables = await _sumTotalReceivables(db);
     final totalPayables = await _sumTotalPayables(db);
 
+    // Spot cash sales: sales.paid_amount on Cash product invoices (no advance).
     final cashSalesRows = await db.rawQuery(
+      '''
+      SELECT COALESCE(SUM(${SalesTable.paidAmount}), 0) AS total
+      FROM ${SalesTable.name}
+      WHERE ${SalesTable.paymentMethod} = 'Cash'
+        AND (
+          ${SalesTable.transactionType} IS NULL
+          OR ${SalesTable.transactionType} = ?
+          OR ${SalesTable.transactionType} NOT IN (?, ?, ?)
+        )
+      ''',
+      [
+        SaleTransactionType.productSale,
+        SaleTransactionType.cashAdvance,
+        SaleTransactionType.dieselAdvance,
+        SaleTransactionType.petrolAdvance,
+      ],
+    );
+    final allTimeCashSales =
+        (cashSalesRows.first['total'] as num?)?.toDouble() ?? 0.0;
+
+    // Cash payments: credit upfront leftover, recoveries, cash-sale leftovers.
+    final ledgerPaymentRows = await db.rawQuery(
+      '''
+      SELECT COALESCE(SUM(${PaymentsTable.amountPaid}), 0) AS total
+      FROM ${PaymentsTable.name}
+      WHERE ${PaymentsTable.paymentMethod} = 'Cash'
+      ''',
+    );
+    final allTimeLedgerCash =
+        (ledgerPaymentRows.first['total'] as num?)?.toDouble() ?? 0.0;
+
+    final supplierPaymentRows = await db.rawQuery(
+      '''
+      SELECT COALESCE(SUM(${WholesalerPaymentsTable.amount}), 0) AS total
+      FROM ${WholesalerPaymentsTable.name}
+      WHERE ${WholesalerPaymentsTable.paymentMethod} = 'Cash'
+      ''',
+    );
+    final allTimeSupplierCash =
+        (supplierPaymentRows.first['total'] as num?)?.toDouble() ?? 0.0;
+
+    final expenseRows = await db.rawQuery('''
+      SELECT COALESCE(SUM(${ExpenseTable.amount}), 0) AS total
+      FROM ${ExpenseTable.name}
+    ''');
+    final allTimeExpenses =
+        (expenseRows.first['total'] as num?)?.toDouble() ?? 0.0;
+
+    final drawingRows = await db.rawQuery('''
+      SELECT
+        COALESCE(SUM(CASE WHEN ${PartnerDrawingTable.type} = ?
+          THEN ${PartnerDrawingTable.amount} ELSE 0 END), 0) AS taken,
+        COALESCE(SUM(CASE WHEN ${PartnerDrawingTable.type} = ?
+          THEN ${PartnerDrawingTable.amount} ELSE 0 END), 0) AS returned
+      FROM ${PartnerDrawingTable.name}
+    ''', [PartnerDrawingType.taken, PartnerDrawingType.returned]);
+    final drawingsTaken =
+        (drawingRows.first['taken'] as num?)?.toDouble() ?? 0.0;
+    final drawingsReturned =
+        (drawingRows.first['returned'] as num?)?.toDouble() ?? 0.0;
+
+    final openingBalance = await ShopSettings.getCashOpeningBalance();
+
+    // Cash / fuel advances are khaata loan records — zero cash-drawer impact.
+    final cashInHand = openingBalance +
+        allTimeCashSales +
+        allTimeLedgerCash -
+        allTimeSupplierCash -
+        allTimeExpenses -
+        drawingsTaken +
+        drawingsReturned;
+
+    // Today volumes for the snapshot cards (product sales only).
+    final todayCashSalesRows = await db.rawQuery(
       '''
       SELECT COALESCE(SUM(${SalesTable.paidAmount}), 0) AS total
       FROM ${SalesTable.name}
       WHERE ${SalesTable.paymentMethod} = 'Cash'
         AND ${SalesTable.dateTime} >= ?
         AND ${SalesTable.dateTime} < ?
+        AND (
+          ${SalesTable.transactionType} IS NULL
+          OR ${SalesTable.transactionType} = ?
+          OR ${SalesTable.transactionType} NOT IN (?, ?, ?)
+        )
       ''',
-      [todayStartIso, todayEndIso],
+      [
+        todayStartIso,
+        todayEndIso,
+        SaleTransactionType.productSale,
+        SaleTransactionType.cashAdvance,
+        SaleTransactionType.dieselAdvance,
+        SaleTransactionType.petrolAdvance,
+      ],
     );
     final todayCashSales =
-        (cashSalesRows.first['total'] as num?)?.toDouble() ?? 0.0;
+        (todayCashSalesRows.first['total'] as num?)?.toDouble() ?? 0.0;
 
-    final ledgerPaymentRows = await db.rawQuery(
+    final todayLedgerPaymentRows = await db.rawQuery(
       '''
       SELECT COALESCE(SUM(${PaymentsTable.amountPaid}), 0) AS total
       FROM ${PaymentsTable.name}
@@ -5831,9 +7469,9 @@ END
       [todayStartIso, todayEndIso],
     );
     final todayLedgerPayments =
-        (ledgerPaymentRows.first['total'] as num?)?.toDouble() ?? 0.0;
+        (todayLedgerPaymentRows.first['total'] as num?)?.toDouble() ?? 0.0;
 
-    final supplierPaymentRows = await db.rawQuery(
+    final todaySupplierPaymentRows = await db.rawQuery(
       '''
       SELECT COALESCE(SUM(${WholesalerPaymentsTable.amount}), 0) AS total
       FROM ${WholesalerPaymentsTable.name}
@@ -5844,26 +7482,7 @@ END
       [todayStartIso, todayEndIso],
     );
     final todaySupplierCashPayments =
-        (supplierPaymentRows.first['total'] as num?)?.toDouble() ?? 0.0;
-
-    // Physical cash advances leave the register; fuel advances do not.
-    final cashAdvanceRows = await db.rawQuery(
-      '''
-      SELECT COALESCE(SUM(${SalesTable.totalPayable}), 0) AS total
-      FROM ${SalesTable.name}
-      WHERE ${SalesTable.transactionType} = ?
-        AND ${SalesTable.dateTime} >= ?
-        AND ${SalesTable.dateTime} < ?
-      ''',
-      [SaleTransactionType.cashAdvance, todayStartIso, todayEndIso],
-    );
-    final todayCashAdvances =
-        (cashAdvanceRows.first['total'] as num?)?.toDouble() ?? 0.0;
-
-    final cashInHand = todayCashSales +
-        todayLedgerPayments -
-        todaySupplierCashPayments -
-        todayCashAdvances;
+        (todaySupplierPaymentRows.first['total'] as num?)?.toDouble() ?? 0.0;
 
     final todayVolumeRows = await db.rawQuery(
       '''
@@ -5877,8 +7496,20 @@ END
       FROM ${SalesTable.name}
       WHERE ${SalesTable.dateTime} >= ?
         AND ${SalesTable.dateTime} < ?
+        AND (
+          ${SalesTable.transactionType} IS NULL
+          OR ${SalesTable.transactionType} = ?
+          OR ${SalesTable.transactionType} NOT IN (?, ?, ?)
+        )
       ''',
-      [todayStartIso, todayEndIso],
+      [
+        todayStartIso,
+        todayEndIso,
+        SaleTransactionType.productSale,
+        SaleTransactionType.cashAdvance,
+        SaleTransactionType.dieselAdvance,
+        SaleTransactionType.petrolAdvance,
+      ],
     );
     final todayCashSalesVolume =
         (todayVolumeRows.first['cash_volume'] as num?)?.toDouble() ?? 0.0;
@@ -5893,6 +7524,7 @@ END
     final wholesalerCountRows = await db.rawQuery('''
       SELECT COUNT(*) AS count
       FROM ${WholesalerTable.name}
+      WHERE ${WholesalerTable.isActive} IS NULL OR ${WholesalerTable.isActive} = 1
     ''');
     final activeZamindars = _readIntValue(zamindarCountRows.first['count']);
     final activeWholesalers = _readIntValue(wholesalerCountRows.first['count']);
@@ -5952,6 +7584,75 @@ END
         .toList();
   }
 
+  /// Pending cash / fuel advance loans for the dashboard reminder card.
+  Future<PendingAdvancesReminder> getPendingAdvancesReminder({
+    int recentLimit = 5,
+  }) async {
+    final db = await database;
+    final rows = await db.rawQuery('''
+      SELECT
+        s.${SalesTable.invoiceNumber} AS invoice_number,
+        s.${SalesTable.transactionType} AS transaction_type,
+        s.${SalesTable.dateTime} AS date_time,
+        s.${SalesTable.zamindarId} AS zamindar_id,
+        z.${ZamindarTable.nameColumn} AS zamindar_name,
+        ($_sqlSaleRemainingExpr) AS remaining
+      FROM ${SalesTable.name} s
+      LEFT JOIN ${ZamindarTable.name} z
+        ON z.${ZamindarTable.id} = s.${SalesTable.zamindarId}
+      WHERE s.${SalesTable.transactionType} IN (?, ?, ?)
+      ORDER BY s.${SalesTable.dateTime} DESC
+    ''', [
+      SaleTransactionType.cashAdvance,
+      SaleTransactionType.dieselAdvance,
+      SaleTransactionType.petrolAdvance,
+    ]);
+
+    var totalCash = 0.0;
+    var totalFuel = 0.0;
+    final zamindarIds = <int>{};
+    final recent = <PendingAdvanceRow>[];
+    final limit = recentLimit < 1 ? 5 : recentLimit;
+
+    for (final row in rows) {
+      final remaining = (row['remaining'] as num?)?.toDouble() ?? 0.0;
+      if (remaining <= 0.005) continue;
+
+      final txType = row['transaction_type'] as String? ?? '';
+      final zamindarId = row['zamindar_id'] as int?;
+      if (zamindarId != null) zamindarIds.add(zamindarId);
+
+      if (SaleTransactionType.isFuelAdvance(txType)) {
+        totalFuel += remaining;
+      } else {
+        totalCash += remaining;
+      }
+
+      if (recent.length < limit) {
+        recent.add(
+          PendingAdvanceRow(
+            invoiceNumber: row['invoice_number'] as String? ?? '',
+            zamindarId: zamindarId,
+            zamindarName: row['zamindar_name'] as String? ?? 'Zamindar',
+            transactionType: txType,
+            amount: remaining,
+            dateIssued: DateTime.tryParse(
+                  row['date_time'] as String? ?? '',
+                ) ??
+                DateTime.now(),
+          ),
+        );
+      }
+    }
+
+    return PendingAdvancesReminder(
+      totalActiveCashAdvances: totalCash,
+      totalActiveFuelSlips: totalFuel,
+      zamindarCountWithPending: zamindarIds.length,
+      recentPending: recent,
+    );
+  }
+
   /// Maps dashboard chip labels onto stored / directory payment-term filters.
   static String? _mapDashboardRecoveryFilter(String? filter) {
     final raw = filter?.trim() ?? '';
@@ -5989,12 +7690,14 @@ END
     return (rows.first['total'] as num?)?.toDouble() ?? 0.0;
   }
 
-  /// Unpaid wholesaler debt balances (You Will Give).
+  /// Unpaid wholesaler debt balances (You Will Give) — active vendors only.
   Future<double> _sumTotalPayables(Database db) async {
     final rows = await db.rawQuery('''
       SELECT COALESCE(SUM(${WholesalerTable.balance}), 0) AS total
       FROM ${WholesalerTable.name}
       WHERE ${WholesalerTable.balance} > 0
+        AND (${WholesalerTable.isActive} IS NULL
+             OR ${WholesalerTable.isActive} = 1)
     ''');
     return (rows.first['total'] as num?)?.toDouble() ?? 0.0;
   }
@@ -6202,8 +7905,91 @@ END
     }
   }
 
+  /// Restores product stock for an invoice using [stock_movements] product_id
+  /// (preferred). Falls back to product-name lookup for legacy rows.
+  Future<void> _restoreStockForInvoice(
+    DatabaseExecutor txn,
+    String invoiceNumber,
+  ) async {
+    final movements = await txn.query(
+      StockMovementTable.name,
+      where:
+          '${StockMovementTable.referenceType} = ? AND '
+          '${StockMovementTable.referenceId} = ? AND '
+          '${StockMovementTable.movementType} = ?',
+      whereArgs: [
+        StockMovementRef.sale,
+        invoiceNumber,
+        StockMovementType.stockOut,
+      ],
+    );
+
+    if (movements.isNotEmpty) {
+      for (final movement in movements) {
+        final productId = movement[StockMovementTable.productId] as int?;
+        final qty =
+            (movement[StockMovementTable.quantity] as num?)?.toInt() ?? 0;
+        if (productId == null || productId <= 0 || qty <= 0) continue;
+        final rows = await txn.query(
+          ProductTable.name,
+          columns: [ProductTable.availableStock],
+          where: '${ProductTable.id} = ?',
+          whereArgs: [productId],
+          limit: 1,
+        );
+        if (rows.isEmpty) continue;
+        final currentStock =
+            _readIntValue(rows.first[ProductTable.availableStock]);
+        await txn.update(
+          ProductTable.name,
+          {
+            ProductTable.availableStock: (currentStock + qty).clamp(0, 1 << 31),
+          },
+          where: '${ProductTable.id} = ?',
+          whereArgs: [productId],
+        );
+      }
+      return;
+    }
+
+    // Legacy fallback: restore by product name when no movement rows exist.
+    final oldItems = await txn.query(
+      SaleItemsTable.name,
+      where: '${SaleItemsTable.invoiceNumber} = ?',
+      whereArgs: [invoiceNumber],
+    );
+    for (final oldItem in oldItems) {
+      final productName = oldItem[SaleItemsTable.productName] as String;
+      final oldQuantity =
+          (oldItem[SaleItemsTable.quantity] as num?)?.toInt() ?? 0;
+      if (oldQuantity <= 0) continue;
+      final products = await txn.query(
+        ProductTable.name,
+        where: '${ProductTable.nameColumn} = ?',
+        whereArgs: [productName],
+        limit: 1,
+      );
+      if (products.isEmpty) continue;
+      final productId = products.first[ProductTable.id] as int;
+      final currentStock = _readIntValue(
+        products.first[ProductTable.availableStock],
+      );
+      await txn.update(
+        ProductTable.name,
+        {
+          ProductTable.availableStock: (currentStock + oldQuantity).clamp(
+            0,
+            1 << 31,
+          ),
+        },
+        where: '${ProductTable.id} = ?',
+        whereArgs: [productId],
+      );
+    }
+  }
+
   /// Removes sale-originated payment vouchers for an invoice, keeping later
-  /// settlement rows (`category = PAYMENT` from [insertPayment]).
+  /// settlement rows (payments posted strictly after the sale timestamp).
   ///
   /// Ledger rebuild is owned by `after_sale_update` / payment triggers —
   /// this method only touches the `payments` table.
@@ -6211,39 +7997,35 @@ END
     DatabaseExecutor txn,
     String invoiceNumber,
   ) async {
-    final settlementRows = await txn.query(
-      LedgerTransactionTable.name,
-      columns: [LedgerTransactionTable.paymentId],
-      where:
-          '${LedgerTransactionTable.invoiceNumber} = ? AND '
-          'UPPER(${LedgerTransactionTable.category}) = ?',
-      whereArgs: [invoiceNumber, 'PAYMENT'],
+    final saleRows = await txn.query(
+      SalesTable.name,
+      columns: [SalesTable.dateTime],
+      where: '${SalesTable.invoiceNumber} = ?',
+      whereArgs: [invoiceNumber],
+      limit: 1,
     );
-    final settlementPaymentIds = settlementRows
-        .map((r) => r[LedgerTransactionTable.paymentId] as String?)
-        .whereType<String>()
-        .where((id) => id.trim().isNotEmpty)
-        .toSet();
+    if (saleRows.isEmpty) return;
 
-    if (settlementPaymentIds.isEmpty) {
-      await txn.delete(
-        PaymentsTable.name,
-        where: '${PaymentsTable.invoiceNumber} = ?',
-        whereArgs: [invoiceNumber],
-      );
-    } else {
-      final placeholders = List.filled(
-        settlementPaymentIds.length,
-        '?',
-      ).join(',');
-      await txn.delete(
-        PaymentsTable.name,
-        where:
-            '${PaymentsTable.invoiceNumber} = ? AND '
-            '${PaymentsTable.paymentId} NOT IN ($placeholders)',
-        whereArgs: [invoiceNumber, ...settlementPaymentIds],
-      );
-    }
+    final saleDateTime =
+        (saleRows.first[SalesTable.dateTime] as String? ?? '').trim();
+
+    // Keep post-sale recoveries (any method). Delete sale-time Cash / Wallet
+    // rows and anything dated at-or-before the invoice timestamp.
+    await txn.delete(
+      PaymentsTable.name,
+      where:
+          '${PaymentsTable.invoiceNumber} = ? AND '
+          '('
+          '  ${PaymentsTable.paymentMethod} = ? OR '
+          '  ${PaymentsTable.dateTime} IS NULL OR '
+          '  ${PaymentsTable.dateTime} <= ?'
+          ')',
+      whereArgs: [
+        invoiceNumber,
+        'Advance Wallet Deduction',
+        saleDateTime,
+      ],
+    );
   }
 
   /// Removes a single invoice and all linked sales, payments, and ledger rows.
@@ -6265,39 +8047,7 @@ END
       affectedZamindarId =
           saleRows.first[SalesTable.zamindarId] as int?;
 
-      final oldItems = await txn.query(
-        SaleItemsTable.name,
-        where: '${SaleItemsTable.invoiceNumber} = ?',
-        whereArgs: [invoiceNumber],
-      );
-      for (final oldItem in oldItems) {
-        final productName = oldItem[SaleItemsTable.productName] as String;
-        final oldQuantity =
-            (oldItem[SaleItemsTable.quantity] as num?)?.toInt() ?? 0;
-        final products = await txn.query(
-          ProductTable.name,
-          where: '${ProductTable.nameColumn} = ?',
-          whereArgs: [productName],
-          limit: 1,
-        );
-        if (products.isEmpty) continue;
-        final productId = products.first[ProductTable.id] as int;
-        final currentStock = _readIntValue(
-          products.first[ProductTable.availableStock],
-        );
-        await txn.update(
-          ProductTable.name,
-          {
-            ProductTable.availableStock: (currentStock + oldQuantity).clamp(
-              0,
-              1 << 31,
-            ),
-          },
-          where: '${ProductTable.id} = ?',
-          whereArgs: [productId],
-        );
-      }
-
+      await _restoreStockForInvoice(txn, invoiceNumber);
       await _reverseInvoiceWalletDrawdowns(txn, invoiceNumber);
 
       await txn.delete(
@@ -6421,7 +8171,7 @@ END
 
     final db = await database;
     await db.transaction((txn) async {
-      // Calculate totals
+      // Calculate totals — unitPrice is base; seasonal is per-unit add-on.
       final subtotal = items.fold<double>(
         0.0,
         (sum, item) => sum + (item.qty * item.unitPrice),
@@ -6430,12 +8180,10 @@ END
         0.0,
         (sum, item) => sum + item.discount,
       );
-      final seasonalIncrementTotal = items.fold<double>(0.0, (sum, item) {
-        if (paymentMethod == 'Credit') {
-          return sum + 0;
-        }
-        return sum;
-      });
+      final seasonalIncrementTotal = items.fold<double>(
+        0.0,
+        (sum, item) => sum + (item.qty * item.seasonalIncrement),
+      );
       final totalPayable =
           subtotal +
           seasonalIncrementTotal -
@@ -6511,14 +8259,23 @@ END
         }
       }
 
-      if (resolvedZamindarId == null) {
+      // Walk-in / cash customers have no zamindar row. Ledger triggers skip
+      // when zamindar_id is null; store the typed name in remarks for display.
+      final isWalkInSale = resolvedZamindarId == null;
+      if (isWalkInSale && isCreditSale) {
         throw StateError(
-          'Cannot insert sale: zamindar "$zamindarName" was not resolved to an id.',
+          'Cannot insert credit sale: zamindar "$zamindarName" was not '
+          'resolved to an id. Credit requires a registered Zamindar.',
+        );
+      }
+      if (isWalkInSale && zamindarName.trim().isEmpty) {
+        throw StateError(
+          'Cannot insert walk-in sale: customer name is empty.',
         );
       }
 
       // Step 1: Insert sale (after_sale_insert trigger writes ledger DEBIT).
-      await txn.insert(SalesTable.name, {
+      final saleRow = <String, Object?>{
         SalesTable.invoiceNumber: invoiceNumber,
         SalesTable.dateTime: _formatDateTime(dateTime),
         SalesTable.subtotal: subtotal.round(),
@@ -6533,21 +8290,24 @@ END
         SalesTable.transactionType: SaleTransactionType.productSale,
         SalesTable.creditAmount: creditAmount.round(),
         SalesTable.fuelQuantity: null,
-        SalesTable.remarks: null,
+        SalesTable.remarks: isWalkInSale ? zamindarName.trim() : null,
         SalesTable.zamindarId: resolvedZamindarId,
         SalesTable.kisaanId: resolvedKisaanId,
-      });
+      };
+      _applyActorStamp(saleRow);
+      await txn.insert(SalesTable.name, saleRow);
 
       // Insert line items into sale_items table
       for (final item in items) {
-        final itemSubtotal = (item.qty * item.unitPrice) - item.discount;
+        final itemSubtotal =
+            (item.qty * item.effectiveUnitPrice) - item.discount;
         await txn.insert(SaleItemsTable.name, {
           SaleItemsTable.invoiceNumber: invoiceNumber,
           SaleItemsTable.productName: item.productName,
           SaleItemsTable.productType: productType,
           SaleItemsTable.quantity: item.qty.round(),
           SaleItemsTable.unitPrice: item.unitPrice.round(),
-          SaleItemsTable.seasonalIncrement: 0,
+          SaleItemsTable.seasonalIncrement: item.seasonalIncrement.round(),
           SaleItemsTable.itemDiscount: item.discount.round(),
           SaleItemsTable.subtotal: itemSubtotal.round(),
         });
@@ -6556,12 +8316,13 @@ END
       // Decrement product stock + record STOCK OUT movements
       final partyLabel = await _resolveSalePartyLabel(txn, zamindarName);
       for (final item in items) {
-        if (item.productId == null) continue;
+        final pid = item.productId;
+        if (pid == null || pid <= 0) continue;
         final rows = await txn.query(
           ProductTable.name,
           columns: [ProductTable.availableStock],
           where: '${ProductTable.id} = ?',
-          whereArgs: [item.productId],
+          whereArgs: [pid],
           limit: 1,
         );
         if (rows.isEmpty) continue;
@@ -6574,11 +8335,11 @@ END
           ProductTable.name,
           {ProductTable.availableStock: nextStock},
           where: '${ProductTable.id} = ?',
-          whereArgs: [item.productId],
+          whereArgs: [pid],
         );
         await _insertStockMovement(
           txn,
-          productId: item.productId!,
+          productId: pid,
           movementType: StockMovementType.stockOut,
           quantity: qtyOut,
           partyLabel: partyLabel,
@@ -6641,8 +8402,18 @@ END
       }
       // Ledger CREDIT rows for payments are created by after_payment_insert.
 
-      await _recalculateZamindarBalanceOn(txn, resolvedZamindarId);
+      if (resolvedZamindarId != null) {
+        await _recalculateZamindarBalanceOn(txn, resolvedZamindarId);
+      }
     });
+
+    final actor = SessionContext.currentUser;
+    await _writeAuditLog(
+      actionType: AuditActionType.newSale,
+      referenceId: invoiceNumber,
+      description:
+          'Sale #$invoiceNumber created by ${actor?.name ?? 'Unknown'} (${actor?.roleLabel ?? 'Staff'})',
+    );
 
     notifyListeners();
 
@@ -6661,8 +8432,8 @@ END
   /// Records a Cash / Diesel / Petrol advance to a Kisaan on the Zamindar khata.
   ///
   /// Always credit (udhaar) with payment term **After Harvest**. Increments
-  /// outstanding via [recalculateZamindarBalance]. Cash advances reduce the
-  /// dashboard cash-in-hand aggregation; fuel advances do not.
+  /// outstanding via [recalculateZamindarBalance]. Advances are zero-margin
+  /// loan records: no stock movement and no cash-drawer impact.
   Future<Map<String, dynamic>> insertKisaanAdvance({
     required String invoiceNumber,
     required DateTime dateTime,
@@ -6691,18 +8462,18 @@ END
       );
     }
 
-    final displayName = SaleTransactionType.displayLabel(transactionType);
     final liters = SaleTransactionType.isFuelAdvance(transactionType)
         ? fuelQuantityLiters
         : null;
     final trimmedRemarks = remarks?.trim();
-    final itemLabel = liters != null
-        ? '$displayName (${_formatLiters(liters)} L)'
-        : displayName;
+    final itemLabel = SaleTransactionType.khaataReceiptLabel(
+      transactionType,
+      liters: liters,
+    );
 
     final db = await database;
     await db.transaction((txn) async {
-      await txn.insert(SalesTable.name, {
+      final advanceRow = <String, Object?>{
         SalesTable.invoiceNumber: invoiceNumber,
         SalesTable.dateTime: _formatDateTime(dateTime),
         SalesTable.subtotal: amount.round(),
@@ -6723,11 +8494,12 @@ END
             : null,
         SalesTable.zamindarId: zamindarId,
         SalesTable.kisaanId: kisaanId,
-      });
-      // after_sale_insert trigger writes advance DEBIT ledger row.
+      };
+      _applyActorStamp(advanceRow);
+      await txn.insert(SalesTable.name, advanceRow);
+      // after_sale_insert → ADVANCE_LOAN_RECORD debit on khaata.
 
-      // Liters live on sales.fuel_quantity; line qty stays 1 so reports
-      // that multiply qty × unit price stay accurate.
+      // Non-stock line: qty 1, COGS conceptually = sale price (zero margin).
       await txn.insert(SaleItemsTable.name, {
         SaleItemsTable.invoiceNumber: invoiceNumber,
         SaleItemsTable.productName: itemLabel,
@@ -6753,18 +8525,140 @@ END
       'totalPayable': amount,
       'creditAmount': amount,
       'fuelQuantity': liters,
-      'affectsCashDrawer': transactionType == SaleTransactionType.cashAdvance,
+      'affectsCashDrawer': false,
+      'ledgerCategory': 'ADVANCE_LOAN_RECORD',
+      'zeroMargin': true,
     };
   }
 
-  String _formatLiters(double liters) {
-    if (liters == liters.roundToDouble()) {
-      return liters.toStringAsFixed(0);
+  /// Updates an existing kisaan advance invoice (cash / diesel / petrol).
+  ///
+  /// Refreshes sales + advance line item; `after_sale_update` rebuilds the
+  /// ledger debit (and any linked payment credits).
+  Future<void> updateKisaanAdvance({
+    required String invoiceNumber,
+    required DateTime dateTime,
+    required String transactionType,
+    required double amount,
+    double? fuelQuantityLiters,
+    String? remarks,
+  }) async {
+    if (!SaleTransactionType.isAdvance(transactionType)) {
+      throw ArgumentError(
+        'transactionType must be a kisaan advance kind, got: $transactionType',
+      );
     }
-    return liters
-        .toStringAsFixed(2)
-        .replaceFirst(RegExp(r'0+$'), '')
-        .replaceFirst(RegExp(r'\.$'), '');
+    if (amount <= 0) {
+      throw ArgumentError('Advance amount must be greater than zero.');
+    }
+    if (SaleTransactionType.isFuelAdvance(transactionType) &&
+        (fuelQuantityLiters == null || fuelQuantityLiters <= 0)) {
+      throw ArgumentError(
+        'Fuel advances require a positive quantity in liters.',
+      );
+    }
+
+    final liters = SaleTransactionType.isFuelAdvance(transactionType)
+        ? fuelQuantityLiters
+        : null;
+    final trimmedRemarks = remarks?.trim();
+    final itemLabel = SaleTransactionType.khaataReceiptLabel(
+      transactionType,
+      liters: liters,
+    );
+
+    final db = await database;
+    await db.transaction((txn) async {
+      final existing = await txn.query(
+        SalesTable.name,
+        columns: [
+          SalesTable.zamindarId,
+          SalesTable.season,
+          SalesTable.transactionType,
+        ],
+        where: '${SalesTable.invoiceNumber} = ?',
+        whereArgs: [invoiceNumber],
+        limit: 1,
+      );
+      if (existing.isEmpty) {
+        throw StateError('Advance invoice $invoiceNumber was not found.');
+      }
+
+      final season =
+          (existing.first[SalesTable.season] as String? ?? '').trim();
+      if (season.isNotEmpty) {
+        final archived = await txn.query(
+          ArchivedSeasonTable.name,
+          columns: [ArchivedSeasonTable.seasonLabel],
+          where: '${ArchivedSeasonTable.seasonLabel} = ?',
+          whereArgs: [season],
+          limit: 1,
+        );
+        if (archived.isNotEmpty) {
+          throw StateError(
+            'Season "$season" is locked & archived. '
+            'Past invoices for this closed season cannot be edited.',
+          );
+        }
+      }
+
+      final existingType =
+          existing.first[SalesTable.transactionType] as String?;
+      if (!SaleTransactionType.isAdvance(existingType)) {
+        throw StateError(
+          'Invoice $invoiceNumber is not a kisaan advance.',
+        );
+      }
+
+      final zamindarId = existing.first[SalesTable.zamindarId] as int?;
+
+      await txn.update(
+        SalesTable.name,
+        {
+          SalesTable.dateTime: _formatDateTime(dateTime),
+          SalesTable.subtotal: amount.round(),
+          SalesTable.itemDiscountsTotal: 0,
+          SalesTable.seasonalIncrementTotal: 0,
+          SalesTable.overallDiscount: 0,
+          SalesTable.totalPayable: amount.round(),
+          SalesTable.paidAmount: 0,
+          SalesTable.paymentMethod: 'Credit',
+          SalesTable.paymentTerm: 'After Harvest',
+          SalesTable.transactionType: transactionType,
+          SalesTable.creditAmount: amount.round(),
+          SalesTable.fuelQuantity: liters,
+          SalesTable.remarks:
+              (trimmedRemarks != null && trimmedRemarks.isNotEmpty)
+              ? trimmedRemarks
+              : null,
+        },
+        where: '${SalesTable.invoiceNumber} = ?',
+        whereArgs: [invoiceNumber],
+      );
+      // after_sale_update refreshes the advance DEBIT ledger row.
+
+      await txn.delete(
+        SaleItemsTable.name,
+        where: '${SaleItemsTable.invoiceNumber} = ?',
+        whereArgs: [invoiceNumber],
+      );
+      await txn.insert(SaleItemsTable.name, {
+        SaleItemsTable.invoiceNumber: invoiceNumber,
+        SaleItemsTable.productName: itemLabel,
+        SaleItemsTable.productType: 'Advance',
+        SaleItemsTable.quantity: 1,
+        SaleItemsTable.unitPrice: amount.round(),
+        SaleItemsTable.seasonalIncrement: 0,
+        SaleItemsTable.itemDiscount: 0,
+        SaleItemsTable.subtotal: amount.round(),
+      });
+
+      if (zamindarId != null) {
+        await _recalculateZamindarBalanceOn(txn, zamindarId);
+      }
+    });
+
+    notifyListeners();
   }
 
   /// Gets all sales with their associated items and payments
@@ -6779,7 +8673,11 @@ END
       '''
       SELECT
         s.*,
-        z.${ZamindarTable.nameColumn} AS ${SalesTable.zamindarName},
+        COALESCE(
+          z.${ZamindarTable.nameColumn},
+          NULLIF(TRIM(s.${SalesTable.remarks}), ''),
+          'Walk-in Customer'
+        ) AS ${SalesTable.zamindarName},
         k.${KisaanTable.nameColumn} AS ${SalesTable.kisaanName}
       FROM ${SalesTable.name} s
       LEFT JOIN ${ZamindarTable.name} z
@@ -6830,15 +8728,17 @@ END
   /// Season performance KPIs for the Reports screen.
   ///
   /// Returns:
-  /// - `totalPurchases` — hardcoded `0` until the Purchase module exists
-  /// - `totalRevenue`, `cashSales`, `creditSales`
-  /// - `netProfit` — Σ quantity × (retail_price − cost_price) on sold items
-  /// - `totalMarketDebt`, `highRiskDues`, `todaysRecovery`, `dailyTarget`
-  /// - `collectionEfficiency` — recovered credit / credit sales × 100
+  /// - `totalPurchases` / cash vs credit purchase split
+  /// - `totalRevenue`, `cashSales`, `creditSales` (product sales only)
+  /// - `netProfit` — Σ qty × (sold unit − cost) − season overheads
+  /// - `totalMarketDebt`, `highRiskDues`, `todaysRecovery`
+  /// - `collectionEfficiency` — today's recovery / total due × 100
   /// - `season` — season display name used for the aggregation
   Future<Map<String, dynamic>> getSeasonalMetrics({String? season}) async {
     final db = await database;
     final seasonName = season ?? SeasonUtils.getCurrentSeason().displayName;
+    final seasonObj = SeasonUtils.parseSeasonDisplayName(seasonName) ??
+        SeasonUtils.getCurrentSeason();
 
     final revenueRows = await db.rawQuery(
       '''
@@ -6852,8 +8752,19 @@ END
           THEN ${SalesTable.totalPayable} ELSE 0 END), 0) AS credit_sales
       FROM ${SalesTable.name}
       WHERE ${SalesTable.season} = ?
+        AND (
+          ${SalesTable.transactionType} IS NULL
+          OR ${SalesTable.transactionType} = ?
+          OR ${SalesTable.transactionType} NOT IN (?, ?, ?)
+        )
       ''',
-      [seasonName],
+      [
+        seasonName,
+        SaleTransactionType.productSale,
+        SaleTransactionType.cashAdvance,
+        SaleTransactionType.dieselAdvance,
+        SaleTransactionType.petrolAdvance,
+      ],
     );
 
     final totalRevenue =
@@ -6863,30 +8774,89 @@ END
     final creditSales =
         (revenueRows.first['credit_sales'] as num?)?.toDouble() ?? 0.0;
 
-    // Net profit from sold inventory: qty × (retail − cost).
+    // Gross margin from sold inventory (actual sold unit price − catalog cost).
+    // Advance loans are zero-margin and excluded.
     final profitRows = await db.rawQuery(
       '''
       SELECT COALESCE(SUM(
         si.${SaleItemsTable.quantity} * (
-          COALESCE(p.${ProductTable.retailPrice}, si.${SaleItemsTable.unitPrice})
+          (si.${SaleItemsTable.unitPrice}
+            + COALESCE(si.${SaleItemsTable.seasonalIncrement}, 0))
           - COALESCE(p.${ProductTable.costPrice}, 0)
         )
-      ), 0) AS net_profit
+      ), 0) AS gross_margin
       FROM ${SaleItemsTable.name} si
       INNER JOIN ${SalesTable.name} s
         ON s.${SalesTable.invoiceNumber} = si.${SaleItemsTable.invoiceNumber}
       LEFT JOIN ${ProductTable.name} p
         ON p.${ProductTable.nameColumn} = si.${SaleItemsTable.productName}
       WHERE s.${SalesTable.season} = ?
+        AND (
+          s.${SalesTable.transactionType} IS NULL
+          OR s.${SalesTable.transactionType} = ?
+          OR s.${SalesTable.transactionType} NOT IN (?, ?, ?)
+        )
       ''',
-      [seasonName],
+      [
+        seasonName,
+        SaleTransactionType.productSale,
+        SaleTransactionType.cashAdvance,
+        SaleTransactionType.dieselAdvance,
+        SaleTransactionType.petrolAdvance,
+      ],
     );
-    final netProfit =
-        (profitRows.first['net_profit'] as num?)?.toDouble() ?? 0.0;
+    final grossMargin =
+        (profitRows.first['gross_margin'] as num?)?.toDouble() ?? 0.0;
+
+    final seasonStartIso = _formatDateTime(seasonObj.startDate);
+    final seasonEndIso = _formatDateTime(seasonObj.endDate);
+    final overheadRows = await db.rawQuery(
+      '''
+      SELECT COALESCE(SUM(${ExpenseTable.amount}), 0) AS total
+      FROM ${ExpenseTable.name}
+      WHERE ${ExpenseTable.expenseDate} >= ?
+        AND ${ExpenseTable.expenseDate} <= ?
+      ''',
+      [seasonStartIso, seasonEndIso],
+    );
+    final overheads =
+        (overheadRows.first['total'] as num?)?.toDouble() ?? 0.0;
+    final netProfit = grossMargin - overheads;
+
+    final purchaseKpis = await fetchPurchaseLedgerKpis(
+      seasonStart: seasonObj.startDate,
+      seasonEnd: seasonObj.endDate,
+    );
+    final totalPurchases = purchaseKpis['totalPurchases'] ?? 0.0;
+
+    final purchaseSplitRows = await db.rawQuery(
+      '''
+      SELECT
+        COALESCE(SUM(CASE
+          WHEN LOWER(${PurchaseInvoicesTable.paymentType}) LIKE '%cash%'
+          THEN ${PurchaseInvoicesTable.grandTotal} ELSE 0 END), 0) AS cash_purchases,
+        COALESCE(SUM(CASE
+          WHEN LOWER(${PurchaseInvoicesTable.paymentType}) NOT LIKE '%cash%'
+          THEN ${PurchaseInvoicesTable.grandTotal} ELSE 0 END), 0) AS credit_purchases
+      FROM ${PurchaseInvoicesTable.name}
+      WHERE ${PurchaseInvoicesTable.dateTime} >= ?
+        AND ${PurchaseInvoicesTable.dateTime} <= ?
+      ''',
+      [seasonStartIso, seasonEndIso],
+    );
+    final cashPurchases =
+        (purchaseSplitRows.first['cash_purchases'] as num?)?.toDouble() ?? 0.0;
+    final creditPurchases =
+        (purchaseSplitRows.first['credit_purchases'] as num?)?.toDouble() ??
+            0.0;
 
     // Outstanding figures use the same sales/payments formula as Dashboard.
     final now = DateTime.now();
     final todayStart = DateTime(now.year, now.month, now.day);
+    final todayEnd = todayStart.add(const Duration(days: 1));
+    final todayStartIso = _formatDateTime(todayStart);
+    final todayEndIso = _formatDateTime(todayEnd);
+
     final outstandingRows = await db.rawQuery('''
       SELECT
         s.${SalesTable.season} AS season,
@@ -6898,7 +8868,6 @@ END
 
     var totalMarketDebt = 0.0;
     var highRiskDues = 0.0;
-    var creditOutstandingSeason = 0.0;
 
     for (final row in outstandingRows) {
       final remaining = (row['remaining'] as num?)?.toDouble() ?? 0.0;
@@ -6906,50 +8875,46 @@ END
 
       totalMarketDebt += remaining;
 
-      final saleSeason = row['season'] as String? ?? '';
-      final paymentMethod = row['payment_method'] as String? ?? '';
-      if (saleSeason == seasonName && paymentMethod == 'Credit') {
-        creditOutstandingSeason += remaining;
-      }
-
       final saleDate = _parseDateTime(row['date_time'] as String? ?? '');
       if (now.difference(saleDate).inDays > 180) {
         highRiskDues += remaining;
       }
     }
 
-    // Today's recovery: cash-like collections dated today.
-    final paymentRows = await db.query(PaymentsTable.name);
-    var todaysRecovery = 0.0;
-    for (final payment in paymentRows) {
-      final amount =
-          (payment[PaymentsTable.amountPaid] as num?)?.toDouble() ?? 0.0;
-      if (amount <= 0) continue;
-      final paidAt = _parseDateTime(
-        payment[PaymentsTable.dateTime] as String? ?? '',
-      );
-      if (!paidAt.isBefore(todayStart) &&
-          paidAt.isBefore(todayStart.add(const Duration(days: 1)))) {
-        todaysRecovery += amount;
-      }
-    }
+    // Today's recovery: khaata collections posted after the sale (not sale-time cash).
+    final recoveryRows = await db.rawQuery(
+      '''
+      SELECT COALESCE(SUM(p.${PaymentsTable.amountPaid}), 0) AS total
+      FROM ${PaymentsTable.name} p
+      INNER JOIN ${SalesTable.name} s
+        ON s.${SalesTable.invoiceNumber} = p.${PaymentsTable.invoiceNumber}
+      WHERE p.${PaymentsTable.dateTime} >= ?
+        AND p.${PaymentsTable.dateTime} < ?
+        AND p.${PaymentsTable.paymentMethod} != 'Advance Wallet Deduction'
+        AND p.${PaymentsTable.dateTime} > s.${SalesTable.dateTime}
+      ''',
+      [todayStartIso, todayEndIso],
+    );
+    final todaysRecovery =
+        (recoveryRows.first['total'] as num?)?.toDouble() ?? 0.0;
 
     const dailyTarget = 100000.0;
-    final recoveredCredit = (creditSales - creditOutstandingSeason).clamp(
-      0.0,
-      double.infinity,
-    );
-    final collectionEfficiency = creditSales > 0
-        ? (recoveredCredit / creditSales) * 100.0
+    // Collection efficiency = today's recovery / total due recoverable × 100.
+    final collectionEfficiency = totalMarketDebt > 0
+        ? (todaysRecovery / totalMarketDebt) * 100.0
         : 0.0;
 
     return {
       'season': seasonName,
-      'totalPurchases': 0.0,
+      'totalPurchases': totalPurchases,
+      'cashPurchases': cashPurchases,
+      'creditPurchases': creditPurchases,
       'totalRevenue': totalRevenue,
       'cashSales': cashSales,
       'creditSales': creditSales,
       'netProfit': netProfit,
+      'grossMargin': grossMargin,
+      'overheads': overheads,
       'totalMarketDebt': totalMarketDebt,
       'highRiskDues': highRiskDues,
       'todaysRecovery': todaysRecovery,
@@ -7882,6 +9847,7 @@ END
   /// Gets all payments with aggregated sale line items for linked invoices.
   Future<List<Map<String, dynamic>>> getAllPayments({String? season}) async {
     final db = await database;
+    await _ensurePaymentEditAuditSchema(db);
     final where = <String>[];
     final args = <Object?>[];
 
@@ -7904,6 +9870,18 @@ END
           ks.${KisaanTable.nameColumn}
         ) AS ${PaymentsTable.kisaanName},
         CASE
+          WHEN p.${PaymentsTable.paymentMethod} = 'Advance Wallet Deduction'
+            THEN 'Advance payments deducted for (' || COALESCE((
+              SELECT GROUP_CONCAT(
+                item.${SaleItemsTable.productName}
+                  || ' x'
+                  || CAST(item.${SaleItemsTable.quantity} AS TEXT),
+                ', '
+              )
+              FROM ${SaleItemsTable.name} item
+              WHERE item.${SaleItemsTable.invoiceNumber}
+                  = p.${PaymentsTable.invoiceNumber}
+            ), '—') || ')'
           WHEN p.${PaymentsTable.invoiceNumber} IS NULL
             THEN 'N/A (Advance Collection)'
           ELSE (
@@ -7932,6 +9910,227 @@ END
       $whereSql
       ORDER BY p.${PaymentsTable.dateTime} DESC
       ''', args);
+  }
+
+  /// Single payment row by receipt id (includes JOIN name aliases).
+  Future<Map<String, dynamic>?> getPaymentById(String paymentId) async {
+    final id = paymentId.trim();
+    if (id.isEmpty) return null;
+    final db = await database;
+    await _ensurePaymentEditAuditSchema(db);
+    final rows = await db.rawQuery('''
+      SELECT
+        p.*,
+        COALESCE(
+          z.${ZamindarTable.nameColumn},
+          zs.${ZamindarTable.nameColumn}
+        ) AS ${PaymentsTable.zamindarName},
+        COALESCE(
+          k.${KisaanTable.nameColumn},
+          ks.${KisaanTable.nameColumn}
+        ) AS ${PaymentsTable.kisaanName}
+      FROM ${PaymentsTable.name} p
+      LEFT JOIN ${ZamindarTable.name} z
+        ON z.${ZamindarTable.id} = p.${PaymentsTable.zamindarId}
+      LEFT JOIN ${KisaanTable.name} k
+        ON k.${KisaanTable.id} = p.${PaymentsTable.kisaanId}
+      LEFT JOIN ${SalesTable.name} s
+        ON s.${SalesTable.invoiceNumber} = p.${PaymentsTable.invoiceNumber}
+      LEFT JOIN ${ZamindarTable.name} zs
+        ON zs.${ZamindarTable.id} = s.${SalesTable.zamindarId}
+      LEFT JOIN ${KisaanTable.name} ks
+        ON ks.${KisaanTable.id} = s.${SalesTable.kisaanId}
+      WHERE p.${PaymentsTable.paymentId} = ?
+      LIMIT 1
+      ''', [id]);
+    return rows.isEmpty ? null : rows.first;
+  }
+
+  /// Updates a customer payment entry with audit fields.
+  ///
+  /// Triggers rebuild the linked `ledger_transactions` CREDIT row.
+  /// Cash-drawer impact follows from live SUM of Cash payments — no
+  /// separate drawer mutation is required.
+  Future<void> updatePaymentEntry({
+    required String paymentId,
+    required DateTime dateTime,
+    required double amountPaid,
+    required String paymentMethod,
+    String notes = '',
+    required String editedBy,
+  }) async {
+    if (amountPaid <= 0) {
+      throw ArgumentError('Payment amount must be greater than zero');
+    }
+    final method = paymentMethod.trim();
+    if (method.isEmpty) {
+      throw ArgumentError('Payment method is required');
+    }
+    if (method == 'Advance Wallet Deduction') {
+      throw StateError('Wallet deduction entries cannot be edited.');
+    }
+
+    final db = await database;
+    await _ensurePaymentEditAuditSchema(db);
+
+    // Pre-read outside the write transaction to avoid nested DB access.
+    final existingRows = await db.query(
+      PaymentsTable.name,
+      where: '${PaymentsTable.paymentId} = ?',
+      whereArgs: [paymentId],
+      limit: 1,
+    );
+    if (existingRows.isEmpty) {
+      throw StateError('Payment $paymentId not found');
+    }
+    final existing = existingRows.first;
+    final existingMethod =
+        (existing[PaymentsTable.paymentMethod] as String?)?.trim() ?? '';
+    if (existingMethod == 'Advance Wallet Deduction') {
+      throw StateError('Wallet deduction entries cannot be edited.');
+    }
+    final season = (existing[PaymentsTable.season] as String?)?.trim() ?? '';
+    if (season.isNotEmpty && await isSeasonArchived(season)) {
+      throw StateError(
+        'This payment belongs to a closed/settled season and cannot be modified.',
+      );
+    }
+
+    await db.transaction((txn) async {
+      final rows = await txn.query(
+        PaymentsTable.name,
+        where: '${PaymentsTable.paymentId} = ?',
+        whereArgs: [paymentId],
+        limit: 1,
+      );
+      if (rows.isEmpty) {
+        throw StateError('Payment $paymentId not found');
+      }
+      final row = rows.first;
+      final oldMethod =
+          (row[PaymentsTable.paymentMethod] as String?)?.trim() ?? '';
+      if (oldMethod == 'Advance Wallet Deduction') {
+        throw StateError('Wallet deduction entries cannot be edited.');
+      }
+
+      final oldAmount =
+          (row[PaymentsTable.amountPaid] as num?)?.toDouble() ?? 0;
+      final invoiceNumber =
+          (row[PaymentsTable.invoiceNumber] as String?)?.trim();
+      final isAdvanceCollection =
+          invoiceNumber == null || invoiceNumber.isEmpty;
+
+      int? zamindarId = row[PaymentsTable.zamindarId] as int?;
+      if (zamindarId == null && !isAdvanceCollection) {
+        final saleRows = await txn.query(
+          SalesTable.name,
+          columns: [SalesTable.zamindarId],
+          where: '${SalesTable.invoiceNumber} = ?',
+          whereArgs: [invoiceNumber],
+          limit: 1,
+        );
+        if (saleRows.isNotEmpty) {
+          zamindarId = saleRows.first[SalesTable.zamindarId] as int?;
+        }
+      }
+      if (zamindarId == null) {
+        throw StateError('Payment $paymentId is not linked to a Zamindar');
+      }
+
+      // Invoice-scoped: new amount cannot exceed remaining + current payment.
+      if (!isAdvanceCollection) {
+        final remRows = await txn.rawQuery(
+          '''
+          SELECT
+            s.${SalesTable.totalPayable} - ($_sqlSaleCollectedExpr) AS remaining
+          FROM ${SalesTable.name} s
+          WHERE s.${SalesTable.invoiceNumber} = ?
+          LIMIT 1
+          ''',
+          [invoiceNumber],
+        );
+        if (remRows.isEmpty) {
+          throw StateError('Linked invoice $invoiceNumber not found');
+        }
+        final remaining =
+            (remRows.first['remaining'] as num?)?.toDouble() ?? 0;
+        final maxAllowed = remaining + oldAmount;
+        if (amountPaid > maxAllowed + 0.01) {
+          throw StateError(
+            'Payment amount exceeds invoice remaining balance '
+            '(Rs ${maxAllowed.toStringAsFixed(0)}).',
+          );
+        }
+      }
+
+      // Advance collections: adjust wallet by amount delta.
+      if (isAdvanceCollection) {
+        final delta = amountPaid.round() - oldAmount.round();
+        if (delta != 0) {
+          final balRows = await txn.query(
+            ZamindarTable.name,
+            columns: [ZamindarTable.advanceBalance],
+            where: '${ZamindarTable.id} = ?',
+            whereArgs: [zamindarId],
+            limit: 1,
+          );
+          if (balRows.isEmpty) {
+            throw StateError('Zamindar $zamindarId not found');
+          }
+          final current = _readIntValue(
+            balRows.first[ZamindarTable.advanceBalance],
+          );
+          final next = current + delta;
+          if (next < 0) {
+            throw StateError(
+              'Cannot reduce advance below zero '
+              '(current wallet Rs $current).',
+            );
+          }
+          await txn.update(
+            ZamindarTable.name,
+            {ZamindarTable.advanceBalance: next},
+            where: '${ZamindarTable.id} = ?',
+            whereArgs: [zamindarId],
+          );
+        }
+      }
+
+      final existingOriginal = row[PaymentsTable.originalAmount];
+      final originalAmount = existingOriginal is num
+          ? existingOriginal.round()
+          : oldAmount.round();
+
+      await txn.update(
+        PaymentsTable.name,
+        {
+          PaymentsTable.dateTime: _formatDateTime(dateTime),
+          PaymentsTable.amountPaid: amountPaid.round(),
+          PaymentsTable.paymentMethod: method,
+          PaymentsTable.notes: notes.trim().isEmpty ? null : notes.trim(),
+          PaymentsTable.editedAt: _formatDateTime(DateTime.now()),
+          PaymentsTable.editedBy: editedBy,
+          PaymentsTable.originalAmount: originalAmount,
+        },
+        where: '${PaymentsTable.paymentId} = ?',
+        whereArgs: [paymentId],
+      );
+      // after_payment_update rebuilds ledger_transactions CREDIT row.
+
+      await _recalculateZamindarBalanceOn(txn, zamindarId);
+
+      await _writeAuditLog(
+        actionType: AuditActionType.editPayment,
+        referenceId: paymentId,
+        description:
+            'Edited payment $paymentId: '
+            'Rs ${oldAmount.round()} ($oldMethod) → '
+            'Rs ${amountPaid.round()} ($method)',
+        executor: txn,
+      );
+    });
+
+    notifyListeners();
   }
 
   /// Gets payments for a specific invoice
@@ -7988,7 +10187,7 @@ END
     await db.transaction((txn) async {
       final existingSale = await txn.query(
         SalesTable.name,
-        columns: [SalesTable.zamindarId],
+        columns: [SalesTable.zamindarId, SalesTable.season],
         where: '${SalesTable.invoiceNumber} = ?',
         whereArgs: [invoiceNumber],
         limit: 1,
@@ -7997,45 +10196,32 @@ END
         throw StateError('Invoice $invoiceNumber was not found.');
       }
 
+      final existingSeason =
+          (existingSale.first[SalesTable.season] as String? ?? '').trim();
+      if (existingSeason.isNotEmpty) {
+        final archived = await txn.query(
+          ArchivedSeasonTable.name,
+          columns: [ArchivedSeasonTable.seasonLabel],
+          where: '${ArchivedSeasonTable.seasonLabel} = ?',
+          whereArgs: [existingSeason],
+          limit: 1,
+        );
+        if (archived.isNotEmpty) {
+          throw StateError(
+            'Season "$existingSeason" is locked & archived. '
+            'Past invoices for this closed season cannot be edited.',
+          );
+        }
+      }
+
       final previousZamindarId =
           existingSale.first[SalesTable.zamindarId] as int?;
       if (previousZamindarId != null) {
         affectedZamindarIds.add(previousZamindarId);
       }
 
-      // Restore stock for old line items.
-      final oldItems = await txn.query(
-        SaleItemsTable.name,
-        where: '${SaleItemsTable.invoiceNumber} = ?',
-        whereArgs: [invoiceNumber],
-      );
-      for (final oldItem in oldItems) {
-        final productName = oldItem[SaleItemsTable.productName] as String;
-        final oldQuantity =
-            (oldItem[SaleItemsTable.quantity] as num?)?.toInt() ?? 0;
-        final products = await txn.query(
-          ProductTable.name,
-          where: '${ProductTable.nameColumn} = ?',
-          whereArgs: [productName],
-          limit: 1,
-        );
-        if (products.isEmpty) continue;
-        final productId = products.first[ProductTable.id] as int;
-        final currentStock = _readIntValue(
-          products.first[ProductTable.availableStock],
-        );
-        await txn.update(
-          ProductTable.name,
-          {
-            ProductTable.availableStock: (currentStock + oldQuantity).clamp(
-              0,
-              1 << 31,
-            ),
-          },
-          where: '${ProductTable.id} = ?',
-          whereArgs: [productId],
-        );
-      }
+      // Restore stock for old line items (by stock_movements product_id).
+      await _restoreStockForInvoice(txn, invoiceNumber);
 
       await txn.delete(
         StockMovementTable.name,
@@ -8063,7 +10249,10 @@ END
         0.0,
         (sum, item) => sum + item.discount,
       );
-      const seasonalIncrementTotal = 0.0;
+      final seasonalIncrementTotal = items.fold<double>(
+        0.0,
+        (sum, item) => sum + (item.qty * item.seasonalIncrement),
+      );
       final totalPayable =
           subtotal +
           seasonalIncrementTotal -
@@ -8137,9 +10326,16 @@ END
         }
       }
 
-      if (resolvedZamindarId == null) {
+      final isWalkInSale = resolvedZamindarId == null;
+      if (isWalkInSale && isCreditSale) {
         throw StateError(
-          'Cannot update sale: zamindar "$zamindarName" was not resolved to an id.',
+          'Cannot update credit sale: zamindar "$zamindarName" was not '
+          'resolved to an id. Credit requires a registered Zamindar.',
+        );
+      }
+      if (isWalkInSale && zamindarName.trim().isEmpty) {
+        throw StateError(
+          'Cannot update walk-in sale: customer name is empty.',
         );
       }
 
@@ -8158,6 +10354,7 @@ END
           SalesTable.paymentTerm: isCreditSale ? paymentTerm : null,
           SalesTable.transactionType: SaleTransactionType.productSale,
           SalesTable.creditAmount: creditAmount.round(),
+          SalesTable.remarks: isWalkInSale ? zamindarName.trim() : null,
           SalesTable.zamindarId: resolvedZamindarId,
           SalesTable.kisaanId: resolvedKisaanId,
         },
@@ -8167,14 +10364,15 @@ END
       // after_sale_update trigger refreshes the sale DEBIT ledger row.
 
       for (final item in items) {
-        final itemSubtotal = (item.qty * item.unitPrice) - item.discount;
+        final itemSubtotal =
+            (item.qty * item.effectiveUnitPrice) - item.discount;
         await txn.insert(SaleItemsTable.name, {
           SaleItemsTable.invoiceNumber: invoiceNumber,
           SaleItemsTable.productName: item.productName,
           SaleItemsTable.productType: productType,
           SaleItemsTable.quantity: item.qty.round(),
           SaleItemsTable.unitPrice: item.unitPrice.round(),
-          SaleItemsTable.seasonalIncrement: 0,
+          SaleItemsTable.seasonalIncrement: item.seasonalIncrement.round(),
           SaleItemsTable.itemDiscount: item.discount.round(),
           SaleItemsTable.subtotal: itemSubtotal.round(),
         });
@@ -8182,12 +10380,13 @@ END
 
       final partyLabel = await _resolveSalePartyLabel(txn, zamindarName);
       for (final item in items) {
-        if (item.productId == null) continue;
+        final pid = item.productId;
+        if (pid == null || pid <= 0) continue;
         final rows = await txn.query(
           ProductTable.name,
           columns: [ProductTable.availableStock],
           where: '${ProductTable.id} = ?',
-          whereArgs: [item.productId],
+          whereArgs: [pid],
           limit: 1,
         );
         if (rows.isEmpty) continue;
@@ -8204,11 +10403,11 @@ END
             ),
           },
           where: '${ProductTable.id} = ?',
-          whereArgs: [item.productId],
+          whereArgs: [pid],
         );
         await _insertStockMovement(
           txn,
-          productId: item.productId!,
+          productId: pid,
           movementType: StockMovementType.stockOut,
           quantity: qtyOut,
           partyLabel: partyLabel,
@@ -8270,7 +10469,9 @@ END
       }
       // Ledger CREDIT rows for payments are created by after_payment_insert.
 
-      affectedZamindarIds.add(resolvedZamindarId);
+      if (resolvedZamindarId != null) {
+        affectedZamindarIds.add(resolvedZamindarId);
+      }
       for (final id in affectedZamindarIds) {
         await _recalculateZamindarBalanceOn(txn, id);
       }
@@ -8511,6 +10712,26 @@ class SaleTransactionType {
         return 'Product Sale';
     }
   }
+
+  /// Invoice / receipt line for zero-margin khaata loan records.
+  static String khaataReceiptLabel(String type, {double? liters}) {
+    if (isFuelAdvance(type)) {
+      if (liters != null && liters > 0) {
+        final lit = liters == liters.roundToDouble()
+            ? liters.toStringAsFixed(0)
+            : liters
+                .toStringAsFixed(2)
+                .replaceFirst(RegExp(r'0+$'), '')
+                .replaceFirst(RegExp(r'\.$'), '');
+        return 'Fuel Slip (Khaata Record) ($lit L)';
+      }
+      return 'Fuel Slip (Khaata Record)';
+    }
+    if (type == cashAdvance) {
+      return 'Advance Loan (Khaata Record)';
+    }
+    return displayLabel(type);
+  }
 }
 
 class SaleItemsTable {
@@ -8540,6 +10761,10 @@ class PaymentsTable {
   static const String amountPaid = 'amount_paid';
   static const String paymentMethod = 'payment_method';
   static const String season = 'season';
+  static const String editedAt = 'edited_at';
+  static const String editedBy = 'edited_by';
+  static const String originalAmount = 'original_amount';
+  static const String notes = 'notes';
 
   /// Query alias: aggregated sale line items or advance-collection label.
   static const String itemsSummary = 'items_summary';
@@ -8577,7 +10802,9 @@ class WholesalerTable {
   static const String nameColumn = 'name';
   static const String city = 'city';
   static const String phone = 'phone';
+  static const String address = 'address';
   static const String balance = 'balance';
+  static const String isActive = 'is_active';
 }
 
 class PurchaseInvoicesTable {
@@ -8692,6 +10919,90 @@ class AttendanceStatus {
 class ExpensePayrollType {
   static const String kharchi = 'kharchi';
   static const String settlement = 'settlement';
+}
+
+class PartnerTable {
+  static const String name = 'partners';
+  static const String id = 'id';
+  static const String nameColumn = 'name';
+  static const String phone = 'phone';
+  static const String userAccountId = 'user_account_id';
+  static const String zamindarId = 'zamindar_id';
+  static const String initialCapital = 'initial_capital';
+  static const String outOfPocketInjections = 'out_of_pocket_injections';
+  static const String reinvestedProfit = 'reinvested_profit';
+  static const String totalDrawings = 'total_drawings';
+  static const String permanentCapitalWithdrawals =
+      'permanent_capital_withdrawals';
+  static const String unsettledProfit = 'unsettled_profit';
+  static const String activeDrawings = 'active_drawings';
+  static const String isActive = 'is_active';
+  static const String createdAt = 'created_at';
+}
+
+class PartnerDrawingTable {
+  static const String name = 'partner_drawings';
+  static const String id = 'id';
+  static const String partnerId = 'partner_id';
+  static const String amount = 'amount';
+  static const String type = 'type';
+  static const String date = 'date';
+  static const String notes = 'notes';
+  static const String isSettled = 'is_settled';
+}
+
+class PartnerTransactionTable {
+  static const String name = 'partner_transactions';
+  static const String id = 'id';
+  static const String partnerId = 'partner_id';
+  static const String type = 'type';
+  static const String amount = 'amount';
+  static const String date = 'date';
+  static const String paymentChannel = 'payment_channel';
+  static const String reference = 'reference';
+  static const String notes = 'notes';
+  static const String seasonLabel = 'season_label';
+  static const String equityPctBefore = 'equity_pct_before';
+  static const String equityPctAfter = 'equity_pct_after';
+  static const String invoiceNumber = 'invoice_number';
+}
+
+class ArchivedSeasonTable {
+  static const String name = 'archived_seasons';
+  static const String seasonLabel = 'season_label';
+  static const String archivedAt = 'archived_at';
+  static const String notes = 'notes';
+}
+
+/// Shared actor-stamp column names on transactional tables.
+class ActorColumns {
+  static const String createdByUserId = 'created_by_user_id';
+  static const String createdByUserName = 'created_by_user_name';
+  static const String createdAt = 'created_at';
+}
+
+class UserTable {
+  static const String name = 'users';
+  static const String id = 'id';
+  static const String nameColumn = 'name';
+  static const String phone = 'phone';
+  static const String email = 'email';
+  static const String role = 'role';
+  static const String pinCode = 'pin_code';
+  static const String partnerId = 'partner_id';
+  static const String isActive = 'is_active';
+  static const String createdAt = 'created_at';
+}
+
+class AuditLogTable {
+  static const String name = 'audit_logs';
+  static const String id = 'id';
+  static const String userId = 'user_id';
+  static const String userName = 'user_name';
+  static const String actionType = 'action_type';
+  static const String referenceId = 'reference_id';
+  static const String description = 'description';
+  static const String timestamp = 'timestamp';
 }
 
 class PurchasePaymentType {
@@ -9052,6 +11363,8 @@ class ZamindarProductLedgerEntry {
   final String kisaanName;
   final String productName;
   final int quantity;
+  final int unitPrice;
+  final int lineTotal;
   final String uom;
 
   const ZamindarProductLedgerEntry({
@@ -9060,6 +11373,8 @@ class ZamindarProductLedgerEntry {
     required this.kisaanName,
     required this.productName,
     required this.quantity,
+    required this.unitPrice,
+    required this.lineTotal,
     required this.uom,
   });
 }
@@ -9174,6 +11489,53 @@ class DashboardRecoveryRow {
   });
 }
 
+class PendingAdvanceRow {
+  final String invoiceNumber;
+  final int? zamindarId;
+  final String zamindarName;
+  final String transactionType;
+  final double amount;
+  final DateTime dateIssued;
+
+  const PendingAdvanceRow({
+    required this.invoiceNumber,
+    this.zamindarId,
+    required this.zamindarName,
+    required this.transactionType,
+    required this.amount,
+    required this.dateIssued,
+  });
+
+  bool get isFuel => SaleTransactionType.isFuelAdvance(transactionType);
+  String get typeLabel => isFuel ? 'Fuel' : 'Cash';
+}
+
+class PendingAdvancesReminder {
+  final double totalActiveCashAdvances;
+  final double totalActiveFuelSlips;
+  final int zamindarCountWithPending;
+  final List<PendingAdvanceRow> recentPending;
+
+  const PendingAdvancesReminder({
+    required this.totalActiveCashAdvances,
+    required this.totalActiveFuelSlips,
+    required this.zamindarCountWithPending,
+    required this.recentPending,
+  });
+
+  factory PendingAdvancesReminder.empty() => const PendingAdvancesReminder(
+        totalActiveCashAdvances: 0,
+        totalActiveFuelSlips: 0,
+        zamindarCountWithPending: 0,
+        recentPending: <PendingAdvanceRow>[],
+      );
+
+  bool get hasPending =>
+      totalActiveCashAdvances > 0.005 ||
+      totalActiveFuelSlips > 0.005 ||
+      recentPending.isNotEmpty;
+}
+
 class DashboardMetrics {
   final double totalReceivables;
   final double totalPayables;
@@ -9234,7 +11596,10 @@ class SaleLineItem {
   final int? productId;
   final String productName;
   final double qty;
+  /// Base unit price (excludes seasonal increment).
   final double unitPrice;
+  /// Per-unit seasonal increment (After Harvest credit sales).
+  final double seasonalIncrement;
   final double discount;
 
   const SaleLineItem({
@@ -9242,8 +11607,11 @@ class SaleLineItem {
     required this.productName,
     required this.qty,
     required this.unitPrice,
+    this.seasonalIncrement = 0,
     this.discount = 0,
   });
+
+  double get effectiveUnitPrice => unitPrice + seasonalIncrement;
 }
 
 class PurchaseLineItem {
@@ -9269,21 +11637,27 @@ class DbWholesaler {
   final String name;
   final String city;
   final String phone;
+  final String address;
   final double balance;
+  final bool isActive;
 
   const DbWholesaler({
     this.id,
     required this.name,
     required this.city,
     required this.phone,
+    this.address = '',
     this.balance = 0,
+    this.isActive = true,
   });
 
   Map<String, Object?> toMap() => {
     WholesalerTable.nameColumn: name,
     WholesalerTable.city: city,
     WholesalerTable.phone: phone,
+    WholesalerTable.address: address.trim().isEmpty ? null : address.trim(),
     WholesalerTable.balance: balance,
+    WholesalerTable.isActive: isActive ? 1 : 0,
   };
 
   factory DbWholesaler.fromMap(Map<String, Object?> map) {
@@ -9292,7 +11666,9 @@ class DbWholesaler {
       name: map[WholesalerTable.nameColumn] as String,
       city: map[WholesalerTable.city] as String? ?? '',
       phone: map[WholesalerTable.phone] as String? ?? '',
+      address: map[WholesalerTable.address] as String? ?? '',
       balance: (map[WholesalerTable.balance] as num?)?.toDouble() ?? 0,
+      isActive: (map[WholesalerTable.isActive] as int?) != 0,
     );
   }
 
@@ -9301,17 +11677,24 @@ class DbWholesaler {
     String? name,
     String? city,
     String? phone,
+    String? address,
     double? balance,
+    bool? isActive,
   }) {
     return DbWholesaler(
       id: id ?? this.id,
       name: name ?? this.name,
       city: city ?? this.city,
       phone: phone ?? this.phone,
+      address: address ?? this.address,
       balance: balance ?? this.balance,
+      isActive: isActive ?? this.isActive,
     );
   }
 }
+
+/// Shop operating expense with permanent actor footprint.
+typedef ExpenseModel = DbExpense;
 
 class DbExpense {
   final int? id;
@@ -9322,6 +11705,11 @@ class DbExpense {
   final int? employeeId;
   final String? payrollType;
 
+  /// Permanent actor snapshot at insert time (never look up live users).
+  final String createdByUserId;
+  final String createdByUserName;
+  final DateTime createdAt;
+
   const DbExpense({
     this.id,
     required this.category,
@@ -9330,7 +11718,10 @@ class DbExpense {
     required this.expenseDate,
     this.employeeId,
     this.payrollType,
-  });
+    this.createdByUserId = '',
+    this.createdByUserName = '',
+    DateTime? createdAt,
+  }) : createdAt = createdAt ?? expenseDate;
 
   Map<String, Object?> toMap() => {
     ExpenseTable.category: category,
@@ -9339,18 +11730,28 @@ class DbExpense {
     ExpenseTable.expenseDate: DatabaseHelper._formatDateTime(expenseDate),
     ExpenseTable.employeeId: employeeId,
     ExpenseTable.payrollType: payrollType,
+    ActorColumns.createdByUserId: createdByUserId,
+    ActorColumns.createdByUserName: createdByUserName,
+    ActorColumns.createdAt: DatabaseHelper._formatDateTime(createdAt),
   };
 
   factory DbExpense.fromMap(Map<String, Object?> map) {
     final rawDate = map[ExpenseTable.expenseDate] as String? ?? '';
+    final expenseDate = DateTime.tryParse(rawDate) ?? DateTime.now();
+    final rawCreated = map[ActorColumns.createdAt] as String?;
     return DbExpense(
       id: map[ExpenseTable.id] as int?,
       category: map[ExpenseTable.category] as String? ?? '',
       amount: (map[ExpenseTable.amount] as num?)?.toDouble() ?? 0,
       remarks: map[ExpenseTable.remarks] as String? ?? '',
-      expenseDate: DateTime.tryParse(rawDate) ?? DateTime.now(),
+      expenseDate: expenseDate,
       employeeId: map[ExpenseTable.employeeId] as int?,
       payrollType: map[ExpenseTable.payrollType] as String?,
+      createdByUserId:
+          map[ActorColumns.createdByUserId]?.toString() ?? '',
+      createdByUserName:
+          map[ActorColumns.createdByUserName] as String? ?? '',
+      createdAt: DateTime.tryParse(rawCreated ?? '') ?? expenseDate,
     );
   }
 }
@@ -9498,6 +11899,7 @@ class ProductHistoryEntry {
   final String referenceType;
   final String? referenceId;
   final String? notes;
+  final String? createdByUserName;
 
   const ProductHistoryEntry({
     this.id,
@@ -9510,6 +11912,7 @@ class ProductHistoryEntry {
     required this.referenceType,
     this.referenceId,
     this.notes,
+    this.createdByUserName,
   });
 
   bool get isStockIn => movementType == StockMovementType.stockIn;

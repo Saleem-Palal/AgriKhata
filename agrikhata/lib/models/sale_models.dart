@@ -1,5 +1,11 @@
 // Data models for New Sale screen
 
+/// Paisa-safe rounding used by cart line math and bill totals.
+double moneyRound(double value) {
+  if (value.isNaN || value.isInfinite) return 0;
+  return double.parse(value.toStringAsFixed(2));
+}
+
 class Zamindar {
   final String id;
   final String name;
@@ -109,13 +115,15 @@ class CartItem {
     this.discount = 0,
   });
 
-  double get effectiveUnitPrice => product.basePrice + seasonalIncrement;
-  
+  double get effectiveUnitPrice =>
+      moneyRound(product.basePrice + seasonalIncrement);
+
   double get subtotal {
-    return (effectiveUnitPrice * quantity) - discount;
+    return moneyRound((effectiveUnitPrice * quantity) - discount);
   }
 
-  double get totalSeasonalIncrement => seasonalIncrement * quantity;
+  double get totalSeasonalIncrement =>
+      moneyRound(seasonalIncrement * quantity);
 }
 
 class Recommendation {
@@ -156,19 +164,29 @@ class SaleSummary {
   });
 
   double get subtotal {
-    return items.fold(0, (sum, item) => sum + (item.effectiveUnitPrice * item.quantity));
+    return moneyRound(
+      items.fold<double>(
+        0,
+        (sum, item) => sum + (item.effectiveUnitPrice * item.quantity),
+      ),
+    );
   }
 
   double get itemDiscounts {
-    return items.fold(0, (sum, item) => sum + item.discount);
+    return moneyRound(
+      items.fold<double>(0, (sum, item) => sum + item.discount),
+    );
   }
 
   double get totalSeasonalIncrements {
-    return items.fold(0, (sum, item) => sum + item.totalSeasonalIncrement);
+    return moneyRound(
+      items.fold<double>(0, (sum, item) => sum + item.totalSeasonalIncrement),
+    );
   }
 
   double get totalPayable {
-    return subtotal - itemDiscounts - overallDiscount;
+    final total = moneyRound(subtotal - itemDiscounts - overallDiscount);
+    return total < 0 ? 0 : total;
   }
 
   int get itemCount => items.length;

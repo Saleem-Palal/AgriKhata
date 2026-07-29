@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:intl/intl.dart';
 import '../models/ledger_models.dart';
+import 'receipt_acknowledgment.dart';
 import 'shop_settings.dart';
 
 class PdfGenerator {
@@ -79,7 +80,7 @@ class PdfGenerator {
 
   static pw.Widget _buildMadeWithAgriKhata({
     PdfColor? textColor,
-    double fontSize = 8,
+    double fontSize = 6,
   }) {
     final resolvedColor = textColor ?? PdfColors.grey700;
     final style = pw.TextStyle(fontSize: fontSize, color: resolvedColor);
@@ -89,13 +90,21 @@ class PdfGenerator {
       children: [
         pw.Text('Built With ', style: style),
         _buildHeartIcon(size: fontSize, color: PdfColor.fromHex('#E53935')),
-        pw.SizedBox(width: 2),
+        pw.SizedBox(width: 1.5),
         pw.Text(
-          'by Saleem Palal. WhatsApp: 03331245518',
+          'by Saleem Palal · WA 03331245518',
           style: style,
         ),
       ],
     );
+  }
+
+  static Future<({String name, String phone, String address})>
+      _loadShopBranding() async {
+    final name = await ShopSettings.getShopName();
+    final phone = await ShopSettings.getShopPhone();
+    final address = await ShopSettings.getShopAddress();
+    return (name: name, phone: phone, address: address);
   }
 
   static pw.Widget _buildDocumentFooter(
@@ -121,17 +130,24 @@ class PdfGenerator {
     );
   }
 
-  /// Branding column: AgriKhata subtitle on top, shop name bold below.
+  /// Branding column: AgriKhata, shop name, then optional phone/address.
   static pw.Widget _buildBrandBlock({
     required String shopName,
+    String shopPhone = '',
+    String shopAddress = '',
     double brandSize = 10,
     double shopTitleSize = 14,
+    double contactSize = 8,
     PdfColor? brandColor,
     PdfColor? shopColor,
+    PdfColor? contactColor,
     pw.CrossAxisAlignment align = pw.CrossAxisAlignment.start,
   }) {
     final resolvedBrand = brandColor ?? PdfColors.white;
     final resolvedShop = shopColor ?? PdfColors.white;
+    final resolvedContact = contactColor ?? resolvedShop;
+    final phone = shopPhone.trim();
+    final address = shopAddress.trim();
     return pw.Column(
       crossAxisAlignment: align,
       children: [
@@ -151,6 +167,26 @@ class PdfGenerator {
             fontWeight: pw.FontWeight.bold,
           ),
         ),
+        if (phone.isNotEmpty) ...[
+          pw.SizedBox(height: 2),
+          pw.Text(
+            _pdfSafeText(phone),
+            style: pw.TextStyle(
+              color: resolvedContact,
+              fontSize: contactSize,
+            ),
+          ),
+        ],
+        if (address.isNotEmpty) ...[
+          pw.SizedBox(height: 1),
+          pw.Text(
+            _pdfSafeText(address),
+            style: pw.TextStyle(
+              color: resolvedContact,
+              fontSize: contactSize - 0.5,
+            ),
+          ),
+        ],
       ],
     );
   }
@@ -221,7 +257,7 @@ class PdfGenerator {
     bool isEdited = false,
   }) async {
     final pdf = pw.Document();
-    final shopName = await ShopSettings.getShopName();
+    final shop = await _loadShopBranding();
 
     pdf.addPage(
       pw.Page(
@@ -231,7 +267,11 @@ class PdfGenerator {
             crossAxisAlignment: pw.CrossAxisAlignment.start,
             children: [
               if (isEdited) _buildEditedWatermark(),
-              _buildHeader(shopName),
+              _buildHeader(
+                shop.name,
+                shopPhone: shop.phone,
+                shopAddress: shop.address,
+              ),
               pw.SizedBox(height: 20),
               _buildInvoiceInfo(entry),
               pw.SizedBox(height: 20),
@@ -239,7 +279,7 @@ class PdfGenerator {
               pw.SizedBox(height: 20),
               _buildTotalSection(entry),
               pw.Spacer(),
-              _buildFooter(),
+              _buildFooter(shopPhone: shop.phone),
             ],
           );
         },
@@ -256,19 +296,24 @@ class PdfGenerator {
   ) async {
     final pdf = pw.Document();
     final summary = LedgerSummary.fromEntries(entries);
-    final shopName = await ShopSettings.getShopName();
+    final shop = await _loadShopBranding();
 
     pdf.addPage(
       pw.MultiPage(
         pageFormat: PdfPageFormat.a4.landscape,
         build: (pw.Context context) {
           return [
-            _buildStatementHeader(season, ledgerType, shopName),
+            _buildStatementHeader(
+              season,
+              ledgerType,
+              shop.name,
+              shopPhone: shop.phone,
+              shopAddress: shop.address,
+            ),
             pw.SizedBox(height: 20),
             _buildSummaryCards(summary, ledgerType),
             pw.SizedBox(height: 20),
             _buildLedgerTable(entries),
-            pw.SizedBox(height: 20),
           ];
         },
         footer: (pw.Context context) => _buildDocumentFooter(context),
@@ -302,7 +347,11 @@ class PdfGenerator {
     );
   }
 
-  static pw.Widget _buildHeader(String shopName) {
+  static pw.Widget _buildHeader(
+    String shopName, {
+    String shopPhone = '',
+    String shopAddress = '',
+  }) {
     return pw.Container(
       padding: const pw.EdgeInsets.all(20),
       decoration: pw.BoxDecoration(
@@ -313,6 +362,8 @@ class PdfGenerator {
         children: [
           _buildBrandBlock(
             shopName: shopName,
+            shopPhone: shopPhone,
+            shopAddress: shopAddress,
             brandSize: 11,
             shopTitleSize: 16,
           ),
@@ -383,6 +434,18 @@ class PdfGenerator {
               'Season: ${_pdfSafeText(entry.season)}',
               style: const pw.TextStyle(fontSize: 10),
             ),
+            if (entry.createdByUserName != null &&
+                entry.createdByUserName!.trim().isNotEmpty) ...[
+              pw.SizedBox(height: 5),
+              pw.Text(
+                'Recorded By: ${_pdfSafeText(entry.createdByUserName!.trim())}',
+                style: pw.TextStyle(
+                  fontSize: 10,
+                  fontWeight: pw.FontWeight.bold,
+                  color: PdfColor.fromHex('#1B4332'),
+                ),
+              ),
+            ],
           ],
         ),
       ],
@@ -550,8 +613,10 @@ class PdfGenerator {
   static pw.Widget _buildStatementHeader(
     Season season,
     LedgerType ledgerType,
-    String shopName,
-  ) {
+    String shopName, {
+    String shopPhone = '',
+    String shopAddress = '',
+  }) {
     return pw.Container(
       padding: const pw.EdgeInsets.all(15),
       decoration: pw.BoxDecoration(
@@ -582,6 +647,8 @@ class PdfGenerator {
           ),
           _buildBrandBlock(
             shopName: shopName,
+            shopPhone: shopPhone,
+            shopAddress: shopAddress,
             brandSize: 10,
             shopTitleSize: 14,
             align: pw.CrossAxisAlignment.end,
@@ -762,7 +829,8 @@ class PdfGenerator {
     );
   }
 
-  static pw.Widget _buildFooter() {
+  static pw.Widget _buildFooter({String shopPhone = ''}) {
+    final phone = shopPhone.trim();
     return pw.Container(
       alignment: pw.Alignment.center,
       padding: const pw.EdgeInsets.all(10),
@@ -781,11 +849,13 @@ class PdfGenerator {
               color: PdfColor.fromHex('#1B4332'),
             ),
           ),
-          pw.SizedBox(height: 5),
-          pw.Text(
-            'For queries, contact: +92 XXX XXXXXXX',
-            style: const pw.TextStyle(fontSize: 9),
-          ),
+          if (phone.isNotEmpty) ...[
+            pw.SizedBox(height: 5),
+            pw.Text(
+              'For queries, contact: ${_pdfSafeText(phone)}',
+              style: const pw.TextStyle(fontSize: 9),
+            ),
+          ],
           pw.SizedBox(height: 8),
           _buildMadeWithAgriKhata(textColor: PdfColor.fromHex('#1B4332')),
         ],
@@ -827,28 +897,50 @@ class PdfGenerator {
     final salesSummary = LedgerSummary.fromEntries(salesEntries);
     final purchasesSummary = LedgerSummary.fromEntries(purchasesEntries);
     final paymentSummary = PaymentSummary.fromEntries(paymentEntries);
-    final shopName = await ShopSettings.getShopName();
+    final shop = await _loadShopBranding();
 
     pdf.addPage(
       pw.MultiPage(
         pageFormat: PdfPageFormat.a4.landscape,
         build: (pw.Context context) {
           return [
-            _buildConsolidatedCover(season, shopName),
+            _buildConsolidatedCover(
+              season,
+              shop.name,
+              shopPhone: shop.phone,
+              shopAddress: shop.address,
+            ),
             pw.SizedBox(height: 24),
-            _buildStatementHeader(season, LedgerType.sales, shopName),
+            _buildStatementHeader(
+              season,
+              LedgerType.sales,
+              shop.name,
+              shopPhone: shop.phone,
+              shopAddress: shop.address,
+            ),
             pw.SizedBox(height: 12),
             _buildSummaryCards(salesSummary, LedgerType.sales),
             pw.SizedBox(height: 12),
             _buildLedgerTable(salesEntries),
             pw.SizedBox(height: 28),
-            _buildStatementHeader(season, LedgerType.purchases, shopName),
+            _buildStatementHeader(
+              season,
+              LedgerType.purchases,
+              shop.name,
+              shopPhone: shop.phone,
+              shopAddress: shop.address,
+            ),
             pw.SizedBox(height: 12),
             _buildSummaryCards(purchasesSummary, LedgerType.purchases),
             pw.SizedBox(height: 12),
             _buildLedgerTable(purchasesEntries),
             pw.SizedBox(height: 28),
-            _buildPaymentsStatementHeader(season, shopName),
+            _buildPaymentsStatementHeader(
+              season,
+              shop.name,
+              shopPhone: shop.phone,
+              shopAddress: shop.address,
+            ),
             pw.SizedBox(height: 12),
             _buildPaymentSummaryCards(paymentSummary),
             pw.SizedBox(height: 12),
@@ -862,7 +954,12 @@ class PdfGenerator {
     return pdf;
   }
 
-  static pw.Widget _buildConsolidatedCover(Season season, String shopName) {
+  static pw.Widget _buildConsolidatedCover(
+    Season season,
+    String shopName, {
+    String shopPhone = '',
+    String shopAddress = '',
+  }) {
     return pw.Container(
       padding: const pw.EdgeInsets.all(20),
       decoration: pw.BoxDecoration(
@@ -896,6 +993,8 @@ class PdfGenerator {
           ),
           _buildBrandBlock(
             shopName: shopName,
+            shopPhone: shopPhone,
+            shopAddress: shopAddress,
             brandSize: 10,
             shopTitleSize: 14,
             align: pw.CrossAxisAlignment.end,
@@ -907,8 +1006,10 @@ class PdfGenerator {
 
   static pw.Widget _buildPaymentsStatementHeader(
     Season season,
-    String shopName,
-  ) {
+    String shopName, {
+    String shopPhone = '',
+    String shopAddress = '',
+  }) {
     return pw.Container(
       padding: const pw.EdgeInsets.all(15),
       decoration: pw.BoxDecoration(
@@ -936,6 +1037,8 @@ class PdfGenerator {
           ),
           _buildBrandBlock(
             shopName: shopName,
+            shopPhone: shopPhone,
+            shopAddress: shopAddress,
             brandSize: 10,
             shopTitleSize: 14,
             align: pw.CrossAxisAlignment.end,
@@ -1067,18 +1170,24 @@ class PdfGenerator {
     required String zamindarName,
     required int amount,
     required DateTime date,
+    String? servedBy,
   }) async {
     final pdf = pw.Document();
     final resolvedShopName =
         (shopName == null || shopName.trim().isEmpty)
             ? await ShopSettings.getShopName()
             : shopName.trim();
+    final shopPhone = await ShopSettings.getShopPhone();
+    final shopAddress = await ShopSettings.getShopAddress();
+    final showThumb =
+        await ShopSettings.getShowThumbprintBlockOnThermal();
+    final pageHeightMm = showThumb ? 235.0 : 160.0;
 
     pdf.addPage(
       pw.Page(
         pageFormat: PdfPageFormat(
           80 * PdfPageFormat.mm,
-          120 * PdfPageFormat.mm,
+          pageHeightMm * PdfPageFormat.mm,
         ),
         build: (pw.Context context) {
           return pw.Container(
@@ -1089,10 +1198,14 @@ class PdfGenerator {
                 pw.Center(
                   child: _buildBrandBlock(
                     shopName: resolvedShopName,
+                    shopPhone: shopPhone,
+                    shopAddress: shopAddress,
                     brandSize: 10,
                     shopTitleSize: 13,
+                    contactSize: 8,
                     brandColor: PdfColors.black,
                     shopColor: PdfColors.black,
+                    contactColor: PdfColors.grey800,
                     align: pw.CrossAxisAlignment.center,
                   ),
                 ),
@@ -1125,6 +1238,13 @@ class PdfGenerator {
                   'Received From:',
                   _pdfSafeText(zamindarName),
                 ),
+                if (servedBy != null && servedBy.trim().isNotEmpty) ...[
+                  pw.SizedBox(height: 6),
+                  _buildReceiptRow(
+                    'Recorded By:',
+                    _pdfSafeText(servedBy.trim()),
+                  ),
+                ],
                 pw.SizedBox(height: 15),
                 pw.Container(
                   padding: const pw.EdgeInsets.all(10),
@@ -1175,6 +1295,10 @@ class PdfGenerator {
                   ),
                   textAlign: pw.TextAlign.center,
                 ),
+                if (showThumb) ...[
+                  pw.SizedBox(height: 12),
+                  ReceiptAcknowledgment.buildThermalBlock(),
+                ],
                 pw.Spacer(),
                 pw.Container(
                   width: double.infinity,
@@ -1190,8 +1314,7 @@ class PdfGenerator {
                   ),
                   textAlign: pw.TextAlign.center,
                 ),
-                pw.SizedBox(height: 6),
-                pw.Center(child: _buildMadeWithAgriKhata(fontSize: 7)),
+                ReceiptAcknowledgment.buildThermalPromoFooter(),
               ],
             ),
           );
@@ -1229,6 +1352,7 @@ class PdfGenerator {
     required String zamindarName,
     required int amount,
     required DateTime date,
+    String? servedBy,
   }) async {
     final resolvedShopName = shopName ?? await ShopSettings.getShopName();
     final pdf = await generateAdvancePaymentReceiptPdf(
@@ -1236,6 +1360,7 @@ class PdfGenerator {
       zamindarName: zamindarName,
       amount: amount,
       date: date,
+      servedBy: servedBy,
     );
     await Printing.layoutPdf(
       onLayout: (PdfPageFormat format) async => pdf.save(),
@@ -1252,7 +1377,7 @@ class PdfGenerator {
     required double cumulativeRemaining,
   }) async {
     final pdf = pw.Document();
-    final shopName = await ShopSettings.getShopName();
+    final shop = await _loadShopBranding();
 
     final totalBilled = rows.fold<double>(
       0,
@@ -1306,7 +1431,9 @@ class PdfGenerator {
                     ],
                   ),
                   _buildBrandBlock(
-                    shopName: shopName,
+                    shopName: shop.name,
+                    shopPhone: shop.phone,
+                    shopAddress: shop.address,
                     brandSize: 10,
                     shopTitleSize: 14,
                     align: pw.CrossAxisAlignment.end,
@@ -1491,7 +1618,7 @@ class PdfGenerator {
     required int totalDebit,
   }) async {
     final pdf = pw.Document();
-    final shopName = await ShopSettings.getShopName();
+    final shop = await _loadShopBranding();
 
     pdf.addPage(
       pw.MultiPage(
@@ -1536,7 +1663,9 @@ class PdfGenerator {
                     ],
                   ),
                   _buildBrandBlock(
-                    shopName: shopName,
+                    shopName: shop.name,
+                    shopPhone: shop.phone,
+                    shopAddress: shop.address,
                     brandSize: 10,
                     shopTitleSize: 14,
                     align: pw.CrossAxisAlignment.end,
@@ -1676,9 +1805,7 @@ class PdfGenerator {
     required List<Map<String, dynamic>> rows,
   }) async {
     final pdf = pw.Document();
-    final shopName = await ShopSettings.getShopName();
-    final shopAddress = await ShopSettings.getShopAddress();
-    final shopPhone = await ShopSettings.getShopPhone();
+    final shop = await _loadShopBranding();
 
     final cumulativeTotal = rows.fold<double>(
       0,
@@ -1719,28 +1846,12 @@ class PdfGenerator {
                           fontSize: 13,
                         ),
                       ),
-                      if (shopAddress.trim().isNotEmpty) ...[
-                        pw.SizedBox(height: 4),
-                        pw.Text(
-                          _pdfSafeText(shopAddress),
-                          style: const pw.TextStyle(
-                            color: PdfColors.white,
-                            fontSize: 9,
-                          ),
-                        ),
-                      ],
-                      if (shopPhone.trim().isNotEmpty)
-                        pw.Text(
-                          'Phone: ${_pdfSafeText(shopPhone)}',
-                          style: const pw.TextStyle(
-                            color: PdfColors.white,
-                            fontSize: 9,
-                          ),
-                        ),
                     ],
                   ),
                   _buildBrandBlock(
-                    shopName: shopName,
+                    shopName: shop.name,
+                    shopPhone: shop.phone,
+                    shopAddress: shop.address,
                     brandSize: 10,
                     shopTitleSize: 14,
                     align: pw.CrossAxisAlignment.end,
@@ -1866,9 +1977,10 @@ class PdfGenerator {
     String filterLabel = 'All products',
     int totalQuantity = 0,
     String totalUom = 'units',
+    int totalValue = 0,
   }) async {
     final pdf = pw.Document();
-    final shopName = await ShopSettings.getShopName();
+    final shop = await _loadShopBranding();
 
     pdf.addPage(
       pw.MultiPage(
@@ -1913,7 +2025,9 @@ class PdfGenerator {
                     ],
                   ),
                   _buildBrandBlock(
-                    shopName: shopName,
+                    shopName: shop.name,
+                    shopPhone: shop.phone,
+                    shopAddress: shop.address,
                     brandSize: 10,
                     shopTitleSize: 14,
                     align: pw.CrossAxisAlignment.end,
@@ -1926,7 +2040,8 @@ class PdfGenerator {
               mainAxisAlignment: pw.MainAxisAlignment.end,
               children: [
                 pw.Text(
-                  'Total Quantity: $totalQuantity ${_pdfSafeText(totalUom)}',
+                  'Total Quantity: $totalQuantity ${_pdfSafeText(totalUom)}'
+                  '  ·  Total Value: ${_formatMoney(totalValue)}',
                   style: pw.TextStyle(
                     fontSize: 11,
                     fontWeight: pw.FontWeight.bold,
@@ -1946,10 +2061,12 @@ class PdfGenerator {
                 border: pw.TableBorder.all(color: PdfColor.fromHex('#E0E0E0')),
                 columnWidths: {
                   0: const pw.FlexColumnWidth(1.2),
-                  1: const pw.FlexColumnWidth(1.6),
-                  2: const pw.FlexColumnWidth(1.6),
-                  3: const pw.FlexColumnWidth(2),
+                  1: const pw.FlexColumnWidth(1.5),
+                  2: const pw.FlexColumnWidth(1.5),
+                  3: const pw.FlexColumnWidth(1.8),
                   4: const pw.FlexColumnWidth(1),
+                  5: const pw.FlexColumnWidth(1.1),
+                  6: const pw.FlexColumnWidth(1.2),
                 },
                 children: [
                   pw.TableRow(
@@ -1962,6 +2079,8 @@ class PdfGenerator {
                       _buildTableHeader('Kisaan Name'),
                       _buildTableHeader('Product Name'),
                       _buildTableHeader('Quantity'),
+                      _buildTableHeader('Product Price'),
+                      _buildTableHeader('Total Price'),
                     ],
                   ),
                   ...rows.map((row) {
@@ -1970,6 +2089,10 @@ class PdfGenerator {
                     final qtyLabel = qty == null
                         ? '-'
                         : '$qty${uom.isNotEmpty ? ' $uom' : ''}';
+                    final unitPrice =
+                        (row['unit_price'] as num?)?.toDouble() ?? 0;
+                    final lineTotal =
+                        (row['line_total'] as num?)?.toDouble() ?? 0;
                     return pw.TableRow(
                       children: [
                         _buildTableCell(
@@ -1983,6 +2106,8 @@ class PdfGenerator {
                           row['product_name']?.toString() ?? '-',
                         ),
                         _buildTableCell(qtyLabel),
+                        _buildTableCell(_formatMoney(unitPrice)),
+                        _buildTableCell(_formatMoney(lineTotal)),
                       ],
                     );
                   }),
@@ -2006,6 +2131,7 @@ class PdfGenerator {
     String filterLabel = 'All products',
     int totalQuantity = 0,
     String totalUom = 'units',
+    int totalValue = 0,
   }) async {
     final pdf = await generateProductWiseLedgerPdf(
       zamindarName: zamindarName,
@@ -2013,6 +2139,7 @@ class PdfGenerator {
       filterLabel: filterLabel,
       totalQuantity: totalQuantity,
       totalUom: totalUom,
+      totalValue: totalValue,
     );
     final bytes = await pdf.save();
     final fileName = buildExportFileName(
@@ -2029,7 +2156,7 @@ class PdfGenerator {
     required List<Map<String, dynamic>> products,
   }) async {
     final pdf = pw.Document();
-    final shopName = await ShopSettings.getShopName();
+    final shop = await _loadShopBranding();
 
     pdf.addPage(
       pw.MultiPage(
@@ -2067,7 +2194,9 @@ class PdfGenerator {
                     ],
                   ),
                   _buildBrandBlock(
-                    shopName: shopName,
+                    shopName: shop.name,
+                    shopPhone: shop.phone,
+                    shopAddress: shop.address,
                     brandSize: 10,
                     shopTitleSize: 14,
                     align: pw.CrossAxisAlignment.end,

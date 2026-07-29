@@ -1,12 +1,14 @@
 import 'dart:math' as math;
 
-import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Data/agri_header.dart';
 import 'package:agrikhata/Database/database_helper.dart';
+import 'package:agrikhata/Widgets/dashboard/advances_reminder_card.dart';
+import 'package:agrikhata/services/whatsapp_urdu_service.dart';
+import 'package:agrikhata/theme/theme.dart';
 import 'package:agrikhata/utils/season_utils.dart';
+import 'package:agrikhata/utils/shop_settings.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 /// Shop-counter home screen — layout aligned to `Extra/dashboard (1).html`.
 class DashboardScreen extends StatefulWidget {
@@ -15,11 +17,13 @@ class DashboardScreen extends StatefulWidget {
     this.onNavigateToNewSale,
     this.onNavigateToAddZamindar,
     this.onNavigateToWholesalers,
+    this.onNavigateToZamindarLedger,
   });
 
   final VoidCallback? onNavigateToNewSale;
   final VoidCallback? onNavigateToAddZamindar;
   final VoidCallback? onNavigateToWholesalers;
+  final void Function(int zamindarId)? onNavigateToZamindarLedger;
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
@@ -40,6 +44,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   DashboardMetrics _metrics = DashboardMetrics.empty();
   List<DashboardRecoveryRow> _recoveries = const <DashboardRecoveryRow>[];
+  PendingAdvancesReminder _advancesReminder = PendingAdvancesReminder.empty();
   String _selectedRecoveryFilter = 'Weekly';
   bool _isLoading = true;
   bool _isRefreshing = false;
@@ -83,10 +88,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
         paymentTerm: _selectedRecoveryFilter,
         limit: 5,
       );
+      final advances =
+          await DatabaseHelper.instance.getPendingAdvancesReminder(recentLimit: 5);
       if (!mounted) return;
       setState(() {
         _metrics = metrics;
         _recoveries = recoveries;
+        _advancesReminder = advances;
         _isLoading = false;
         _isRefreshing = false;
         _error = null;
@@ -130,57 +138,32 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _openWhatsAppReminder(DashboardRecoveryRow row) async {
-    final phone = _normalizeWhatsAppNumber(row.whatsappNumber);
-    if (phone == null) {
+    final phone = row.whatsappNumber?.trim() ?? '';
+    if (WhatsAppUrduService.normalizePhone(phone) == null) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('No WhatsApp number on file for ${row.name}.'),
-          backgroundColor: AppColors.dangerText,
-          behavior: SnackBarBehavior.floating,
-        ),
+      AppToast.showError(
+        context,
+        'No WhatsApp number on file for ${row.name}.',
       );
       return;
     }
 
-    final balanceLabel = _formatRs(row.outstandingBalance);
-    final message =
-        'Dear ${row.name}, your outstanding balance at Atta Muhammad & Sons '
-        'is $balanceLabel'
-        '${row.paymentTerm.isNotEmpty ? ' under terms: ${row.paymentTerm}' : ''}. '
-        'Please arrange for payment at your earliest convenience. Thank you.';
-
-    final uri = Uri.parse(
-      'https://wa.me/$phone?text=${Uri.encodeComponent(message)}',
-    );
-
-    final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
-    if (!launched && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Could not open WhatsApp.'),
-          backgroundColor: AppColors.dangerText,
-          behavior: SnackBarBehavior.floating,
-        ),
+    try {
+      final shopName = await ShopSettings.getShopName();
+      final launched = await WhatsAppUrduService.sendUrduReminder(
+        phone: phone,
+        zamindarName: row.name,
+        shopName: shopName,
+        amount: row.outstandingBalance,
       );
+      if (!launched && mounted) {
+        AppToast.showError(context, 'Could not open WhatsApp.');
+      }
+    } catch (e) {
+      if (mounted) {
+        AppToast.showError(context, 'Could not open WhatsApp: $e');
+      }
     }
-  }
-
-  /// Strips formatting and normalizes Pakistani mobile numbers for wa.me.
-  static String? _normalizeWhatsAppNumber(String? raw) {
-    if (raw == null) return null;
-    var digits = raw.replaceAll(RegExp(r'\D'), '');
-    if (digits.isEmpty) return null;
-    if (digits.startsWith('00')) {
-      digits = digits.substring(2);
-    }
-    if (digits.startsWith('0') && digits.length == 11) {
-      digits = '92${digits.substring(1)}';
-    } else if (digits.length == 10 && digits.startsWith('3')) {
-      digits = '92$digits';
-    }
-    if (digits.length < 10) return null;
-    return digits;
   }
 
   @override
@@ -199,10 +182,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             actions: [
               Text(
                 clockLabel,
-                style: const TextStyle(
-                  fontSize: 11,
-                  color: AppColors.textHint,
-                ),
+                style: const TextStyle(fontSize: 11, color: AppColors.textHint),
               ),
               Tooltip(
                 message: 'Refresh metrics',
@@ -294,6 +274,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
           children: [
             _buildKpiRow(),
             const SizedBox(height: 12),
+            AdvancesReminderCard(
+              reminder: _advancesReminder,
+              onViewKhaataLedger: (row) {
+                final id = row.zamindarId;
+                if (id == null) return;
+                widget.onNavigateToZamindarLedger?.call(id);
+              },
+            ),
+            const SizedBox(height: 12),
             LayoutBuilder(
               builder: (context, constraints) {
                 final maxW = constraints.maxWidth;
@@ -358,7 +347,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         titleColor: AppColors.tagBlueText,
         value: _formatRs(_metrics.cashInHand),
         valueColor: AppColors.tagBlueText,
-        subtext: "Today's Drawer Cash",
+        subtext: 'Opening + Sales + Recoveries − Expenses − Drawings',
         subtextColor: const Color(0xFF5B84AA),
         backgroundColor: AppColors.tagBlueBg,
         borderColor: const Color(0xFFC3D9F0),
@@ -392,11 +381,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             spacing: 12,
             runSpacing: 12,
             children: [
-              for (final card in cards)
-                SizedBox(
-                  width: cardW,
-                  child: card,
-                ),
+              for (final card in cards) SizedBox(width: cardW, child: card),
             ],
           );
         }
@@ -427,7 +412,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ? const _EmptyHint(text: 'All stock levels healthy')
               : Column(
                   children: [
-                    for (var i = 0; i < _metrics.lowStockAlerts.length; i++) ...[
+                    for (
+                      var i = 0;
+                      i < _metrics.lowStockAlerts.length;
+                      i++
+                    ) ...[
                       if (i > 0) const _Hairline(),
                       _StockRow(alert: _metrics.lowStockAlerts[i]),
                     ],
@@ -666,11 +655,7 @@ class _Hairline extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Divider(
-      height: 1,
-      thickness: 0.5,
-      color: Color(0xFFF0F4EE),
-    );
+    return const Divider(height: 1, thickness: 0.5, color: Color(0xFFF0F4EE));
   }
 }
 
@@ -806,10 +791,7 @@ class _SowingSeasonMonitorCard extends StatelessWidget {
                     ),
                     Text(
                       '50%',
-                      style: TextStyle(
-                        fontSize: 9,
-                        color: AppColors.textHint,
-                      ),
+                      style: TextStyle(fontSize: 9, color: AppColors.textHint),
                     ),
                   ],
                 ),
@@ -946,7 +928,10 @@ class _ExpiryRow extends StatelessWidget {
 
     // Strip any accidental "Batch …" suffixes from product names.
     final cleanName = alert.productName
-        .replaceAll(RegExp(r'\s*[·\-|]?\s*Batch\b.*$', caseSensitive: false), '')
+        .replaceAll(
+          RegExp(r'\s*[·\-|]?\s*Batch\b.*$', caseSensitive: false),
+          '',
+        )
         .trim();
 
     return Padding(
@@ -1169,75 +1154,28 @@ class _RecoveriesTable extends StatelessWidget {
                   flex: 34,
                   child: Align(
                     alignment: Alignment.centerRight,
-                    child: _WhatsAppLink(
-                      onTap: () => onWhatsApp(rows[i]),
-                    ),
+                    child: _WhatsAppLink(onTap: () => onWhatsApp(rows[i])),
                   ),
                 ),
               ],
             ),
           ),
           if (i < rows.length - 1)
-            const Divider(
-              height: 1,
-              thickness: 0.5,
-              color: Color(0xFFF0F4EE),
-            ),
+            const Divider(height: 1, thickness: 0.5, color: Color(0xFFF0F4EE)),
         ],
       ],
     );
   }
 }
 
-class _WhatsAppLink extends StatefulWidget {
+class _WhatsAppLink extends StatelessWidget {
   const _WhatsAppLink({required this.onTap});
 
   final VoidCallback onTap;
 
   @override
-  State<_WhatsAppLink> createState() => _WhatsAppLinkState();
-}
-
-class _WhatsAppLinkState extends State<_WhatsAppLink> {
-  bool _hovered = false;
-
-  static const Color _waGreen = Color(0xFF059669);
-  static const Color _waHoverBg = Color(0xFFECFDF5);
-
-  @override
   Widget build(BuildContext context) {
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      cursor: SystemMouseCursors.click,
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 120),
-          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-          decoration: BoxDecoration(
-            color: _hovered ? _waHoverBg : Colors.transparent,
-            borderRadius: BorderRadius.circular(7),
-            border: Border.all(color: _waGreen, width: 1),
-          ),
-          child: const Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.chat, size: 11, color: _waGreen),
-              SizedBox(width: 4),
-              Text(
-                'WhatsApp',
-                style: TextStyle(
-                  fontSize: 10.5,
-                  fontWeight: FontWeight.w500,
-                  color: _waGreen,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
+    return AppWhatsAppIconButton(onPressed: onTap);
   }
 }
 

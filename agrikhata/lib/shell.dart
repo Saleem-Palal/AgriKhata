@@ -9,12 +9,17 @@ import 'package:agrikhata/screens/products_screen.dart';
 import 'package:agrikhata/screens/purchase_screen.dart';
 import 'package:agrikhata/screens/reports_screen.dart';
 import 'package:agrikhata/screens/settings_screen.dart';
-import 'package:agrikhata/screens/user_accounts_screen.dart';
+import 'package:agrikhata/screens/partners/partner_management_screen.dart';
+import 'package:agrikhata/screens/partners/partners_screen.dart';
+import 'package:agrikhata/screens/users/users_screen.dart';
 import 'package:agrikhata/screens/wholesalers_screen.dart';
 import 'package:agrikhata/screens/zamindar_directory.dart';
 import 'package:agrikhata/screens/zamindar_profile_screen.dart';
+import 'package:agrikhata/services/auth_service.dart';
 import 'package:agrikhata/services/update_service.dart';
+import 'package:agrikhata/services/user_account_store.dart';
 import 'package:agrikhata/utils/app_version.dart';
+import 'package:agrikhata/utils/role_permissions.dart';
 import 'package:agrikhata/utils/shop_settings.dart';
 import 'package:flutter/material.dart';
 
@@ -32,6 +37,7 @@ class _ShellState extends State<Shell> {
   int _selectedIndex = 0;
   ZamindarView _zamindarView = ZamindarView.directory;
   Zamindar? _selectedZamindar;
+  int? _profileInitialTabIndex;
   int _directoryRefreshToken = 0;
   int? _preSelectedZamindarIdForSale;
   int? _preSelectedKisaanIdForSale;
@@ -47,9 +53,55 @@ class _ShellState extends State<Shell> {
     super.initState();
     _loadAppVersion();
     _loadShopName();
+    _guardSelectedIndex();
+    AuthService.instance.addListener(_onAuthChanged);
+    UserAccountStore.instance.refresh();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       UpdateService().checkForUpdates(context);
+    });
+  }
+
+  @override
+  void dispose() {
+    AuthService.instance.removeListener(_onAuthChanged);
+    super.dispose();
+  }
+
+  void _onAuthChanged() {
+    if (!mounted) return;
+    _guardSelectedIndex();
+    setState(() {});
+  }
+
+  String? get _role => AuthService.instance.role;
+
+  void _guardSelectedIndex() {
+    if (!RolePermissions.canAccessIndex(_role, _selectedIndex)) {
+      _selectedIndex = RolePermissions.fallbackIndex(_role);
+    }
+  }
+
+  void _selectNavIndex(int index) {
+    if (!RolePermissions.canAccessIndex(_role, index)) {
+      setState(() {
+        _selectedIndex = RolePermissions.fallbackIndex(_role);
+      });
+      return;
+    }
+    setState(() {
+      _selectedIndex = index;
+      if (index == 1) {
+        _zamindarView = ZamindarView.directory;
+        _profileInitialTabIndex = null;
+      }
+      // Clear edit mode when manually navigating away from an edit session
+      if (index == 2 || _editInvoiceNumber != null) {
+        _editInvoiceNumber = null;
+        _editReturnIndex = null;
+        _preSelectedZamindarIdForSale = null;
+        _preSelectedKisaanIdForSale = null;
+      }
     });
   }
 
@@ -145,14 +197,20 @@ class _ShellState extends State<Shell> {
           );
         }
         return ZamindarProfileScreen(
+          key: ValueKey(
+            'profile-${selected.id}-tab-${_profileInitialTabIndex ?? 0}',
+          ),
           zamindar: selected,
+          initialTabIndex: _profileInitialTabIndex,
           onBack: () => setState(() {
             _zamindarView = ZamindarView.directory;
+            _profileInitialTabIndex = null;
             _refreshDirectory();
           }),
           onEdit: () => setState(() => _zamindarView = ZamindarView.add),
           onDelete: () => setState(() {
             _selectedZamindar = null;
+            _profileInitialTabIndex = null;
             _zamindarView = ZamindarView.directory;
             _refreshDirectory();
           }),
@@ -196,27 +254,50 @@ class _ShellState extends State<Shell> {
   }
 
   void _navigateToNewSaleFromDashboard() {
-    setState(() {
-      _editInvoiceNumber = null;
-      _editReturnIndex = null;
-      _preSelectedZamindarIdForSale = null;
-      _preSelectedKisaanIdForSale = null;
-      _selectedIndex = 2;
-    });
+    _selectNavIndex(2);
+    if (_selectedIndex == 2) {
+      setState(() {
+        _editInvoiceNumber = null;
+        _editReturnIndex = null;
+        _preSelectedZamindarIdForSale = null;
+        _preSelectedKisaanIdForSale = null;
+      });
+    }
   }
 
   void _navigateToAddZamindarFromDashboard() {
-    setState(() {
-      _selectedZamindar = null;
-      _zamindarView = ZamindarView.add;
-      _selectedIndex = 1;
-    });
+    _selectNavIndex(1);
+    if (_selectedIndex == 1) {
+      setState(() {
+        _selectedZamindar = null;
+        _zamindarView = ZamindarView.add;
+      });
+    }
   }
 
   void _navigateToWholesalersFromDashboard() {
-    setState(() {
-      _selectedIndex = 5;
-    });
+    _selectNavIndex(5);
+  }
+
+  Future<void> _navigateToZamindarLedgerFromDashboard(int zamindarId) async {
+    try {
+      final zamindar = await DatabaseHelper.instance.getZamindar(zamindarId);
+      if (!mounted) return;
+      if (zamindar == null ||
+          !RolePermissions.canAccessIndex(_role, 1)) {
+        _selectNavIndex(1);
+        return;
+      }
+      setState(() {
+        _selectedIndex = 1;
+        _selectedZamindar = zamindar;
+        _profileInitialTabIndex = 2; // Ledger tab
+        _zamindarView = ZamindarView.profile;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      _selectNavIndex(1);
+    }
   }
 
   List<Widget> get _screens => [
@@ -224,6 +305,7 @@ class _ShellState extends State<Shell> {
       onNavigateToNewSale: _navigateToNewSaleFromDashboard,
       onNavigateToAddZamindar: _navigateToAddZamindarFromDashboard,
       onNavigateToWholesalers: _navigateToWholesalersFromDashboard,
+      onNavigateToZamindarLedger: _navigateToZamindarLedgerFromDashboard,
     ),
     _buildZamindarsScreen(),
     NewSaleScreen(
@@ -246,7 +328,8 @@ class _ShellState extends State<Shell> {
     ),
     const ExpenseScreen(),
     const ReportsScreen(),
-    const UserAccountsScreen(),
+    const UsersScreen(),
+    const PartnerManagementScreen(),
     SettingsScreen(
       onDataReset: _handleApplicationDataReset,
       onShopNameChanged: (name) => setState(() => _shopName = name),
@@ -308,44 +391,7 @@ class _ShellState extends State<Shell> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            _sectionTitle('MAIN'),
-                            _navItem(0, Icons.grid_view_rounded, 'Dashboard'),
-                            _navItem(
-                              1,
-                              Icons.person_outline_rounded,
-                              'Zamindars',
-                            ),
-                            _navItem(
-                              2,
-                              Icons.add_shopping_cart_rounded,
-                              'New Sale',
-                            ),
-                            const SizedBox(height: 6),
-                            _sectionTitle('INVENTORY'),
-                            _navItem(3, Icons.inventory_2_outlined, 'Products'),
-                            _navItem(
-                              4,
-                              Icons.shopping_bag_outlined,
-                              'Purchase',
-                            ),
-                            _navItem(
-                              5,
-                              Icons.handshake_outlined,
-                              'Wholesalers',
-                            ),
-                            const SizedBox(height: 6),
-                            _sectionTitle('FINANCE'),
-                            _navItem(6, Icons.menu_book_outlined, 'Ledger'),
-                            _navItem(7, Icons.payments_outlined, 'Expenses'),
-                            _navItem(8, Icons.analytics_outlined, 'Reports'),
-                            const SizedBox(height: 6),
-                            _sectionTitle('SYSTEM'),
-                            _navItem(
-                              9,
-                              Icons.manage_accounts_outlined,
-                              'User Accounts',
-                            ),
-                            _navItem(10, Icons.settings_outlined, 'Settings'),
+                            ..._buildNavSections(),
                           ],
                         ),
                       ),
@@ -358,11 +404,54 @@ class _ShellState extends State<Shell> {
             ),
           ),
           Expanded(
-            child: IndexedStack(index: _selectedIndex, children: _screens),
+            child: IndexedStack(
+              index: RolePermissions.canAccessIndex(_role, _selectedIndex)
+                  ? _selectedIndex
+                  : RolePermissions.fallbackIndex(_role),
+              children: _screens,
+            ),
           ),
         ],
       ),
     );
+  }
+
+  List<Widget> _buildNavSections() {
+    final items = <Widget>[];
+
+    void addSection(String title, List<(int, IconData, String)> entries) {
+      final visible = entries
+          .where((e) => RolePermissions.canAccessIndex(_role, e.$1))
+          .toList();
+      if (visible.isEmpty) return;
+      if (items.isNotEmpty) items.add(const SizedBox(height: 6));
+      items.add(_sectionTitle(title));
+      for (final e in visible) {
+        items.add(_navItem(e.$1, e.$2, e.$3));
+      }
+    }
+
+    addSection('MAIN', [
+      (0, Icons.grid_view_rounded, 'Dashboard'),
+      (1, Icons.person_outline_rounded, 'Zamindars'),
+      (2, Icons.add_shopping_cart_rounded, 'New Sale'),
+    ]);
+    addSection('INVENTORY', [
+      (3, Icons.inventory_2_outlined, 'Products'),
+      (4, Icons.shopping_bag_outlined, 'Purchase'),
+      (5, Icons.handshake_outlined, 'Wholesalers'),
+    ]);
+    addSection('FINANCE', [
+      (6, Icons.menu_book_outlined, 'Ledger'),
+      (7, Icons.payments_outlined, 'Expenses'),
+      (8, Icons.analytics_outlined, 'Reports'),
+    ]);
+    addSection('SYSTEM', [
+      (9, Icons.manage_accounts_outlined, 'User Accounts'),
+      (10, Icons.groups_outlined, 'Partner Management'),
+      (11, Icons.settings_outlined, 'Settings'),
+    ]);
+    return items;
   }
 
   Widget _buildHeader() {
@@ -440,22 +529,17 @@ class _ShellState extends State<Shell> {
         icon: icon,
         label: label,
         isSelected: isSelected,
-        onTap: () => setState(() {
-          _selectedIndex = index;
-          if (index == 1) _zamindarView = ZamindarView.directory;
-          // Clear edit mode when manually navigating away from an edit session
-          if (index == 2 || _editInvoiceNumber != null) {
-            _editInvoiceNumber = null;
-            _editReturnIndex = null;
-            _preSelectedZamindarIdForSale = null;
-            _preSelectedKisaanIdForSale = null;
-          }
-        }),
+        onTap: () => _selectNavIndex(index),
       ),
     );
   }
 
   Widget _buildFooter() {
+    final user = AuthService.instance.currentUser;
+    final displayName = user?.name ?? 'Staff';
+    final roleLabel = user?.roleLabel ?? 'User';
+    final initials = user?.initials ?? '?';
+
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
       decoration: BoxDecoration(
@@ -484,9 +568,9 @@ class _ShellState extends State<Shell> {
                         width: 1.5,
                       ),
                     ),
-                    child: const Text(
-                      'AM',
-                      style: TextStyle(
+                    child: Text(
+                      initials,
+                      style: const TextStyle(
                         color: Color(0xFFD8F3DC),
                         fontSize: 11.5,
                         fontWeight: FontWeight.w600,
@@ -512,35 +596,50 @@ class _ShellState extends State<Shell> {
                 ],
               ),
               const SizedBox(width: 10),
-              const Expanded(
+              Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      'Atta Muhammad',
+                      displayName,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
+                      style: const TextStyle(
                         color: Colors.white,
                         fontSize: 12.5,
                         fontWeight: FontWeight.w500,
                       ),
                     ),
                     Text(
-                      'Owner',
+                      roleLabel,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: Color(0xFF8FBA9A), fontSize: 10),
+                      style: const TextStyle(
+                        color: Color(0xFF8FBA9A),
+                        fontSize: 10,
+                      ),
                     ),
                   ],
                 ),
+              ),
+              IconButton(
+                tooltip: 'Switch user / Logout',
+                onPressed: () async {
+                  await AuthService.instance.logout();
+                },
+                icon: const Icon(
+                  Icons.logout_rounded,
+                  size: 16,
+                  color: Color(0xFF8FBA9A),
+                ),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
               ),
             ],
           ),
           if (_appVersion.isNotEmpty) ...[
             const SizedBox(height: 8),
-            // Version sits in the bottom-left of the profile footer (not centered)
             Text(
               _appVersion,
               style: const TextStyle(

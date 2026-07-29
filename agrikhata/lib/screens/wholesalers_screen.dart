@@ -1,9 +1,11 @@
-import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Data/agri_header.dart';
 import 'package:agrikhata/Database/database_helper.dart';
 import 'package:agrikhata/Widgets/app_auto_suggest_field.dart';
+import 'package:agrikhata/services/pdf_invoice_service.dart';
+import 'package:agrikhata/theme/theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:intl/intl.dart';
 
 // ---------------------------------------------------------------------------
 // View state
@@ -65,12 +67,48 @@ class PaymentReceipt {
   String description;
 }
 
+class _EditablePurchaseLine {
+  _EditablePurchaseLine({
+    this.productId,
+    String name = '',
+    int qty = 1,
+    double rate = 0,
+    String? expiryRaw,
+  }) {
+    nameController = TextEditingController(text: name);
+    qtyController = TextEditingController(text: '$qty');
+    rateController = TextEditingController(
+      text: rate <= 0 ? '' : '${rate.round()}',
+    );
+    expiryDate = expiryRaw == null || expiryRaw.isEmpty
+        ? null
+        : DateTime.tryParse(expiryRaw);
+  }
+
+  int? productId;
+  late final TextEditingController nameController;
+  late final TextEditingController qtyController;
+  late final TextEditingController rateController;
+  DateTime? expiryDate;
+
+  int get qty => int.tryParse(qtyController.text.trim()) ?? 0;
+  double get rate => double.tryParse(rateController.text.trim()) ?? 0;
+  double get lineTotal => qty * rate;
+
+  void dispose() {
+    nameController.dispose();
+    qtyController.dispose();
+    rateController.dispose();
+  }
+}
+
 class Wholesaler {
   Wholesaler({
     required this.id,
     required this.name,
     required this.city,
     required this.phone,
+    this.address = '',
     required this.balance,
     required this.ledger,
     required this.purchases,
@@ -81,6 +119,7 @@ class Wholesaler {
   String name;
   String city;
   String phone;
+  String address;
   double balance;
   List<LedgerEntry> ledger;
   List<PurchaseInvoice> purchases;
@@ -173,6 +212,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                 name: w.name,
                 city: w.city,
                 phone: w.phone,
+                address: w.address,
                 balance: w.balance,
                 ledger: const [],
                 purchases: [],
@@ -182,8 +222,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
             .toList();
         _loading = false;
         if (_active != null) {
-          final match =
-              _wholesalers.where((w) => w.id == _active!.id).toList();
+          final match = _wholesalers.where((w) => w.id == _active!.id).toList();
           _active = match.isEmpty ? null : match.first;
           if (_active == null) {
             _view = WholesalerView.directory;
@@ -205,8 +244,9 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
   Future<void> _loadLedger(int wholesalerId) async {
     setState(() => _ledgerLoading = true);
     try {
-      final rows =
-          await DatabaseHelper.instance.fetchWholesalerLedger(wholesalerId);
+      final rows = await DatabaseHelper.instance.fetchWholesalerLedger(
+        wholesalerId,
+      );
       if (!mounted) return;
       setState(() {
         _activeLedger = rows;
@@ -219,20 +259,16 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
         _activeLedger = [];
         _ledgerLoading = false;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Could not load khata ledger: $e'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      AppToast.showError(context, 'Could not load khata ledger: $e');
     }
   }
 
   Future<void> _loadPurchases(int wholesalerId) async {
     setState(() => _purchasesLoading = true);
     try {
-      final rows =
-          await DatabaseHelper.instance.fetchWholesalerPurchases(wholesalerId);
+      final rows = await DatabaseHelper.instance.fetchWholesalerPurchases(
+        wholesalerId,
+      );
       final items = await DatabaseHelper.instance
           .fetchWholesalerPurchaseItemsGrouped(wholesalerId);
       if (!mounted) return;
@@ -255,8 +291,9 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
   Future<void> _loadPayments(int wholesalerId) async {
     setState(() => _paymentsLoading = true);
     try {
-      final rows =
-          await DatabaseHelper.instance.fetchWholesalerPayments(wholesalerId);
+      final rows = await DatabaseHelper.instance.fetchWholesalerPayments(
+        wholesalerId,
+      );
       if (!mounted) return;
       setState(() {
         _activePayments = rows;
@@ -294,6 +331,62 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
       return w.name.toLowerCase().contains(q) ||
           w.city.toLowerCase().contains(q);
     }).toList();
+  }
+
+  double get _totalPaymentsMade {
+    return _activePayments.fold<double>(
+      0,
+      (sum, row) =>
+          sum +
+          ((row[WholesalerPaymentsTable.amount] as num?)?.toDouble() ?? 0),
+    );
+  }
+
+  Widget _rowIconAction({
+    required IconData icon,
+    required String tooltip,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(6),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            decoration: BoxDecoration(
+              border: Border.all(color: color.withValues(alpha: 0.3)),
+              borderRadius: BorderRadius.circular(6),
+              color: color.withValues(alpha: 0.06),
+            ),
+            child: Icon(icon, size: 15, color: color),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _printWholesalerStatement(Wholesaler w) async {
+    try {
+      await PdfInvoiceService.generateWholesalerStatementPdf(
+        WholesalerStatementProfile(
+          name: w.name,
+          phone: w.phone,
+          city: w.city,
+          address: w.address,
+          outstandingBalance: w.balance,
+        ),
+        _activeLedger,
+        purchases: _activePurchases,
+        payments: _activePayments,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      AppToast.showError(context, 'Could not print statement: $e');
+    }
   }
 
   void _openProfile(Wholesaler w) {
@@ -354,11 +447,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
           AgriHeader(
             breadcrumbs: isDirectory
                 ? const ['Inventory', 'Wholesalers']
-                : [
-                    'Inventory',
-                    'Wholesalers',
-                    if (active != null) active.name,
-                  ],
+                : ['Inventory', 'Wholesalers', if (active != null) active.name],
             onBreadcrumbTap: isDirectory
                 ? null
                 : (index) {
@@ -366,26 +455,10 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                   },
             actions: isDirectory
                 ? [
-                    ElevatedButton.icon(
+                    AppButton.primary(
+                      label: 'Add New Wholesaler',
+                      icon: Icons.add,
                       onPressed: _showAddWholesalerDialog,
-                      icon: const Icon(Icons.add, size: 16),
-                      label: const Text('Add New Wholesaler'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: _primary,
-                        foregroundColor: Colors.white,
-                        elevation: 0,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 12,
-                        ),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(9),
-                        ),
-                        textStyle: const TextStyle(
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
                     ),
                   ]
                 : const [],
@@ -393,8 +466,8 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
           Expanded(
             child: isDirectory
                 ? (_loading
-                    ? const Center(child: CircularProgressIndicator())
-                    : _buildDirectoryView())
+                      ? const Center(child: CircularProgressIndicator())
+                      : _buildDirectoryView())
                 : _buildProfileView(active!),
           ),
         ],
@@ -425,9 +498,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
             Container(
               padding: const EdgeInsets.all(16),
               decoration: const BoxDecoration(
-                border: Border(
-                  bottom: BorderSide(color: _border, width: 0.5),
-                ),
+                border: Border(bottom: BorderSide(color: _border, width: 0.5)),
               ),
               child: TextField(
                 controller: _searchController,
@@ -479,16 +550,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
               ),
             ),
 
-            // Table header
-            _tableHeaderRow(const [
-              _ColSpec('Wholesaler / Shop Name', flex: 26),
-              _ColSpec('Mobile Phone', flex: 16),
-              _ColSpec('City', flex: 18),
-              _ColSpec('Current Owed Balance', flex: 20),
-              _ColSpec('Actions', flex: 20),
-            ]),
-
-            // Rows
+            // Full-width striped directory table
             Expanded(
               child: rows.isEmpty
                   ? const Center(
@@ -500,15 +562,77 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                         ),
                       ),
                     )
-                  : ListView.builder(
-                      itemCount: rows.length,
-                      itemBuilder: (context, index) {
-                        final w = rows[index];
-                        return _DirectoryRow(
-                          wholesaler: w,
-                          onOpenKhata: () => _openProfile(w),
-                        );
-                      },
+                  : SingleChildScrollView(
+                      child: AppDataTable(
+                        showCardChrome: false,
+                        minWidth: 900,
+                        columns: const [
+                          AppDataColumn(
+                            title: 'Wholesaler / Shop Name',
+                            flex: 26,
+                          ),
+                          AppDataColumn(title: 'Mobile Phone', flex: 16),
+                          AppDataColumn(title: 'City', flex: 18),
+                          AppDataColumn(
+                            title: 'Current Owed Balance',
+                            flex: 20,
+                          ),
+                          AppDataColumn(title: 'Actions', flex: 20),
+                        ],
+                        rows: [
+                          for (final w in rows)
+                            AppDataRow(
+                              onTap: () => _openProfile(w),
+                              cells: [
+                                AppTableCellText(
+                                  w.name,
+                                  style: AppTextStyles.bodySmall.copyWith(
+                                    fontWeight: FontWeight.w500,
+                                    color: AppColors.primary,
+                                  ),
+                                ),
+                                AppTableCellText(
+                                  w.phone,
+                                  style: AppTextStyles.bodySmall.copyWith(
+                                    color: AppColors.textMuted,
+                                  ),
+                                ),
+                                AppTableCellText(
+                                  w.city,
+                                  style: AppTextStyles.bodySmall.copyWith(
+                                    color: AppColors.textMuted,
+                                  ),
+                                ),
+                                AppTableCellText(
+                                  formatPKR(w.balance),
+                                  style: AppTextStyles.bodySmall.copyWith(
+                                    fontWeight: FontWeight.w600,
+                                    color: w.balance > 0
+                                        ? const Color(0xFFA32D2D)
+                                        : AppColors.mediumGreen,
+                                  ),
+                                ),
+                                Row(
+                                  children: [
+                                    _rowIconAction(
+                                      icon: Icons.edit_outlined,
+                                      tooltip: 'Edit',
+                                      color: AppColors.accentGreen,
+                                      onTap: () => _showEditWholesalerDialog(w),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    _rowIconAction(
+                                      icon: Icons.delete_outline,
+                                      tooltip: 'Delete',
+                                      color: const Color(0xFFA32D2D),
+                                      onTap: () => _confirmArchiveWholesaler(w),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                        ],
+                      ),
                     ),
             ),
           ],
@@ -540,10 +664,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                   SizedBox(width: 6),
                   Text(
                     'Back to Wholesaler Directory',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: AppColors.textMuted,
-                    ),
+                    style: TextStyle(fontSize: 12, color: AppColors.textMuted),
                   ),
                 ],
               ),
@@ -606,6 +727,28 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                           ),
                         ],
                       ),
+                      if (w.address.trim().isNotEmpty) ...[
+                        const SizedBox(height: 6),
+                        Row(
+                          children: [
+                            const Icon(
+                              Icons.home_outlined,
+                              size: 13,
+                              color: AppColors.textMuted,
+                            ),
+                            const SizedBox(width: 4),
+                            Flexible(
+                              child: Text(
+                                w.address,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: AppColors.textMuted,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
                       const SizedBox(height: 16),
                       Wrap(
                         spacing: 8,
@@ -613,10 +756,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                         children: [
                           ElevatedButton.icon(
                             onPressed: () => _showRecordPaymentDialog(w),
-                            icon: const Icon(
-                              Icons.payments_outlined,
-                              size: 15,
-                            ),
+                            icon: const Icon(Icons.payments_outlined, size: 15),
                             label: const Text('Record Payment'),
                             style: ElevatedButton.styleFrom(
                               backgroundColor: _primary,
@@ -636,16 +776,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                             ),
                           ),
                           OutlinedButton.icon(
-                            onPressed: () {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text(
-                                    'Print Statement would open here.',
-                                  ),
-                                  behavior: SnackBarBehavior.floating,
-                                ),
-                              );
-                            },
+                            onPressed: () => _printWholesalerStatement(w),
                             icon: const Icon(Icons.print_outlined, size: 15),
                             label: const Text('Print Statement'),
                             style: OutlinedButton.styleFrom(
@@ -673,40 +804,84 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                   ),
                 ),
                 const SizedBox(width: 16),
-                // Outstanding balance card
-                Container(
-                  constraints: const BoxConstraints(minWidth: 230),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 24,
-                    vertical: 16,
-                  ),
-                  decoration: BoxDecoration(
-                    color: _primary,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'TOTAL OUTSTANDING UDHAAR',
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w500,
-                          letterSpacing: 0.6,
-                          color: AppColors.sidebarText,
+                // Dual KPI cards
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      constraints: const BoxConstraints(minWidth: 210),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 22,
+                        vertical: 16,
+                      ),
+                      decoration: BoxDecoration(
+                        color: _primary,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'TOTAL OUTSTANDING UDHAAR',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w500,
+                              letterSpacing: 0.6,
+                              color: AppColors.sidebarText,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            formatPKR(w.balance),
+                            style: const TextStyle(
+                              fontSize: 22,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Container(
+                      constraints: const BoxConstraints(minWidth: 210),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 22,
+                        vertical: 16,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF0F7F1),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: const Color(0xFF95D5B2),
+                          width: 1.2,
                         ),
                       ),
-                      const SizedBox(height: 6),
-                      Text(
-                        formatPKR(w.balance),
-                        style: const TextStyle(
-                          fontSize: 24,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                        ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'TOTAL PAYMENTS MADE',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w500,
+                              letterSpacing: 0.6,
+                              color: _secondary,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            formatPKR(_totalPaymentsMade),
+                            style: const TextStyle(
+                              fontSize: 22,
+                              fontWeight: FontWeight.bold,
+                              color: _secondary,
+                            ),
+                          ),
+                        ],
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -741,10 +916,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                         '📦  Bulk Purchase Invoices',
                         _ProfileTab.purchases,
                       ),
-                      _profileTabChip(
-                        '💸  Payment Logs',
-                        _ProfileTab.payments,
-                      ),
+                      _profileTabChip('💸  Payment Logs', _ProfileTab.payments),
                     ],
                   ),
                 ),
@@ -807,8 +979,18 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
     final parsed = DateTime.tryParse(raw);
     if (parsed == null) return raw;
     const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
     ];
     return '${parsed.day} ${months[parsed.month - 1]} ${parsed.year}';
   }
@@ -839,13 +1021,11 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
           final credit =
               (row[WholesalerLedgerTable.credit] as num?)?.toDouble() ?? 0;
           final balance =
-              (row[WholesalerLedgerTable.runningBalance] as num?)
-                      ?.toDouble() ??
-                  0;
+              (row[WholesalerLedgerTable.runningBalance] as num?)?.toDouble() ??
+              0;
           final type =
               row[WholesalerLedgerTable.transactionType] as String? ?? '—';
-          final ref =
-              row[WholesalerLedgerTable.referenceId] as String? ?? '—';
+          final ref = row[WholesalerLedgerTable.referenceId] as String? ?? '—';
           final dateRaw = row[WholesalerLedgerTable.date] as String?;
           final isPurchase = type == WholesalerLedgerTxnType.purchase;
           final items = isPurchase
@@ -893,9 +1073,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                         if (items.isNotEmpty) ...[
                           const SizedBox(width: 4),
                           Icon(
-                            expanded
-                                ? Icons.expand_less
-                                : Icons.expand_more,
+                            expanded ? Icons.expand_less : Icons.expand_more,
                             size: 16,
                             color: AppColors.textMuted,
                           ),
@@ -947,16 +1125,10 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                           ),
                   ),
                 ),
-                _cell(
-                  formatPKR(balance),
-                  flex: 18,
-                  medium: true,
-                  bold: true,
-                ),
+                _cell(formatPKR(balance), flex: 18, medium: true, bold: true),
               ]),
             ),
-            if (expanded && items.isNotEmpty)
-              _buildProductDetailsPanel(items),
+            if (expanded && items.isNotEmpty) _buildProductDetailsPanel(items),
           ];
         }),
       ],
@@ -984,8 +1156,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
           ),
           const SizedBox(height: 8),
           ...items.map((item) {
-            final name =
-                item[PurchaseItemsTable.productName] as String? ?? '—';
+            final name = item[PurchaseItemsTable.productName] as String? ?? '—';
             final qty =
                 (item[PurchaseItemsTable.quantity] as num?)?.toInt() ?? 0;
             final rate =
@@ -1097,11 +1268,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
       ),
       child: Text(
         label,
-        style: TextStyle(
-          fontSize: 10,
-          fontWeight: FontWeight.w500,
-          color: fg,
-        ),
+        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w500, color: fg),
       ),
     );
   }
@@ -1120,12 +1287,13 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
       children: [
         _tableHeaderRow(const [
           _ColSpec('', flex: 4),
-          _ColSpec('Date', flex: 14),
-          _ColSpec('Invoice No.', flex: 16),
-          _ColSpec('Transport', flex: 14),
-          _ColSpec('Total Bill', flex: 16),
-          _ColSpec('Payment Type', flex: 14),
-          _ColSpec('Items', flex: 12),
+          _ColSpec('Date', flex: 12),
+          _ColSpec('Invoice No.', flex: 14),
+          _ColSpec('Transport', flex: 12),
+          _ColSpec('Total Bill', flex: 13),
+          _ColSpec('Payment Type', flex: 12),
+          _ColSpec('Items', flex: 8),
+          _ColSpec('Actions', flex: 15),
         ]),
         ..._activePurchases.expand((row) {
           final dateRaw = row[PurchaseInvoicesTable.dateTime] as String?;
@@ -1133,8 +1301,8 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
               row[PurchaseInvoicesTable.invoiceNumber] as String? ?? '—';
           final transport =
               (row[PurchaseInvoicesTable.transportCharges] as num?)
-                      ?.toDouble() ??
-                  0;
+                  ?.toDouble() ??
+              0;
           final total =
               (row[PurchaseInvoicesTable.grandTotal] as num?)?.toDouble() ?? 0;
           final payType =
@@ -1161,9 +1329,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                     child: Icon(
                       items.isEmpty
                           ? Icons.remove
-                          : (expanded
-                              ? Icons.expand_less
-                              : Icons.expand_more),
+                          : (expanded ? Icons.expand_less : Icons.expand_more),
                       size: 18,
                       color: AppColors.textMuted,
                     ),
@@ -1171,15 +1337,15 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                 ),
                 _cell(
                   _formatLedgerDate(dateRaw),
-                  flex: 14,
+                  flex: 12,
                   muted: true,
                   small: true,
                 ),
-                _cell(invoice, flex: 16, medium: true),
-                _cell(formatPKR(transport), flex: 14, muted: true),
-                _cell(formatPKR(total), flex: 16, medium: true, bold: true),
+                _cell(invoice, flex: 14, medium: true),
+                _cell(formatPKR(transport), flex: 12, muted: true),
+                _cell(formatPKR(total), flex: 13, medium: true, bold: true),
                 Expanded(
-                  flex: 14,
+                  flex: 12,
                   child: Padding(
                     padding: const EdgeInsets.symmetric(
                       horizontal: 14,
@@ -1195,15 +1361,34 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                     ),
                   ),
                 ),
-                _cell(
-                  '${items.length}',
-                  flex: 12,
-                  muted: true,
+                _cell('${items.length}', flex: 8, muted: true),
+                Expanded(
+                  flex: 15,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: Row(
+                      children: [
+                        _rowIconAction(
+                          icon: Icons.edit_outlined,
+                          tooltip: 'Edit Invoice',
+                          color: AppColors.accentGreen,
+                          onTap: () => _showEditPurchaseInvoiceDialog(w, row),
+                        ),
+                        const SizedBox(width: 4),
+                        _rowIconAction(
+                          icon: Icons.delete_outline,
+                          tooltip: 'Delete Invoice',
+                          color: const Color(0xFFA32D2D),
+                          onTap: () =>
+                              _confirmDeletePurchaseInvoice(w, invoice),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
               ]),
             ),
-            if (expanded && items.isNotEmpty)
-              _buildProductDetailsPanel(items),
+            if (expanded && items.isNotEmpty) _buildProductDetailsPanel(items),
           ];
         }),
       ],
@@ -1225,12 +1410,13 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
     return Column(
       children: [
         _tableHeaderRow(const [
-          _ColSpec('Date', flex: 12),
-          _ColSpec('Reference / Invoice No.', flex: 14),
-          _ColSpec('Amount Paid', flex: 12),
-          _ColSpec('Method', flex: 10),
-          _ColSpec('Items Summary', flex: 20),
-          _ColSpec('Description', flex: 18),
+          _ColSpec('Date', flex: 11),
+          _ColSpec('Reference / Invoice No.', flex: 13),
+          _ColSpec('Amount Paid', flex: 11),
+          _ColSpec('Method', flex: 9),
+          _ColSpec('Items Summary', flex: 17),
+          _ColSpec('Description', flex: 15),
+          _ColSpec('Actions', flex: 14),
         ]),
         ..._activePayments.map((row) {
           final dateRaw = row[WholesalerPaymentsTable.date] as String?;
@@ -1248,17 +1434,21 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
               ? '—'
               : itemsSummary.trim();
           final isClearance = itemsText == 'N/A (Account Clearance)';
+          final source =
+              row[WholesalerPaymentsTable.paymentSource] as String? ?? '';
+          final isManual =
+              source == WholesalerPaymentSource.manualKhataPayment;
 
           return _dataRow([
             _cell(
               _formatLedgerDate(dateRaw),
-              flex: 12,
+              flex: 11,
               muted: true,
               small: true,
             ),
-            _cell(ref.isEmpty ? '—' : ref, flex: 14, medium: true),
+            _cell(ref.isEmpty ? '—' : ref, flex: 13, medium: true),
             Expanded(
-              flex: 12,
+              flex: 11,
               child: Padding(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 14,
@@ -1274,9 +1464,9 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                 ),
               ),
             ),
-            _cell(method, flex: 10, muted: true),
+            _cell(method, flex: 9, muted: true),
             Expanded(
-              flex: 20,
+              flex: 17,
               child: Padding(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 14,
@@ -1288,14 +1478,16 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontSize: 12,
-                    fontStyle: isClearance ? FontStyle.italic : FontStyle.normal,
+                    fontStyle: isClearance
+                        ? FontStyle.italic
+                        : FontStyle.normal,
                     color: isClearance ? AppColors.textMuted : _primary,
                   ),
                 ),
               ),
             ),
             Expanded(
-              flex: 18,
+              flex: 15,
               child: Padding(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 14,
@@ -1314,10 +1506,1203 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                 ),
               ),
             ),
+            Expanded(
+              flex: 14,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: isManual
+                    ? Row(
+                        children: [
+                          _rowIconAction(
+                            icon: Icons.edit_outlined,
+                            tooltip: 'Edit Payment',
+                            color: AppColors.accentGreen,
+                            onTap: () => _showEditPaymentDialog(w, row),
+                          ),
+                          const SizedBox(width: 4),
+                          _rowIconAction(
+                            icon: Icons.delete_outline,
+                            tooltip: 'Delete Payment',
+                            color: const Color(0xFFA32D2D),
+                            onTap: () => _confirmDeletePayment(w, row),
+                          ),
+                        ],
+                      )
+                    : Tooltip(
+                        message:
+                            'Tied to purchase invoice — edit/delete the invoice instead',
+                        child: Text(
+                          'Via Invoice',
+                          style: TextStyle(
+                            fontSize: 10.5,
+                            color: AppColors.textMuted,
+                            fontStyle: FontStyle.italic,
+                          ),
+                        ),
+                      ),
+              ),
+            ),
           ]);
         }),
       ],
     );
+  }
+
+  // ===========================================================================
+  // Directory — Edit / Archive wholesaler
+  // ===========================================================================
+
+  Future<void> _showEditWholesalerDialog(Wholesaler w) async {
+    final nameController = TextEditingController(text: w.name);
+    final phoneController = TextEditingController(text: w.phone);
+    final cityController = TextEditingController(text: w.city);
+    final addressController = TextEditingController(text: w.address);
+    String? errorText;
+
+    final saved = await showDialog<bool>(
+      context: context,
+      barrierColor: _primary.withValues(alpha: 0.4),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setModalState) {
+            return Dialog(
+              backgroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+              insetPadding: const EdgeInsets.symmetric(horizontal: 24),
+              child: SizedBox(
+                width: 440,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 18,
+                        vertical: 14,
+                      ),
+                      decoration: const BoxDecoration(
+                        color: _primary,
+                        borderRadius: BorderRadius.vertical(
+                          top: Radius.circular(14),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          const Expanded(
+                            child: Text(
+                              'Edit Wholesaler',
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                          InkWell(
+                            onTap: () => Navigator.of(ctx).pop(false),
+                            borderRadius: BorderRadius.circular(7),
+                            child: Container(
+                              width: 26,
+                              height: 26,
+                              alignment: Alignment.center,
+                              child: Icon(
+                                Icons.close,
+                                size: 16,
+                                color: AppColors.sidebarText,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.all(18),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _modalLabel('Wholesaler / Shop Name *'),
+                          TextField(
+                            controller: nameController,
+                            autofocus: true,
+                            style: const TextStyle(
+                              fontSize: 12.5,
+                              color: _primary,
+                            ),
+                            decoration: _modalFieldDecoration(
+                              hint: 'e.g. Khan Traders',
+                            ),
+                            textInputAction: TextInputAction.next,
+                          ),
+                          const SizedBox(height: 12),
+                          _modalLabel('Mobile Phone *'),
+                          TextField(
+                            controller: phoneController,
+                            keyboardType: TextInputType.phone,
+                            inputFormatters: [
+                              FilteringTextInputFormatter.allow(
+                                RegExp(r'[0-9+\-\s]'),
+                              ),
+                            ],
+                            style: const TextStyle(
+                              fontSize: 12.5,
+                              color: _primary,
+                            ),
+                            decoration: _modalFieldDecoration(
+                              hint: 'e.g. 0301-2345678',
+                            ),
+                            textInputAction: TextInputAction.next,
+                          ),
+                          const SizedBox(height: 12),
+                          _modalLabel('City *'),
+                          TextField(
+                            controller: cityController,
+                            style: const TextStyle(
+                              fontSize: 12.5,
+                              color: _primary,
+                            ),
+                            decoration: _modalFieldDecoration(
+                              hint: 'e.g. Sukkur',
+                            ),
+                            textInputAction: TextInputAction.next,
+                          ),
+                          const SizedBox(height: 12),
+                          _modalLabel('Address (optional)'),
+                          TextField(
+                            controller: addressController,
+                            style: const TextStyle(
+                              fontSize: 12.5,
+                              color: _primary,
+                            ),
+                            decoration: _modalFieldDecoration(
+                              hint: 'Shop / warehouse address',
+                            ),
+                            maxLines: 2,
+                          ),
+                          if (errorText != null) ...[
+                            const SizedBox(height: 12),
+                            Text(
+                              errorText!,
+                              style: const TextStyle(
+                                fontSize: 11.5,
+                                color: Color(0xFF791F1F),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 18,
+                        vertical: 12,
+                      ),
+                      decoration: const BoxDecoration(
+                        border: Border(
+                          top: BorderSide(color: _border, width: 0.5),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          OutlinedButton(
+                            onPressed: () => Navigator.of(ctx).pop(false),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: _primary,
+                              side: const BorderSide(
+                                color: _inputBorder,
+                                width: 0.5,
+                              ),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 10,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(9),
+                              ),
+                            ),
+                            child: const Text('Cancel'),
+                          ),
+                          const SizedBox(width: 8),
+                          ElevatedButton.icon(
+                            onPressed: () {
+                              if (nameController.text.trim().isEmpty ||
+                                  phoneController.text.trim().isEmpty ||
+                                  cityController.text.trim().isEmpty) {
+                                setModalState(() {
+                                  errorText =
+                                      'Please fill in Name, Phone, and City.';
+                                });
+                                return;
+                              }
+                              Navigator.of(ctx).pop(true);
+                            },
+                            icon: const Icon(Icons.check, size: 15),
+                            label: const Text('Save Changes'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: _primary,
+                              foregroundColor: Colors.white,
+                              elevation: 0,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 10,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(9),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    if (saved != true || !mounted) {
+      nameController.dispose();
+      phoneController.dispose();
+      cityController.dispose();
+      addressController.dispose();
+      return;
+    }
+
+    final id = int.tryParse(w.id);
+    if (id == null) return;
+
+    try {
+      await DatabaseHelper.instance.updateWholesaler(
+        DbWholesaler(
+          id: id,
+          name: nameController.text.trim(),
+          phone: phoneController.text.trim(),
+          city: cityController.text.trim(),
+          address: addressController.text.trim(),
+          balance: w.balance,
+        ),
+      );
+      if (!mounted) return;
+      _showSuccessToast(
+        title: 'Wholesaler Updated',
+        message: '${nameController.text.trim()} saved successfully',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      AppToast.showError(context, 'Failed to update wholesaler: $e');
+    } finally {
+      nameController.dispose();
+      phoneController.dispose();
+      cityController.dispose();
+      addressController.dispose();
+    }
+  }
+
+  Future<void> _confirmArchiveWholesaler(Wholesaler w) async {
+    final confirmed = await AppDialog.confirm(
+      context: context,
+      title: 'Archive Wholesaler?',
+      message:
+          'Are you sure? This will hide/archive this wholesaler '
+          '(${w.name}). Historical invoices and payments are kept.',
+      confirmLabel: 'Archive',
+      danger: true,
+    );
+    if (confirmed != true || !mounted) return;
+
+    final id = int.tryParse(w.id);
+    if (id == null) return;
+
+    try {
+      await DatabaseHelper.instance.archiveWholesaler(id);
+      if (!mounted) return;
+      if (_active?.id == w.id) _backToDirectory();
+      _showSuccessToast(
+        title: 'Wholesaler Archived',
+        message: '${w.name} hidden from directory',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      AppToast.showError(context, 'Failed to archive wholesaler: $e');
+    }
+  }
+
+  // ===========================================================================
+  // Purchases — Edit / Delete invoice
+  // ===========================================================================
+
+  Future<void> _confirmDeletePurchaseInvoice(
+    Wholesaler w,
+    String invoiceNumber,
+  ) async {
+    final confirmed = await AppDialog.confirm(
+      context: context,
+      title: 'Delete Purchase Invoice?',
+      message:
+          'Delete $invoiceNumber? This reverses the purchase ledger entry, '
+          'updates inventory stock, and recalculates ${w.name}\'s outstanding.',
+      confirmLabel: 'Delete Invoice',
+      danger: true,
+    );
+    if (confirmed != true || !mounted) return;
+
+    try {
+      await DatabaseHelper.instance.deletePurchaseInvoiceEntirely(
+        invoiceNumber,
+      );
+      if (!mounted) return;
+      _showSuccessToast(
+        title: 'Invoice Deleted',
+        message: '$invoiceNumber reversed and stock adjusted',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      AppToast.showError(context, 'Failed to delete invoice: $e');
+    }
+  }
+
+  Future<void> _showEditPurchaseInvoiceDialog(
+    Wholesaler w,
+    Map<String, dynamic> invoiceRow,
+  ) async {
+    final invoiceNumber =
+        invoiceRow[PurchaseInvoicesTable.invoiceNumber] as String? ?? '';
+    if (invoiceNumber.isEmpty) return;
+
+    final existingItems = _purchaseItemsByInvoice[invoiceNumber] ?? const [];
+    final itemEditors = <_EditablePurchaseLine>[
+      for (final item in existingItems)
+        _EditablePurchaseLine(
+          productId: item[PurchaseItemsTable.productId] as int?,
+          name: item[PurchaseItemsTable.productName] as String? ?? '',
+          qty: (item[PurchaseItemsTable.quantity] as num?)?.toInt() ?? 1,
+          rate: (item[PurchaseItemsTable.purchaseRate] as num?)?.toDouble() ?? 0,
+          expiryRaw: item[PurchaseItemsTable.expiryDate] as String?,
+        ),
+    ];
+    if (itemEditors.isEmpty) {
+      itemEditors.add(_EditablePurchaseLine());
+    }
+
+    final transportController = TextEditingController(
+      text:
+          '${(invoiceRow[PurchaseInvoicesTable.transportCharges] as num?)?.round() ?? 0}',
+    );
+    final amountPaidController = TextEditingController(
+      text:
+          '${(invoiceRow[PurchaseInvoicesTable.amountPaid] as num?)?.round() ?? 0}',
+    );
+    final descriptionController = TextEditingController(
+      text: invoiceRow[PurchaseInvoicesTable.description] as String? ?? '',
+    );
+    var invoiceDate =
+        DateTime.tryParse(
+          invoiceRow[PurchaseInvoicesTable.dateTime] as String? ?? '',
+        ) ??
+        DateTime.now();
+    var paymentType =
+        invoiceRow[PurchaseInvoicesTable.paymentType] as String? ??
+        PurchasePaymentType.udhaar;
+    if (paymentType != PurchasePaymentType.cash &&
+        paymentType != PurchasePaymentType.partial &&
+        paymentType != PurchasePaymentType.udhaar) {
+      paymentType = PurchasePaymentType.udhaar;
+    }
+
+    final saved = await showDialog<bool>(
+      context: context,
+      barrierColor: _primary.withValues(alpha: 0.4),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setModalState) {
+            double subtotal = 0;
+            for (final line in itemEditors) {
+              subtotal += line.lineTotal;
+            }
+            final transport =
+                double.tryParse(transportController.text.trim()) ?? 0;
+            final grand = subtotal + transport;
+
+            return Dialog(
+              backgroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+              insetPadding: const EdgeInsets.symmetric(
+                horizontal: 24,
+                vertical: 24,
+              ),
+              child: SizedBox(
+                width: 720,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxHeight: MediaQuery.sizeOf(ctx).height * 0.85,
+                  ),
+                  child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 18,
+                        vertical: 14,
+                      ),
+                      decoration: const BoxDecoration(
+                        color: _primary,
+                        borderRadius: BorderRadius.vertical(
+                          top: Radius.circular(14),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              'Edit Invoice · $invoiceNumber',
+                              style: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                          InkWell(
+                            onTap: () => Navigator.of(ctx).pop(false),
+                            child: Icon(
+                              Icons.close,
+                              size: 16,
+                              color: AppColors.sidebarText,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Flexible(
+                      child: SingleChildScrollView(
+                        padding: const EdgeInsets.all(18),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      _modalLabel('Invoice Date'),
+                                      InkWell(
+                                        onTap: () async {
+                                          final picked = await showDatePicker(
+                                            context: ctx,
+                                            initialDate: invoiceDate,
+                                            firstDate: DateTime(2020),
+                                            lastDate: DateTime(2100),
+                                          );
+                                          if (picked != null) {
+                                            setModalState(
+                                              () => invoiceDate = picked,
+                                            );
+                                          }
+                                        },
+                                        child: InputDecorator(
+                                          decoration: _modalFieldDecoration(),
+                                          child: Text(
+                                            DateFormat(
+                                              'dd MMM yyyy',
+                                            ).format(invoiceDate),
+                                            style: const TextStyle(
+                                              fontSize: 12.5,
+                                              color: _primary,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      _modalLabel('Transport Charges'),
+                                      TextField(
+                                        controller: transportController,
+                                        keyboardType:
+                                            const TextInputType.numberWithOptions(
+                                              decimal: true,
+                                            ),
+                                        inputFormatters: [
+                                          FilteringTextInputFormatter.allow(
+                                            RegExp(r'[0-9.]'),
+                                          ),
+                                        ],
+                                        onChanged: (_) => setModalState(() {}),
+                                        style: const TextStyle(
+                                          fontSize: 12.5,
+                                          color: _primary,
+                                        ),
+                                        decoration: _modalFieldDecoration(
+                                          hint: '0',
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      _modalLabel('Payment Type'),
+                                      DropdownButtonFormField<String>(
+                                        initialValue: paymentType,
+                                        decoration: _modalFieldDecoration(),
+                                        style: const TextStyle(
+                                          fontSize: 12.5,
+                                          color: _primary,
+                                        ),
+                                        items: const [
+                                          DropdownMenuItem(
+                                            value: PurchasePaymentType.udhaar,
+                                            child: Text('Udhaar'),
+                                          ),
+                                          DropdownMenuItem(
+                                            value: PurchasePaymentType.cash,
+                                            child: Text('Cash'),
+                                          ),
+                                          DropdownMenuItem(
+                                            value: PurchasePaymentType.partial,
+                                            child: Text('Partial'),
+                                          ),
+                                        ],
+                                        onChanged: (v) {
+                                          if (v == null) return;
+                                          setModalState(() => paymentType = v);
+                                        },
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      _modalLabel('Amount Paid'),
+                                      TextField(
+                                        controller: amountPaidController,
+                                        enabled:
+                                            paymentType ==
+                                            PurchasePaymentType.partial,
+                                        keyboardType:
+                                            const TextInputType.numberWithOptions(
+                                              decimal: true,
+                                            ),
+                                        inputFormatters: [
+                                          FilteringTextInputFormatter.allow(
+                                            RegExp(r'[0-9.]'),
+                                          ),
+                                        ],
+                                        style: const TextStyle(
+                                          fontSize: 12.5,
+                                          color: _primary,
+                                        ),
+                                        decoration: _modalFieldDecoration(
+                                          hint: '0',
+                                          fill:
+                                              paymentType ==
+                                                  PurchasePaymentType.partial
+                                              ? null
+                                              : _bg,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            _modalLabel('Description (optional)'),
+                            TextField(
+                              controller: descriptionController,
+                              style: const TextStyle(
+                                fontSize: 12.5,
+                                color: _primary,
+                              ),
+                              decoration: _modalFieldDecoration(),
+                            ),
+                            const SizedBox(height: 16),
+                            Row(
+                              children: [
+                                const Expanded(
+                                  child: Text(
+                                    'Line Items',
+                                    style: TextStyle(
+                                      fontSize: 12.5,
+                                      fontWeight: FontWeight.w600,
+                                      color: _primary,
+                                    ),
+                                  ),
+                                ),
+                                TextButton.icon(
+                                  onPressed: () {
+                                    setModalState(
+                                      () => itemEditors.add(
+                                        _EditablePurchaseLine(),
+                                      ),
+                                    );
+                                  },
+                                  icon: const Icon(Icons.add, size: 14),
+                                  label: const Text('Add Item'),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            for (var i = 0; i < itemEditors.length; i++)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: Row(
+                                  children: [
+                                    Expanded(
+                                      flex: 4,
+                                      child: TextField(
+                                        controller: itemEditors[i].nameController,
+                                        onChanged: (_) => setModalState(() {}),
+                                        style: const TextStyle(
+                                          fontSize: 12.5,
+                                          color: _primary,
+                                        ),
+                                        decoration: _modalFieldDecoration(
+                                          hint: 'Product name',
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    SizedBox(
+                                      width: 72,
+                                      child: TextField(
+                                        controller: itemEditors[i].qtyController,
+                                        keyboardType: TextInputType.number,
+                                        inputFormatters: [
+                                          FilteringTextInputFormatter.digitsOnly,
+                                        ],
+                                        onChanged: (_) => setModalState(() {}),
+                                        style: const TextStyle(
+                                          fontSize: 12.5,
+                                          color: _primary,
+                                        ),
+                                        decoration: _modalFieldDecoration(
+                                          hint: 'Qty',
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    SizedBox(
+                                      width: 100,
+                                      child: TextField(
+                                        controller:
+                                            itemEditors[i].rateController,
+                                        keyboardType:
+                                            const TextInputType.numberWithOptions(
+                                              decimal: true,
+                                            ),
+                                        inputFormatters: [
+                                          FilteringTextInputFormatter.allow(
+                                            RegExp(r'[0-9.]'),
+                                          ),
+                                        ],
+                                        onChanged: (_) => setModalState(() {}),
+                                        style: const TextStyle(
+                                          fontSize: 12.5,
+                                          color: _primary,
+                                        ),
+                                        decoration: _modalFieldDecoration(
+                                          hint: 'Rate',
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    SizedBox(
+                                      width: 90,
+                                      child: Text(
+                                        formatPKR(itemEditors[i].lineTotal),
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w600,
+                                          color: _primary,
+                                        ),
+                                      ),
+                                    ),
+                                    IconButton(
+                                      tooltip: 'Remove',
+                                      onPressed: itemEditors.length <= 1
+                                          ? null
+                                          : () {
+                                              setModalState(() {
+                                                itemEditors[i].dispose();
+                                                itemEditors.removeAt(i);
+                                              });
+                                            },
+                                      icon: const Icon(
+                                        Icons.close,
+                                        size: 16,
+                                        color: Color(0xFFA32D2D),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            const SizedBox(height: 8),
+                            Align(
+                              alignment: Alignment.centerRight,
+                              child: Text(
+                                'Bill Total: ${formatPKR(grand)}',
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                  color: _primary,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 18,
+                        vertical: 12,
+                      ),
+                      decoration: const BoxDecoration(
+                        border: Border(
+                          top: BorderSide(color: _border, width: 0.5),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          OutlinedButton(
+                            onPressed: () => Navigator.of(ctx).pop(false),
+                            child: const Text('Cancel'),
+                          ),
+                          const SizedBox(width: 8),
+                          ElevatedButton.icon(
+                            onPressed: () {
+                              final valid = itemEditors.any(
+                                (l) =>
+                                    l.nameController.text.trim().isNotEmpty &&
+                                    l.qty > 0 &&
+                                    l.rate >= 0,
+                              );
+                              if (!valid) {
+                                AppToast.showError(
+                                  context,
+                                  'Add at least one valid line item.',
+                                );
+                                return;
+                              }
+                              Navigator.of(ctx).pop(true);
+                            },
+                            icon: const Icon(Icons.check, size: 15),
+                            label: const Text('Save Invoice'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: _primary,
+                              foregroundColor: Colors.white,
+                              elevation: 0,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    if (saved != true || !mounted) {
+      for (final line in itemEditors) {
+        line.dispose();
+      }
+      transportController.dispose();
+      amountPaidController.dispose();
+      descriptionController.dispose();
+      return;
+    }
+
+    final lines = <PurchaseLineItem>[
+      for (final line in itemEditors)
+        if (line.nameController.text.trim().isNotEmpty && line.qty > 0)
+          PurchaseLineItem(
+            productId: line.productId,
+            productName: line.nameController.text.trim(),
+            quantity: line.qty,
+            purchaseRate: line.rate,
+            expiryDate: line.expiryDate,
+          ),
+    ];
+
+    final transport = double.tryParse(transportController.text.trim()) ?? 0;
+    final amountPaid = double.tryParse(amountPaidController.text.trim()) ?? 0;
+    final description = descriptionController.text.trim();
+
+    for (final line in itemEditors) {
+      line.dispose();
+    }
+    transportController.dispose();
+    amountPaidController.dispose();
+    descriptionController.dispose();
+
+    if (lines.isEmpty) return;
+    final wholesalerId = int.tryParse(w.id);
+    if (wholesalerId == null) return;
+
+    try {
+      await DatabaseHelper.instance.updatePurchaseInvoice(
+        invoiceNumber: invoiceNumber,
+        wholesalerId: wholesalerId,
+        wholesalerName: w.name,
+        dateTime: invoiceDate,
+        items: lines,
+        transportCharges: transport < 0 ? 0 : transport,
+        paymentType: paymentType,
+        amountPaid: amountPaid,
+        description: description,
+      );
+      if (!mounted) return;
+      _showSuccessToast(
+        title: 'Invoice Updated',
+        message: '$invoiceNumber saved — supplier balance recalculated',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      AppToast.showError(context, 'Failed to update invoice: $e');
+    }
+  }
+
+  // ===========================================================================
+  // Payments — Edit / Delete
+  // ===========================================================================
+
+  Future<void> _showEditPaymentDialog(
+    Wholesaler w,
+    Map<String, dynamic> paymentRow,
+  ) async {
+    final paymentId = paymentRow[WholesalerPaymentsTable.id] as int?;
+    if (paymentId == null) return;
+
+    final amountController = TextEditingController(
+      text:
+          '${(paymentRow[WholesalerPaymentsTable.amount] as num?)?.round() ?? 0}',
+    );
+    final notesController = TextEditingController(
+      text: paymentRow[WholesalerPaymentsTable.notes] as String? ?? '',
+    );
+    final refController = TextEditingController(
+      text: paymentRow[WholesalerPaymentsTable.referenceNo] as String? ?? '',
+    );
+    var method =
+        paymentRow[WholesalerPaymentsTable.paymentMethod] as String? ?? 'Cash';
+    if (method != 'Cash' && method != 'Bank Transfer') method = 'Cash';
+    var paymentDate =
+        DateTime.tryParse(
+          paymentRow[WholesalerPaymentsTable.date] as String? ?? '',
+        ) ??
+        DateTime.now();
+    final oldAmount =
+        (paymentRow[WholesalerPaymentsTable.amount] as num?)?.toDouble() ?? 0;
+
+    final saved = await showDialog<bool>(
+      context: context,
+      barrierColor: _primary.withValues(alpha: 0.4),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setModalState) {
+            return Dialog(
+              backgroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+              insetPadding: const EdgeInsets.symmetric(horizontal: 24),
+              child: SizedBox(
+                width: 420,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 18,
+                        vertical: 14,
+                      ),
+                      decoration: const BoxDecoration(
+                        color: _primary,
+                        borderRadius: BorderRadius.vertical(
+                          top: Radius.circular(14),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          const Expanded(
+                            child: Text(
+                              'Edit Payment',
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                          InkWell(
+                            onTap: () => Navigator.of(ctx).pop(false),
+                            child: Icon(
+                              Icons.close,
+                              size: 16,
+                              color: AppColors.sidebarText,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.all(18),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _modalLabel('Amount Paid (₨)'),
+                          TextField(
+                            controller: amountController,
+                            keyboardType: const TextInputType.numberWithOptions(
+                              decimal: true,
+                            ),
+                            inputFormatters: [
+                              FilteringTextInputFormatter.allow(
+                                RegExp(r'[0-9.]'),
+                              ),
+                            ],
+                            style: const TextStyle(
+                              fontSize: 12.5,
+                              color: _primary,
+                            ),
+                            decoration: _modalFieldDecoration(),
+                          ),
+                          const SizedBox(height: 12),
+                          _modalLabel('Payment Date'),
+                          InkWell(
+                            onTap: () async {
+                              final picked = await showDatePicker(
+                                context: ctx,
+                                initialDate: paymentDate,
+                                firstDate: DateTime(2020),
+                                lastDate: DateTime(2100),
+                              );
+                              if (picked != null) {
+                                setModalState(() => paymentDate = picked);
+                              }
+                            },
+                            child: InputDecorator(
+                              decoration: _modalFieldDecoration(),
+                              child: Text(
+                                DateFormat('dd MMM yyyy').format(paymentDate),
+                                style: const TextStyle(
+                                  fontSize: 12.5,
+                                  color: _primary,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          _modalLabel('Payment Mode'),
+                          DropdownButtonFormField<String>(
+                            initialValue: method,
+                            decoration: _modalFieldDecoration(),
+                            style: const TextStyle(
+                              fontSize: 12.5,
+                              color: _primary,
+                            ),
+                            items: const [
+                              DropdownMenuItem(
+                                value: 'Cash',
+                                child: Text('Cash'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'Bank Transfer',
+                                child: Text('Bank Transfer'),
+                              ),
+                            ],
+                            onChanged: (v) {
+                              if (v == null) return;
+                              setModalState(() => method = v);
+                            },
+                          ),
+                          const SizedBox(height: 12),
+                          _modalLabel('Reference / Receipt No.'),
+                          TextField(
+                            controller: refController,
+                            style: const TextStyle(
+                              fontSize: 12.5,
+                              color: _primary,
+                            ),
+                            decoration: _modalFieldDecoration(),
+                          ),
+                          const SizedBox(height: 12),
+                          _modalLabel('Notes'),
+                          TextField(
+                            controller: notesController,
+                            style: const TextStyle(
+                              fontSize: 12.5,
+                              color: _primary,
+                            ),
+                            decoration: _modalFieldDecoration(),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 18,
+                        vertical: 12,
+                      ),
+                      decoration: const BoxDecoration(
+                        border: Border(
+                          top: BorderSide(color: _border, width: 0.5),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          OutlinedButton(
+                            onPressed: () => Navigator.of(ctx).pop(false),
+                            child: const Text('Cancel'),
+                          ),
+                          const SizedBox(width: 8),
+                          ElevatedButton.icon(
+                            onPressed: () {
+                              final amount = double.tryParse(
+                                amountController.text.trim(),
+                              );
+                              if (amount == null || amount <= 0) {
+                                AppToast.showError(
+                                  context,
+                                  'Enter a valid payment amount.',
+                                );
+                                return;
+                              }
+                              final maxAllowed =
+                                  _outstandingOwedAmount(w) + oldAmount + 0.01;
+                              if (amount > maxAllowed) {
+                                AppToast.showError(
+                                  context,
+                                  'Amount exceeds available outstanding balance.',
+                                );
+                                return;
+                              }
+                              Navigator.of(ctx).pop(true);
+                            },
+                            icon: const Icon(Icons.check, size: 15),
+                            label: const Text('Save Payment'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: _primary,
+                              foregroundColor: Colors.white,
+                              elevation: 0,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    if (saved != true || !mounted) {
+      amountController.dispose();
+      notesController.dispose();
+      refController.dispose();
+      return;
+    }
+
+    final amount = double.tryParse(amountController.text.trim()) ?? 0;
+    final notes = notesController.text.trim();
+    final ref = refController.text.trim();
+    amountController.dispose();
+    notesController.dispose();
+    refController.dispose();
+
+    if (amount <= 0) return;
+
+    try {
+      await DatabaseHelper.instance.updateWholesalerPayment(
+        paymentId: paymentId,
+        amount: amount,
+        method: method,
+        date: paymentDate,
+        notes: notes,
+        referenceNo: ref,
+      );
+      if (!mounted) return;
+      _showSuccessToast(
+        title: 'Payment Updated',
+        message: '${formatPKR(amount)} via $method',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      AppToast.showError(context, 'Failed to update payment: $e');
+    }
+  }
+
+  Future<void> _confirmDeletePayment(
+    Wholesaler w,
+    Map<String, dynamic> paymentRow,
+  ) async {
+    final paymentId = paymentRow[WholesalerPaymentsTable.id] as int?;
+    if (paymentId == null) return;
+    final amount =
+        (paymentRow[WholesalerPaymentsTable.amount] as num?)?.toDouble() ?? 0;
+    final ref =
+        paymentRow[WholesalerPaymentsTable.referenceNo] as String? ?? '';
+
+    final confirmed = await AppDialog.confirm(
+      context: context,
+      title: 'Delete Payment?',
+      message:
+          'Delete payment ${ref.isEmpty ? formatPKR(amount) : ref} '
+          '(${formatPKR(amount)})? This restores the amount to '
+          '${w.name}\'s outstanding balance.',
+      confirmLabel: 'Delete Payment',
+      danger: true,
+    );
+    if (confirmed != true || !mounted) return;
+
+    try {
+      await DatabaseHelper.instance.deleteWholesalerPayment(paymentId);
+      if (!mounted) return;
+      _showSuccessToast(
+        title: 'Payment Deleted',
+        message: '${formatPKR(amount)} restored to outstanding',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      AppToast.showError(context, 'Failed to delete payment: $e');
+    }
   }
 
   // ===========================================================================
@@ -1328,6 +2713,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
     final nameController = TextEditingController();
     final phoneController = TextEditingController();
     final cityController = TextEditingController();
+    final addressController = TextEditingController();
     final balanceController = TextEditingController();
     String? errorText;
 
@@ -1439,6 +2825,19 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                             textInputAction: TextInputAction.next,
                           ),
                           const SizedBox(height: 12),
+                          _modalLabel('Address (optional)'),
+                          TextField(
+                            controller: addressController,
+                            style: const TextStyle(
+                              fontSize: 12.5,
+                              color: _primary,
+                            ),
+                            decoration: _modalFieldDecoration(
+                              hint: 'Shop / warehouse address',
+                            ),
+                            textInputAction: TextInputAction.next,
+                          ),
+                          const SizedBox(height: 12),
                           _modalLabel('Opening Balance Udhaar (optional)'),
                           TextField(
                             controller: balanceController,
@@ -1512,8 +2911,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                               final name = nameController.text.trim();
                               final phone = phoneController.text.trim();
                               final city = cityController.text.trim();
-                              final balanceRaw =
-                                  balanceController.text.trim();
+                              final balanceRaw = balanceController.text.trim();
 
                               if (name.isEmpty ||
                                   phone.isEmpty ||
@@ -1571,6 +2969,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
       nameController.dispose();
       phoneController.dispose();
       cityController.dispose();
+      addressController.dispose();
       balanceController.dispose();
       return;
     }
@@ -1578,12 +2977,13 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
     final name = nameController.text.trim();
     final phone = phoneController.text.trim();
     final city = cityController.text.trim();
-    final openingBalance =
-        double.tryParse(balanceController.text.trim()) ?? 0;
+    final address = addressController.text.trim();
+    final openingBalance = double.tryParse(balanceController.text.trim()) ?? 0;
 
     nameController.dispose();
     phoneController.dispose();
     cityController.dispose();
+    addressController.dispose();
     balanceController.dispose();
 
     final balance = openingBalance < 0 ? 0.0 : openingBalance;
@@ -1594,6 +2994,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
           name: name,
           city: city,
           phone: phone,
+          address: address,
           balance: balance,
         ),
       );
@@ -1603,6 +3004,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
         name: name,
         city: city,
         phone: phone,
+        address: address,
         balance: balance,
         ledger: const [],
         purchases: [],
@@ -1623,12 +3025,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to save wholesaler: $e'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      AppToast.showError(context, 'Failed to save wholesaler: $e');
     }
   }
 
@@ -1719,9 +3116,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                               fontSize: 12.5,
                               color: _primary,
                             ),
-                            decoration: _modalFieldDecoration(
-                              fill: _bg,
-                            ),
+                            decoration: _modalFieldDecoration(fill: _bg),
                           ),
                           const SizedBox(height: 12),
                           _modalLabel('Amount Paid (₨)'),
@@ -1836,38 +3231,26 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                                 amountController.text.trim(),
                               );
                               if (amount == null || amount <= 0) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text(
-                                      'Please enter a valid payment amount.',
-                                    ),
-                                    behavior: SnackBarBehavior.floating,
-                                  ),
+                                AppToast.showError(
+                                  context,
+                                  'Please enter a valid payment amount.',
                                 );
                                 return;
                               }
                               if (outstandingOwed <= 0) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text(
-                                      'This wholesaler has no outstanding '
-                                      'balance to settle.',
-                                    ),
-                                    behavior: SnackBarBehavior.floating,
-                                  ),
+                                AppToast.showInfo(
+                                  context,
+                                  'This wholesaler has no outstanding '
+                                  'balance to settle.',
                                 );
                                 return;
                               }
                               if (amount > outstandingOwed + 0.01) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text(
-                                      'Payment amount cannot exceed the '
-                                      'outstanding owed balance of '
-                                      '${formatPKR(outstandingOwed)}.',
-                                    ),
-                                    behavior: SnackBarBehavior.floating,
-                                  ),
+                                AppToast.showError(
+                                  context,
+                                  'Payment amount cannot exceed the '
+                                  'outstanding owed balance of '
+                                  '${formatPKR(outstandingOwed)}.',
                                 );
                                 return;
                               }
@@ -1932,12 +3315,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to record payment: $e'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      AppToast.showError(context, 'Failed to record payment: $e');
       return;
     }
 
@@ -2047,8 +3425,9 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
 
   Widget _tableHeaderRow(List<_ColSpec> cols) {
     return Container(
+      constraints: const BoxConstraints(minHeight: 40),
       decoration: const BoxDecoration(
-        color: _bg,
+        color: Color(0xFFF0F4EE),
         border: Border(bottom: BorderSide(color: _border, width: 0.5)),
       ),
       child: Row(
@@ -2064,10 +3443,10 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
                   child: Text(
                     c.label.toUpperCase(),
                     style: const TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w500,
-                      letterSpacing: 0.3,
-                      color: AppColors.textMuted,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.4,
+                      color: AppColors.mediumGreen,
                     ),
                   ),
                 ),
@@ -2080,6 +3459,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
 
   Widget _dataRow(List<Widget> cells) {
     return Container(
+      constraints: const BoxConstraints(minHeight: 42),
       decoration: const BoxDecoration(
         border: Border(bottom: BorderSide(color: _border, width: 0.5)),
       ),
@@ -2108,8 +3488,8 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
             fontWeight: bold
                 ? FontWeight.w600
                 : medium
-                    ? FontWeight.w500
-                    : FontWeight.w400,
+                ? FontWeight.w500
+                : FontWeight.w400,
             color: muted ? AppColors.textMuted : _primary,
           ),
         ),
@@ -2200,10 +3580,7 @@ class _ColSpec {
 }
 
 class _DirectoryRow extends StatefulWidget {
-  const _DirectoryRow({
-    required this.wholesaler,
-    required this.onOpenKhata,
-  });
+  const _DirectoryRow({required this.wholesaler, required this.onOpenKhata});
 
   final Wholesaler wholesaler;
   final VoidCallback onOpenKhata;
@@ -2233,9 +3610,7 @@ class _DirectoryRowState extends State<_DirectoryRow> {
       child: Container(
         decoration: BoxDecoration(
           color: _hovered ? _hoverBg : Colors.white,
-          border: const Border(
-            bottom: BorderSide(color: _border, width: 0.5),
-          ),
+          border: const Border(bottom: BorderSide(color: _border, width: 0.5)),
         ),
         child: Row(
           children: [

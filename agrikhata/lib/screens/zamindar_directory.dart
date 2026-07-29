@@ -1,6 +1,6 @@
-import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Data/agri_header.dart';
 import 'package:agrikhata/Database/database_helper.dart';
+import 'package:agrikhata/theme/theme.dart';
 import 'package:flutter/material.dart';
 import 'package:agrikhata/screens/zamindar_profile_screen.dart';
 
@@ -24,23 +24,20 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
   String _selectedVillage = "All villages";
   String _selectedBalanceFilter = "All balances";
 
-  final List<String> _balanceFilters = [
-    "All balances",
-    "Outstanding",
-    "Clear",
-  ];
+  final List<String> _balanceFilters = ["All balances", "Outstanding", "Clear"];
 
   List<Zamindar> _zamindars = [];
   bool _isLoading = true;
   String? _loadError;
 
   List<String> get _villageOptions {
-    final villages = _zamindars
-        .map((z) => z.villageDisplay)
-        .where((v) => v != 'Unknown location')
-        .toSet()
-        .toList()
-      ..sort();
+    final villages =
+        _zamindars
+            .map((z) => z.villageDisplay)
+            .where((v) => v != 'Unknown location')
+            .toSet()
+            .toList()
+          ..sort();
     return ["All villages", ...villages];
   }
 
@@ -124,17 +121,16 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
     if (widget.onAddZamindar != null) {
       widget.onAddZamindar!.call();
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Add Zamindar action not available')),
-      );
+      AppToast.showError(context, 'Add Zamindar action not available');
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final filtered = _filteredZamindars;
-    final outstandingCount =
-        _zamindars.where((z) => z.udhaarBalance > 0).length;
+    final outstandingCount = _zamindars
+        .where((z) => z.udhaarBalance > 0)
+        .length;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -142,10 +138,10 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
         AgriHeader(
           breadcrumbs: const ["Zamindars", "Zamindar Directory"],
           actions: [
-            ElevatedButton.icon(
+            AppButton.primary(
+              label: 'Add Zamindar',
+              icon: Icons.add,
               onPressed: _handleAddZamindar,
-              icon: const Icon(Icons.check, size: 16),
-              label: const Text("Add Zamindar"),
             ),
           ],
         ),
@@ -198,298 +194,46 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
   }
 
   Widget _buildSearchRow() {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        if (constraints.maxWidth < 600) {
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _buildSearchField(),
-              const SizedBox(height: 10),
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: [
-                    _buildFilterDropdown(_villageOptions, _selectedVillage, (
-                      val,
-                    ) {
-                      setState(() => _selectedVillage = val!);
-                    }),
-                    const SizedBox(width: 10),
-                    _buildFilterDropdown(
-                      _balanceFilters,
-                      _selectedBalanceFilter,
-                      (val) {
-                        setState(() => _selectedBalanceFilter = val!);
-                      },
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          );
-        }
-        return Row(
-          children: [
-            Expanded(child: _buildSearchField()),
-            const SizedBox(width: 10),
-            _buildFilterDropdown(_villageOptions, _selectedVillage, (val) {
-              setState(() => _selectedVillage = val!);
-            }),
-            const SizedBox(width: 10),
-            _buildFilterDropdown(_balanceFilters, _selectedBalanceFilter, (
-              val,
-            ) {
-              setState(() => _selectedBalanceFilter = val!);
-            }),
-          ],
-        );
-      },
-    );
-  }
-
-  Widget _buildSearchField() {
-    return Container(
-      height: 38,
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: AppColors.sidebarBg, width: 0.5),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.search, size: 16, color: AppColors.textMuted),
-          const SizedBox(width: 8),
-          Expanded(
-            child: TextField(
-              controller: _searchController,
-              style: const TextStyle(fontSize: 12),
-              decoration: const InputDecoration(
-                isDense: true,
-                border: InputBorder.none,
-                hintText: "Search by name or village...",
-                hintStyle: TextStyle(
-                  fontSize: 12,
-                  color: AppColors.sidebarText,
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildFilterDropdown(
-    List<String> options,
-    String value,
-    ValueChanged<String?> onChanged,
-  ) {
-    return Container(
-      height: 38,
-      padding: const EdgeInsets.symmetric(horizontal: 10),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: AppColors.sidebarBg, width: 0.5),
-      ),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<String>(
-          value: value,
-          icon: const Icon(
-            Icons.keyboard_arrow_down,
-            size: 16,
-            color: AppColors.textMuted,
-          ),
-          style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
-          items: options
-              .map((opt) => DropdownMenuItem(value: opt, child: Text(opt)))
-              .toList(),
-          onChanged: onChanged,
+    return AppSearchBar(
+      controller: _searchController,
+      hintText: 'Search by name or village...',
+      filters: [
+        AppFilterDropdown(
+          options: _villageOptions,
+          value: _selectedVillage,
+          onChanged: (val) {
+            if (val != null) setState(() => _selectedVillage = val);
+          },
         ),
-      ),
+        AppFilterDropdown(
+          options: _balanceFilters,
+          value: _selectedBalanceFilter,
+          onChanged: (val) {
+            if (val != null) setState(() => _selectedBalanceFilter = val);
+          },
+        ),
+      ],
     );
   }
 
   Widget _buildTable(List<Zamindar> zamindars) {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.border, width: 0.5),
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: Material(
-          color: Colors.transparent,
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              // Horizontal scroll needs a *finite* width. minWidth-only
-              // ConstrainedBox leaves maxWidth infinite, so Expanded in Rows throw.
-              const minTableWidth = 900.0;
-              final tableWidth = constraints.maxWidth.isFinite
-                  ? (constraints.maxWidth < minTableWidth
-                        ? minTableWidth
-                        : constraints.maxWidth)
-                  : minTableWidth;
-              return SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: SizedBox(
-                  width: tableWidth,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      _buildTableHeaderRow(),
-                      for (int i = 0; i < zamindars.length; i++)
-                        _buildTableDataRow(
-                          zamindars[i],
-                          isLast: i == zamindars.length - 1,
-                        ),
-                    ],
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildTableHeaderRow() {
-    TextStyle style = const TextStyle(
-      fontSize: 10,
-      fontWeight: FontWeight.w500,
-      color: AppColors.textMuted,
-      letterSpacing: 0.3,
-    );
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: const BoxDecoration(
-        color: Color(0xFFF7F9F4),
-        border: Border(bottom: BorderSide(color: AppColors.border, width: 0.5)),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            flex: 20,
-            child: Text("NAME", style: style, maxLines: 1, overflow: TextOverflow.ellipsis),
-          ),
-          Expanded(
-            flex: 14,
-            child: Text("VILLAGE", style: style, maxLines: 1, overflow: TextOverflow.ellipsis),
-          ),
-          Expanded(
-            flex: 10,
-            child: Text("TOTAL LAND", style: style, maxLines: 1, overflow: TextOverflow.ellipsis),
-          ),
-          Expanded(
-            flex: 14,
-            child: Text("UDHAAR BALANCE", style: style, maxLines: 1, overflow: TextOverflow.ellipsis),
-          ),
-          Expanded(
-            flex: 12,
-            child: Text("WALLET", style: style, maxLines: 1, overflow: TextOverflow.ellipsis),
-          ),
-          Expanded(
-            flex: 12,
-            child: Text("ACTIVE KISAANS", style: style, maxLines: 1, overflow: TextOverflow.ellipsis),
-          ),
-          Expanded(
-            flex: 10,
-            child: Text("STATUS", style: style, maxLines: 1, overflow: TextOverflow.ellipsis),
-          ),
-          const SizedBox(width: 24),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTableDataRow(Zamindar z, {required bool isLast}) {
-    return InkWell(
-      onTap: () => _handleRowTap(z),
-      hoverColor: const Color(0xFFF0F7EB),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
-        decoration: BoxDecoration(
-          border: isLast
-              ? null
-              : const Border(
-                  bottom: BorderSide(color: AppColors.border, width: 0.5),
-                ),
-        ),
-        child: Row(
-          children: [
-            Expanded(
-              flex: 20,
-              child: Text(
-                z.name,
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                  color: AppColors.darkGreen,
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            Expanded(
-              flex: 14,
-              child: Text(
-                z.villageDisplay,
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: AppColors.textMuted,
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            Expanded(
-              flex: 10,
-              child: Text(
-                "${z.totalLandAcres.toStringAsFixed(0)} ${z.landUnit}",
-                style: const TextStyle(fontSize: 12),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            Expanded(
-              flex: 14,
-              child: Text(
-                "Rs ${_formatNumber(z.udhaarBalance)}",
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                  color: z.isOverLimit
-                      ? const Color(0xFFA32D2D)
-                      : const Color(0xFF27500A),
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            Expanded(
-              flex: 12,
-              child: Text(
-                "Rs ${_formatNumber(z.advanceBalance.toDouble())}",
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                  color: Color(0xFF0C447C),
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            Expanded(flex: 12, child: _buildKisaanBadge(z.activeKisaans)),
-            Expanded(
-              flex: 10,
-              child: _buildStatusBadge(z.udhaarBalance),
-            ),
-            const SizedBox(
+    return AppDataTable(
+      minWidth: 900,
+      trailingWidth: 24,
+      columns: const [
+        AppDataColumn(title: 'Name', flex: 20),
+        AppDataColumn(title: 'Village', flex: 14),
+        AppDataColumn(title: 'Total Land', flex: 10),
+        AppDataColumn(title: 'Udhaar Balance', flex: 14),
+        AppDataColumn(title: 'Wallet', flex: 12),
+        AppDataColumn(title: 'Active Kisaans', flex: 12),
+        AppDataColumn(title: 'Status', flex: 10),
+      ],
+      rows: [
+        for (int i = 0; i < zamindars.length; i++)
+          AppDataRow(
+            onTap: () => _handleRowTap(zamindars[i]),
+            trailing: const SizedBox(
               width: 24,
               child: Icon(
                 Icons.chevron_right,
@@ -497,9 +241,42 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
                 color: AppColors.sidebarBg,
               ),
             ),
-          ],
-        ),
-      ),
+            cells: [
+              AppTableCellText(
+                zamindars[i].name,
+                style: AppTextStyles.bodySmall.copyWith(
+                  fontWeight: FontWeight.w500,
+                  color: AppColors.darkGreen,
+                ),
+              ),
+              AppTableCellText(
+                zamindars[i].villageDisplay,
+                style: AppTextStyles.bodySmall.copyWith(
+                  color: AppColors.textMuted,
+                ),
+              ),
+              '${zamindars[i].totalLandAcres.toStringAsFixed(0)} ${zamindars[i].landUnit}',
+              AppTableCellText(
+                'Rs ${_formatNumber(zamindars[i].udhaarBalance)}',
+                style: AppTextStyles.bodySmall.copyWith(
+                  fontWeight: FontWeight.w500,
+                  color: zamindars[i].isOverLimit
+                      ? const Color(0xFFA32D2D)
+                      : const Color(0xFF27500A),
+                ),
+              ),
+              AppTableCellText(
+                'Rs ${_formatNumber(zamindars[i].advanceBalance.toDouble())}',
+                style: AppTextStyles.bodySmall.copyWith(
+                  fontWeight: FontWeight.w500,
+                  color: AppColors.tagBlueText,
+                ),
+              ),
+              _buildKisaanBadge(zamindars[i].activeKisaans),
+              _buildStatusBadge(zamindars[i].udhaarBalance),
+            ],
+          ),
+      ],
     );
   }
 
@@ -540,9 +317,7 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
         decoration: BoxDecoration(
-          color: isClear
-              ? const Color(0xFFEAF3DE)
-              : const Color(0xFFFAEEDA),
+          color: isClear ? const Color(0xFFEAF3DE) : const Color(0xFFFAEEDA),
           borderRadius: BorderRadius.circular(20),
         ),
         child: Text(
@@ -550,9 +325,7 @@ class _ZamindarDirectoryScreenState extends State<ZamindarDirectoryScreen> {
           style: TextStyle(
             fontSize: 10,
             fontWeight: FontWeight.w500,
-            color: isClear
-                ? const Color(0xFF27500A)
-                : const Color(0xFF633806),
+            color: isClear ? const Color(0xFF27500A) : const Color(0xFF633806),
           ),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,

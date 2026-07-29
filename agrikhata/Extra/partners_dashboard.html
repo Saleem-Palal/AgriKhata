@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AgriKhata — Partner Equity &amp; Profit Management</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+<style>
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#F7F9F4;color:#1B4332}
+  .app{display:flex;min-height:100vh}
+
+  /* ---------- Sidebar ---------- */
+  .sidebar{width:220px;flex-shrink:0;background:#1B4332;display:flex;flex-direction:column}
+  .logo{padding:18px 16px 14px;border-bottom:0.5px solid rgba(255,255,255,0.5)}
+  .logo-name{font-size:20px;font-weight:700;color:#fff;display:flex;align-items:center;gap:7px}
+  .logo-name i{font-size:15px;color:#95D5B2}
+  .logo-sub{font-size:11px;color:#A7C4A0;margin-top:2px}
+  .nav{padding:12px 10px;flex:1}
+  .nav-section{font-size:10px;color:#6B9E7A;font-weight:700;letter-spacing:1.2px;padding:10px 8px 4px;text-transform:uppercase}
+  .nav-item{display:flex;align-items:center;gap:9px;padding:10px 12px;border-radius:10px;cursor:pointer;color:#A7C4A0;font-size:12.5px;margin-bottom:2px}
+  .nav-item.active{background:#2D6A4F;color:#fff;font-weight:500}
+  .nav-item i{width:16px;text-align:center;font-size:13px}
+  .sb-footer{padding:12px 14px;border-top:0.5px solid rgba(255,255,255,0.05);display:flex;align-items:center;gap:9px}
+  .sb-av{width:30px;height:30px;border-radius:50%;background:#2D6A4F;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:500;color:#B7E4C7;border:1px solid #40916C;flex-shrink:0}
+  .sb-name{font-size:12px;font-weight:500;color:#fff}
+  .sb-role{font-size:10px;color:#6B9E7A}
+  .version-tag{text-align:center;font-size:9.5px;color:#5C8468;padding:8px 0 4px}
+
+  /* ---------- Main ---------- */
+  .main{flex:1;display:flex;flex-direction:column;min-width:0}
+
+  /* Top header bar - light sage */
+  .page-header{background:#EEF3EC;border-bottom:0.5px solid #DCE6D9;padding:16px 24px}
+  .page-title{font-size:18px;font-weight:700;color:#1B4332}
+  .page-sub{font-size:11.5px;color:#5C8468;margin-top:2px}
+
+  .content{padding:20px 24px;flex:1}
+
+  .card{background:#fff;border:0.5px solid #E2EBE0;border-radius:12px}
+
+  /* KPI cards */
+  .kpi-lbl{font-size:10px;font-weight:600;color:#6B8F71;text-transform:uppercase;letter-spacing:.3px}
+  .kpi-val{font-size:19px;font-weight:700;color:#1B4332;margin-top:5px}
+  .kpi-sub{font-size:10.5px;color:#95B89A;margin-top:4px}
+
+  /* Table */
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  thead th{
+    background:#F0F4EE;padding:10px 16px;text-align:left;
+    font-size:11px;font-weight:700;color:#1B4332;text-transform:uppercase;
+    letter-spacing:.4px;border-bottom:0.5px solid #E2EBE0;
+  }
+  tbody td{padding:12px 16px;vertical-align:middle;border-bottom:0.5px solid #EEF3EC}
+  tbody tr:nth-child(even){background:#FFFFFF}
+  tbody tr:nth-child(odd){background:#F8FAF6}
+  tbody tr:last-child td{border-bottom:none}
+
+  .view-ledger-btn{
+    font-size:11px;font-weight:600;color:#1B4332;background:#fff;
+    border:0.5px solid #C6DEC9;border-radius:7px;padding:6px 12px;cursor:pointer;
+  }
+  .view-ledger-btn:hover{background:#F0F7EB;border-color:#97C459}
+
+  /* Tabs */
+  .tab-btn{padding:11px 18px;font-size:12.5px;font-weight:600;color:#95B89A;cursor:pointer;border-bottom:2px solid transparent}
+  .tab-btn.active{color:#1B4332;border-bottom-color:#1B4332}
+  .tab-panel{display:none}
+  .tab-panel.active{display:block}
+
+  .settle-btn{font-size:10.5px;font-weight:600;color:#2D6A4F;background:#D8F3DC;border:none;border-radius:7px;padding:5px 11px;cursor:pointer}
+  .settle-btn:hover{background:#c3ecc9}
+  .settle-btn.done{background:#F0F4EE;color:#95B89A;cursor:default}
+
+  /* Buttons in header */
+  .hdr-btn{
+    display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:600;
+    padding:9px 15px;border-radius:9px;cursor:pointer;white-space:nowrap;
+  }
+  .hdr-btn.primary{background:#1B4332;color:#fff;border:none}
+  .hdr-btn.primary:hover{background:#163828}
+  .hdr-btn.outline{background:#fff;color:#1B4332;border:0.5px solid #C6DEC9}
+  .hdr-btn.outline:hover{background:#F0F7EB}
+
+  /* Modal */
+  .modal-overlay{position:fixed;inset:0;background:rgba(27,67,50,0.4);display:none;align-items:center;justify-content:center;z-index:60}
+  .modal-overlay.open{display:flex}
+  .modal{background:#fff;border-radius:14px;width:420px;max-width:92vw;overflow:hidden;box-shadow:0 20px 50px rgba(27,67,50,0.25)}
+  .modal-head{background:#1B4332;padding:14px 18px;display:flex;align-items:center;justify-content:space-between}
+  .modal-title{font-size:14px;font-weight:600;color:#fff}
+  .modal-close{width:26px;height:26px;border-radius:7px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#A7C4A0;background:transparent;border:none}
+  .modal-close:hover{background:rgba(255,255,255,0.1);color:#fff}
+  .modal-body{padding:18px}
+  .field-label{font-size:11px;font-weight:600;color:#6B8F71;margin-bottom:5px;display:block}
+  .field-input{width:100%;border:0.5px solid #C6DEC9;border-radius:8px;padding:9px 12px;font-size:12.5px;color:#1B4332;background:#fff}
+  .field-input:focus{outline:none;border-color:#40916C;box-shadow:0 0 0 3px rgba(64,145,108,0.12)}
+  .field-input::placeholder{color:#95B89A}
+  .modal-footer{padding:12px 18px;border-top:0.5px solid #E2EBE0;display:flex;gap:8px;justify-content:flex-end}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ================= SIDEBAR ================= -->
+  <div class="sidebar">
+    <div class="logo">
+      <div class="logo-name"><i class="fa-solid fa-leaf"></i>AgriKhata</div>
+      <div class="logo-sub">AM Pesticides and Fertilizer</div>
+    </div>
+    <div class="nav">
+      <div class="nav-section">Main</div>
+      <div class="nav-item"><i class="fa-solid fa-table-cells-large"></i>Dashboard</div>
+      <div class="nav-item"><i class="fa-solid fa-cart-shopping"></i>New Sale / POS</div>
+      <div class="nav-item"><i class="fa-solid fa-user"></i>Zamindars</div>
+      <div class="nav-section">Inventory</div>
+      <div class="nav-item"><i class="fa-solid fa-box-archive"></i>Inventory</div>
+      <div class="nav-section">Finance</div>
+      <div class="nav-item"><i class="fa-solid fa-money-bill-wave"></i>Expenses</div>
+      <div class="nav-item"><i class="fa-solid fa-chart-column"></i>Reports</div>
+      <div class="nav-section">System</div>
+      <div class="nav-item"><i class="fa-solid fa-users-gear"></i>User Accounts</div>
+      <div class="nav-item active"><i class="fa-solid fa-handshake-angle"></i>Partner Management</div>
+    </div>
+    <div class="sb-footer">
+      <div class="sb-av">AM</div>
+      <div><div class="sb-name">Atta Muhammad</div><div class="sb-role">Owner</div></div>
+    </div>
+    <div class="version-tag">v1.0.11</div>
+  </div>
+
+  <!-- ================= MAIN ================= -->
+  <div class="main">
+
+    <!-- ================= TOP HEADER BAR ================= -->
+    <div class="page-header flex items-center justify-between flex-wrap gap-3">
+      <div>
+        <div class="page-title">Partner Equity &amp; Profit Management</div>
+        <div class="page-sub">Track capital, reinvestment, drawings, and profit share across partners</div>
+      </div>
+      <div class="flex items-center gap-2">
+        <button class="hdr-btn primary" onclick="openModal('capitalModal')"><i class="fa-solid fa-plus"></i>Add Partner Capital</button>
+        <button class="hdr-btn outline" onclick="openModal('drawingModal')"><i class="fa-solid fa-hand-holding-dollar"></i>Record Cash Drawing</button>
+        <button class="hdr-btn outline" onclick="openModal('settlementModal')"><i class="fa-solid fa-calendar-check"></i>Seasonal Settlement</button>
+      </div>
+    </div>
+
+    <div class="content">
+
+      <!-- ================= SECTION 1: SUMMARY CARDS ================= -->
+      <div class="grid grid-cols-4 gap-3 mb-5">
+        <div class="card p-4">
+          <div class="kpi-lbl">Total Business Capital</div>
+          <div class="kpi-val">₨ 15,00,000</div>
+          <div class="kpi-sub"><i class="fa-solid fa-building-columns mr-1"></i>Across both partners</div>
+        </div>
+        <div class="card p-4">
+          <div class="kpi-lbl">Atta Muhammad Equity</div>
+          <div class="kpi-val">₨ 9,00,000</div>
+          <div class="kpi-sub" style="color:#2D6A4F;font-weight:600">60% Net Equity Share</div>
+        </div>
+        <div class="card p-4">
+          <div class="kpi-lbl">Zubair Ahmed Equity</div>
+          <div class="kpi-val">₨ 6,00,000</div>
+          <div class="kpi-sub" style="color:#0C447C;font-weight:600">40% Net Equity Share</div>
+        </div>
+        <div class="card p-4">
+          <div class="kpi-lbl">Active Cash Drawings Debt</div>
+          <div class="kpi-val" style="color:#A32D2D">₨ 45,000</div>
+          <div class="kpi-sub"><i class="fa-solid fa-triangle-exclamation mr-1"></i>Pending settlement</div>
+        </div>
+      </div>
+
+      <!-- ================= SECTION 2: PARTNER EQUITY TABLE ================= -->
+      <div class="mb-5">
+        <div class="text-[13px] font-semibold mb-2">Active Partner Balances &amp; Profit Distribution</div>
+        <div class="card overflow-hidden">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:20%">Partner Name</th>
+                <th style="width:16%">Initial Capital</th>
+                <th style="width:16%">Reinvested Profit</th>
+                <th style="width:14%">Cash Drawings</th>
+                <th style="width:16%">Net Equity Share %</th>
+                <th style="width:18%">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="font-semibold">Atta Muhammad</td>
+                <td>₨ 6,00,000</td>
+                <td>₨ 3,00,000</td>
+                <td style="color:#A32D2D">₨ 15,000</td>
+                <td>
+                  <div class="flex items-center gap-2">
+                    <div style="width:56px;height:6px;border-radius:20px;background:#E2EBE0;overflow:hidden">
+                      <div style="width:60%;height:100%;background:#2D6A4F"></div>
+                    </div>
+                    <span class="font-semibold">60%</span>
+                  </div>
+                </td>
+                <td><button class="view-ledger-btn"><i class="fa-solid fa-book-open mr-1"></i>View Ledger</button></td>
+              </tr>
+              <tr>
+                <td class="font-semibold">Zubair Ahmed</td>
+                <td>₨ 4,00,000</td>
+                <td>₨ 2,00,000</td>
+                <td style="color:#A32D2D">₨ 30,000</td>
+                <td>
+                  <div class="flex items-center gap-2">
+                    <div style="width:56px;height:6px;border-radius:20px;background:#E2EBE0;overflow:hidden">
+                      <div style="width:40%;height:100%;background:#0C447C"></div>
+                    </div>
+                    <span class="font-semibold">40%</span>
+                  </div>
+                </td>
+                <td><button class="view-ledger-btn"><i class="fa-solid fa-book-open mr-1"></i>View Ledger</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ================= SECTION 3: DUAL LOWER TABS ================= -->
+      <div class="card overflow-hidden">
+        <div class="flex border-b" style="border-color:#E2EBE0">
+          <div class="tab-btn active" data-tab="tabOverhead" onclick="switchTab('tabOverhead')">Overhead Expenses Split (50-50 Ledger)</div>
+          <div class="tab-btn" data-tab="tabDrawings" onclick="switchTab('tabDrawings')">Counter Cash Drawing Ledger</div>
+        </div>
+
+        <!-- Tab 1: Overhead Split -->
+        <div id="tabOverhead" class="tab-panel active">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:24%">Expense Category</th>
+                <th style="width:16%">Total Amount</th>
+                <th style="width:20%">Atta Muhammad Share (50%)</th>
+                <th style="width:20%">Zubair Ahmed Share (50%)</th>
+                <th style="width:20%">Date</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="font-medium">🏠 Shop Rent</td>
+                <td>₨ 25,000</td>
+                <td>₨ 12,500</td>
+                <td>₨ 12,500</td>
+                <td style="color:#95B89A">01-Jul-2026</td>
+              </tr>
+              <tr>
+                <td class="font-medium">🔌 Electricity</td>
+                <td>₨ 8,400</td>
+                <td>₨ 4,200</td>
+                <td>₨ 4,200</td>
+                <td style="color:#95B89A">05-Jul-2026</td>
+              </tr>
+              <tr>
+                <td class="font-medium">🧑‍🌾 Helper Salary</td>
+                <td>₨ 18,000</td>
+                <td>₨ 9,000</td>
+                <td>₨ 9,000</td>
+                <td style="color:#95B89A">01-Jul-2026</td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="px-4 py-3 text-[11px]" style="color:#95B89A">
+            Overheads are split automatically 50/50 between partners regardless of equity ratio, per store policy.
+          </div>
+        </div>
+
+        <!-- Tab 2: Cash Drawing Ledger -->
+        <div id="tabDrawings" class="tab-panel">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:20%">Date</th>
+                <th style="width:26%">Partner Name</th>
+                <th style="width:20%">Amount</th>
+                <th style="width:16%">Status</th>
+                <th style="width:18%">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td style="color:#95B89A">18-Jul-2026</td>
+                <td class="font-medium">Atta Muhammad</td>
+                <td class="font-semibold" style="color:#A32D2D">₨ 15,000</td>
+                <td><span class="text-[10px] font-semibold" style="background:#FAEEDA;color:#633806;padding:3px 9px;border-radius:20px">Pending</span></td>
+                <td><button class="settle-btn" onclick="markSettled(this)">Mark as Settled</button></td>
+              </tr>
+              <tr>
+                <td style="color:#95B89A">15-Jul-2026</td>
+                <td class="font-medium">Zubair Ahmed</td>
+                <td class="font-semibold" style="color:#A32D2D">₨ 20,000</td>
+                <td><span class="text-[10px] font-semibold" style="background:#FAEEDA;color:#633806;padding:3px 9px;border-radius:20px">Pending</span></td>
+                <td><button class="settle-btn" onclick="markSettled(this)">Mark as Settled</button></td>
+              </tr>
+              <tr>
+                <td style="color:#95B89A">10-Jul-2026</td>
+                <td class="font-medium">Zubair Ahmed</td>
+                <td class="font-semibold" style="color:#A32D2D">₨ 10,000</td>
+                <td><span class="text-[10px] font-semibold" style="background:#FAEEDA;color:#633806;padding:3px 9px;border-radius:20px">Pending</span></td>
+                <td><button class="settle-btn" onclick="markSettled(this)">Mark as Settled</button></td>
+              </tr>
+              <tr>
+                <td style="color:#95B89A">02-Jul-2026</td>
+                <td class="font-medium">Atta Muhammad</td>
+                <td class="font-semibold" style="color:#6B8F71">₨ 8,000</td>
+                <td><span class="text-[10px] font-semibold" style="background:#D8F3DC;color:#2D6A4F;padding:3px 9px;border-radius:20px">Settled</span></td>
+                <td><button class="settle-btn done">✓ Settled</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ================= MODAL: Add Partner Capital ================= -->
+<div class="modal-overlay" id="capitalModal" onclick="if(event.target===this)closeModal('capitalModal')">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">Add Partner Capital</div>
+      <button class="modal-close" onclick="closeModal('capitalModal')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="mb-3">
+        <label class="field-label">Partner</label>
+        <select class="field-input">
+          <option>Atta Muhammad</option>
+          <option>Zubair Ahmed</option>
+        </select>
+      </div>
+      <div class="mb-3">
+        <label class="field-label">Capital Amount (₨)</label>
+        <input type="number" class="field-input" placeholder="e.g. 100000" />
+      </div>
+      <div>
+        <label class="field-label">Remarks</label>
+        <input type="text" class="field-input" placeholder="e.g. Additional investment for Rabi season stock" />
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="hdr-btn outline" onclick="closeModal('capitalModal')">Cancel</button>
+      <button class="hdr-btn primary" onclick="closeModal('capitalModal')"><i class="fa-solid fa-check"></i>Add Capital</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= MODAL: Record Cash Drawing ================= -->
+<div class="modal-overlay" id="drawingModal" onclick="if(event.target===this)closeModal('drawingModal')">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">Record Cash Drawing</div>
+      <button class="modal-close" onclick="closeModal('drawingModal')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="mb-3">
+        <label class="field-label">Partner</label>
+        <select class="field-input">
+          <option>Atta Muhammad</option>
+          <option>Zubair Ahmed</option>
+        </select>
+      </div>
+      <div class="mb-3">
+        <label class="field-label">Amount (₨)</label>
+        <input type="number" class="field-input" placeholder="e.g. 15000" />
+      </div>
+      <div>
+        <label class="field-label">Purpose / Remarks</label>
+        <input type="text" class="field-input" placeholder="e.g. Personal household expense" />
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="hdr-btn outline" onclick="closeModal('drawingModal')">Cancel</button>
+      <button class="hdr-btn primary" onclick="closeModal('drawingModal')"><i class="fa-solid fa-check"></i>Record Drawing</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= MODAL: Seasonal Profit Reinvestment / Settlement ================= -->
+<div class="modal-overlay" id="settlementModal" onclick="if(event.target===this)closeModal('settlementModal')">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">Seasonal Profit Reinvestment</div>
+      <button class="modal-close" onclick="closeModal('settlementModal')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="mb-3">
+        <label class="field-label">Season</label>
+        <select class="field-input">
+          <option>Kharif 2026</option>
+          <option>Rabi 2026</option>
+        </select>
+      </div>
+      <div class="mb-3">
+        <label class="field-label">Net Profit to Distribute (₨)</label>
+        <input type="number" class="field-input" placeholder="e.g. 500000" />
+      </div>
+      <div class="text-[11px] rounded-lg p-3" style="background:#EAF3DE;color:#2D6A4F">
+        Profit will be split per current equity ratio — Atta Muhammad 60% / Zubair Ahmed 40% — and added to each partner's reinvested capital balance.
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="hdr-btn outline" onclick="closeModal('settlementModal')">Cancel</button>
+      <button class="hdr-btn primary" onclick="closeModal('settlementModal')"><i class="fa-solid fa-check"></i>Confirm Settlement</button>
+    </div>
+  </div>
+</div>
+
+<script>
+function switchTab(tabId) {
+  document.querySelectorAll('.tab-btn').forEach(t => t.classList.toggle('active', t.dataset.tab === tabId));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === tabId));
+}
+
+function openModal(id) {
+  document.getElementById(id).classList.add('open');
+}
+function closeModal(id) {
+  document.getElementById(id).classList.remove('open');
+}
+
+function markSettled(btn) {
+  const row = btn.closest('tr');
+  const statusBadge = row.querySelector('td:nth-child(4) span');
+  statusBadge.textContent = 'Settled';
+  statusBadge.style.background = '#D8F3DC';
+  statusBadge.style.color = '#2D6A4F';
+  btn.textContent = '✓ Settled';
+  btn.classList.add('done');
+  btn.onclick = null;
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    document.querySelectorAll('.modal-overlay.open').forEach(m => m.classList.remove('open'));
+  }
+});
+</script>
+</body>
+</html>

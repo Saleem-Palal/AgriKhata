@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:path/path.dart' as p;
 import '../models/ledger_models.dart';
+import '../services/whatsapp_urdu_service.dart';
 import '../utils/pdf_generator.dart';
-import '../utils/pdf_share.dart';
+import '../utils/shop_settings.dart';
+import '../theme/theme.dart';
 
 final _currencyFormat = NumberFormat('#,##,##0');
 final _dateFormat = DateFormat('dd MMM');
@@ -197,7 +198,7 @@ class LedgerTable extends StatelessWidget {
           ),
           Expanded(
             child: Text(
-              'ITEMS',
+              'ITEMS / DESCRIPTION',
               style: TextStyle(
                 fontSize: 10,
                 fontWeight: FontWeight.w500,
@@ -295,6 +296,19 @@ class LedgerTable extends StatelessWidget {
                       color: Color(0xFF95B89A),
                     ),
                   ),
+                  if (entry.createdByUserName != null &&
+                      entry.createdByUserName!.trim().isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      'Recorded By: ${entry.createdByUserName!.trim()}',
+                      style: const TextStyle(
+                        fontSize: 10,
+                        color: Color(0xFF6B8F71),
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -328,13 +342,14 @@ class LedgerTable extends StatelessWidget {
             ),
             Expanded(
               child: Text(
-                entry.itemsSummary,
+                entry.ledgerSummary,
                 style: const TextStyle(
                   fontSize: 11,
                   color: Color(0xFF6B8F71),
                   height: 1.4,
                 ),
                 overflow: TextOverflow.ellipsis,
+                maxLines: 2,
               ),
             ),
             SizedBox(
@@ -501,6 +516,8 @@ class ZamindarLedgerRow {
   final double paid;
   final PaymentStatus? paymentStatus;
   final String? statusLabel;
+  final bool isEdited;
+  final String? paymentId;
 
   const ZamindarLedgerRow({
     required this.source,
@@ -514,9 +531,27 @@ class ZamindarLedgerRow {
     required this.paid,
     this.paymentStatus,
     this.statusLabel,
+    this.isEdited = false,
+    this.paymentId,
   });
 
   double get outstanding => (total - paid).clamp(0.0, double.infinity);
+
+  bool get isEditablePayment {
+    if (isDebit || paymentId == null || paymentId!.isEmpty) return false;
+    switch (category) {
+      case 'PAYMENT':
+      case 'CASH_PAYMENT':
+      case 'DEBT_SETTLEMENT':
+      case 'ADVANCE_PAYMENT':
+      case 'ADVANCE':
+        return true;
+      case 'WALLET_DEDUCTION':
+        return false;
+      default:
+        return false;
+    }
+  }
 
   static List<ZamindarLedgerRow> fromTransactions({
     required List<Map<String, dynamic>> transactions,
@@ -541,9 +576,29 @@ class ZamindarLedgerRow {
       final collection =
           hasInvoice ? collections[invoiceNumber] : null;
       final isSale = category == 'SALE' && isDebit;
+      final isAdvanceCategory = category == 'ADVANCE_LOAN_RECORD' ||
+          category == 'CASH_ADVANCE' ||
+          category == 'DIESEL_ADVANCE' ||
+          category == 'PETROL_ADVANCE';
+      final paymentId = (row['payment_id'] as String?)?.trim();
+      final editedRaw = row['payment_edited_at'] as String?;
+      final isEdited = editedRaw != null && editedRaw.trim().isNotEmpty;
 
       String itemsText;
-      if (itemsFromInvoice.isNotEmpty) {
+      // Advances store a generic line item ("Cash Advance x1"); prefer the
+      // ledger description so remarks are visible in the Items column.
+      if (isAdvanceCategory) {
+        final trimmed = description.trim();
+        if (trimmed.isEmpty || RegExp(r':\s*$').hasMatch(trimmed)) {
+          itemsText = _statusLabelForCategory(category);
+        } else {
+          itemsText = trimmed;
+        }
+      } else if (category == 'WALLET_DEDUCTION') {
+        itemsText = PaymentLedgerEntry.formatAdvanceDeductionSummary(
+          itemsFromInvoice.isNotEmpty ? itemsFromInvoice : description,
+        );
+      } else if (itemsFromInvoice.isNotEmpty) {
         itemsText = itemsFromInvoice;
       } else if (description.isNotEmpty) {
         itemsText = description;
@@ -588,6 +643,8 @@ class ZamindarLedgerRow {
         paid: paid,
         paymentStatus: paymentStatus,
         statusLabel: statusLabel,
+        isEdited: isEdited,
+        paymentId: paymentId,
       );
     }).toList();
   }
@@ -603,6 +660,14 @@ class ZamindarLedgerRow {
       case 'ADVANCE':
       case 'ADVANCE_PAYMENT':
         return 'Advance';
+      case 'CASH_ADVANCE':
+        return 'Cash Advance';
+      case 'DIESEL_ADVANCE':
+        return 'Diesel Advance';
+      case 'PETROL_ADVANCE':
+        return 'Petrol Advance';
+      case 'ADVANCE_LOAN_RECORD':
+        return 'Advance Loan';
       default:
         return category.isEmpty ? '—' : category;
     }
@@ -716,7 +781,7 @@ class ZamindarLedgerTable extends StatelessWidget {
             child: Text('KISAAN', style: _headerStyle),
           ),
           const Expanded(
-            child: Text('ITEMS', style: _headerStyle),
+            child: Text('ITEMS / DESCRIPTION', style: _headerStyle),
           ),
           const SizedBox(
             width: 90,
@@ -855,12 +920,23 @@ class ZamindarLedgerTable extends StatelessWidget {
             width: 140,
             child: Align(
               alignment: Alignment.centerRight,
-              child: row.paymentStatus != null
-                  ? _buildPaymentStatusBadge(
-                      row.paymentStatus!,
-                      row.outstanding,
-                    )
-                  : _buildCategoryStatusBadge(row.statusLabel ?? '—'),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (row.isEdited) ...[
+                    _buildEditedBadge(),
+                    const SizedBox(width: 4),
+                  ],
+                  Flexible(
+                    child: row.paymentStatus != null
+                        ? _buildPaymentStatusBadge(
+                            row.paymentStatus!,
+                            row.outstanding,
+                          )
+                        : _buildCategoryStatusBadge(row.statusLabel ?? '—'),
+                  ),
+                ],
+              ),
             ),
           ),
           if (_showActions)
@@ -872,6 +948,25 @@ class ZamindarLedgerTable extends StatelessWidget {
               ),
             ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildEditedBadge() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF3E5F5),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFCE93D8), width: 0.5),
+      ),
+      child: const Text(
+        '(Edited)',
+        style: TextStyle(
+          fontSize: 9,
+          fontWeight: FontWeight.w500,
+          color: Color(0xFF6A1B9A),
+        ),
       ),
     );
   }
@@ -1051,6 +1146,15 @@ class _InvoiceDetailDialogState extends State<InvoiceDetailDialog> {
           _buildInfoRow('Date:', _dateFormat.format(widget.entry.date)),
           _buildInfoRow('Time:', _timeFormat.format(widget.entry.date)),
           _buildInfoRow('Season:', widget.entry.season),
+          if (widget.entry.description != null &&
+              widget.entry.description!.trim().isNotEmpty)
+            _buildInfoRow('Description:', widget.entry.description!.trim()),
+          if (widget.entry.createdByUserName != null &&
+              widget.entry.createdByUserName!.trim().isNotEmpty)
+            _buildInfoRow(
+              'Recorded By:',
+              widget.entry.createdByUserName!.trim(),
+            ),
         ],
       ),
     );
@@ -1267,21 +1371,11 @@ class _InvoiceDetailDialogState extends State<InvoiceDetailDialog> {
     try {
       await PdfGenerator.printInvoice(widget.entry);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Invoice sent to printer'),
-            backgroundColor: Color(0xFF28A745),
-          ),
-        );
+        AppToast.showSuccess(context, 'Invoice sent to printer');
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to print: $e'),
-            backgroundColor: const Color(0xFFDC3545),
-          ),
-        );
+        AppToast.showError(context, 'Failed to print: $e');
       }
     } finally {
       if (mounted) {
@@ -1294,42 +1388,32 @@ class _InvoiceDetailDialogState extends State<InvoiceDetailDialog> {
     setState(() => _isProcessing = true);
     try {
       final file = await PdfGenerator.saveInvoiceToFile(widget.entry);
+      final shopName = await ShopSettings.getShopName();
 
       try {
-        await PdfShare.sharePdfFile(
-          file: file,
-          fileName: p.basename(file.path),
-          text:
-              'Invoice ${widget.entry.invoiceNumber} - ₨ ${_currencyFormat.format(widget.entry.total)}',
-          subject: 'AgriKhata Invoice',
+        await WhatsAppUrduService.sharePdfWithUrduCaption(
+          phone: '',
+          zamindarName: widget.entry.stakeholderName,
+          shopName: shopName,
+          amount: widget.entry.total,
+          pdfPath: file.path,
+          detailLines: [
+            'انوائس نمبر: ${widget.entry.invoiceNumber}',
+            'ادا شدہ: Rs ${_currencyFormat.format(widget.entry.paid.round())}',
+          ],
+          subject: 'AgriKhata Invoice ${widget.entry.invoiceNumber}',
         );
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Invoice ready to share'),
-              backgroundColor: Color(0xFF28A745),
-            ),
-          );
+          AppToast.showSuccess(context, 'Invoice ready to share');
         }
       } catch (shareError) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('PDF saved to: ${file.path}'),
-              backgroundColor: const Color(0xFF28A745),
-              duration: const Duration(seconds: 5),
-            ),
-          );
+          AppToast.showSuccess(context, 'PDF saved to: ${file.path}');
         }
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to share: $e'),
-            backgroundColor: const Color(0xFFDC3545),
-          ),
-        );
+        AppToast.showError(context, 'Failed to share: $e');
       }
     } finally {
       if (mounted) {
@@ -1341,10 +1425,12 @@ class _InvoiceDetailDialogState extends State<InvoiceDetailDialog> {
 
 class PaymentsLedgerTable extends StatelessWidget {
   final List<PaymentLedgerEntry> entries;
+  final void Function(PaymentLedgerEntry entry)? onEditPayment;
 
   const PaymentsLedgerTable({
     super.key,
     required this.entries,
+    this.onEditPayment,
   });
 
   @override
@@ -1418,9 +1504,9 @@ class PaymentsLedgerTable extends StatelessWidget {
           topRight: Radius.circular(12),
         ),
       ),
-      child: const Row(
+      child: Row(
         children: [
-          SizedBox(
+          const SizedBox(
             width: 84,
             child: Text(
               'RECEIPT',
@@ -1432,8 +1518,8 @@ class PaymentsLedgerTable extends StatelessWidget {
               ),
             ),
           ),
-          SizedBox(width: 16),
-          SizedBox(
+          const SizedBox(width: 16),
+          const SizedBox(
             width: 68,
             child: Text(
               'INVOICE LINKED',
@@ -1445,8 +1531,8 @@ class PaymentsLedgerTable extends StatelessWidget {
               ),
             ),
           ),
-          SizedBox(width: 12),
-          Expanded(
+          const SizedBox(width: 12),
+          const Expanded(
             flex: 2,
             child: Text(
               'STAKEHOLDER',
@@ -1458,8 +1544,8 @@ class PaymentsLedgerTable extends StatelessWidget {
               ),
             ),
           ),
-          SizedBox(width: 8),
-          Expanded(
+          const SizedBox(width: 8),
+          const Expanded(
             flex: 2,
             child: Text(
               'ITEMS SUMMARY',
@@ -1471,7 +1557,7 @@ class PaymentsLedgerTable extends StatelessWidget {
               ),
             ),
           ),
-          SizedBox(
+          const SizedBox(
             width: 88,
             child: Text(
               'AMOUNT',
@@ -1484,8 +1570,8 @@ class PaymentsLedgerTable extends StatelessWidget {
               ),
             ),
           ),
-          SizedBox(width: 8),
-          Expanded(
+          const SizedBox(width: 8),
+          const Expanded(
             flex: 2,
             child: Text(
               'METHOD',
@@ -1498,6 +1584,14 @@ class PaymentsLedgerTable extends StatelessWidget {
               ),
             ),
           ),
+          if (onEditPayment != null)
+            const SizedBox(
+              width: 44,
+              child: Text(
+                '',
+                textAlign: TextAlign.right,
+              ),
+            ),
         ],
       ),
     );
@@ -1539,6 +1633,7 @@ class PaymentsLedgerTable extends StatelessWidget {
   Widget _buildRow(PaymentLedgerEntry entry, int index) {
     final isEven = index.isEven;
     final isWallet = entry.isWalletDeduction;
+    final canEdit = onEditPayment != null && !isWallet;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
@@ -1572,6 +1667,17 @@ class PaymentsLedgerTable extends StatelessWidget {
                     color: Color(0xFF95B89A),
                   ),
                 ),
+                if (entry.isEdited) ...[
+                  const SizedBox(height: 3),
+                  const Text(
+                    '(Edited)',
+                    style: TextStyle(
+                      fontSize: 9,
+                      fontWeight: FontWeight.w500,
+                      color: Color(0xFF6A1B9A),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -1688,7 +1794,6 @@ class PaymentsLedgerTable extends StatelessWidget {
                   style: TextStyle(
                     fontSize: 10,
                     fontWeight: FontWeight.w500,
-                    height: 1.25,
                     color: isWallet
                         ? const Color(0xFF1565C0)
                         : entry.paymentMethod.toLowerCase() == 'cash'
@@ -1699,6 +1804,39 @@ class PaymentsLedgerTable extends StatelessWidget {
               ),
             ),
           ),
+          if (onEditPayment != null)
+            SizedBox(
+              width: 44,
+              child: canEdit
+                  ? Align(
+                      alignment: Alignment.centerRight,
+                      child: Tooltip(
+                        message: 'Edit Payment',
+                        child: InkWell(
+                          onTap: () => onEditPayment!(entry),
+                          borderRadius: BorderRadius.circular(7),
+                          child: Container(
+                            width: 28,
+                            height: 28,
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(7),
+                              border: Border.all(
+                                color: const Color(0xFFC6DEC9),
+                                width: 0.5,
+                              ),
+                            ),
+                            child: const Icon(
+                              Icons.edit_outlined,
+                              size: 14,
+                              color: Color(0xFF1B4332),
+                            ),
+                          ),
+                        ),
+                      ),
+                    )
+                  : const SizedBox.shrink(),
+            ),
         ],
       ),
     );
@@ -1940,14 +2078,32 @@ class PurchaseLedgerTable extends StatelessWidget {
             ),
           ),
           Expanded(
-            child: Text(
-              entry.ledgerSummary,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontSize: 11.5,
-                color: Color(0xFF6B8F71),
-              ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  entry.ledgerSummary,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 11.5,
+                    color: Color(0xFF6B8F71),
+                  ),
+                ),
+                if (entry.createdByUserName != null &&
+                    entry.createdByUserName!.trim().isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    'Recorded By: ${entry.createdByUserName!.trim()}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 10,
+                      color: Color(0xFF95B89A),
+                    ),
+                  ),
+                ],
+              ],
             ),
           ),
           SizedBox(

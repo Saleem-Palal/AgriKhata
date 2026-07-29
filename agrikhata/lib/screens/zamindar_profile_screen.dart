@@ -1,14 +1,14 @@
-import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Data/agri_header.dart';
 import 'package:agrikhata/Data/zamindar_kisaans_tab.dart';
 import 'package:agrikhata/Data/zamindar_ledger_tab.dart';
 import 'package:agrikhata/Data/zamindar_overview_tab.dart';
 import 'package:agrikhata/Database/database_helper.dart';
 import 'package:agrikhata/screens/add_zamindar_screen.dart';
+import 'package:agrikhata/theme/theme.dart';
+import 'package:agrikhata/services/whatsapp_urdu_service.dart';
 import 'package:agrikhata/utils/pdf_generator.dart';
-import 'package:agrikhata/utils/pdf_share.dart';
+import 'package:agrikhata/utils/shop_settings.dart';
 import 'package:flutter/material.dart';
-import 'package:path/path.dart' as p;
 
 class ZamindarProfileScreen extends StatefulWidget {
   final Zamindar zamindar;
@@ -40,6 +40,7 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
   int _selectedTab = 0;
   bool _openKisaanDrawerOnLoad = false;
   String _outstandingBalanceDisplay = "Rs. 0";
+  String _advancePaymentsDisplay = "Rs. 0";
   int _kisaanCount = 0;
   bool _isLoadingStats = true;
 
@@ -77,6 +78,9 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
       // Use centralized method for outstanding balance
       final outstandingBalance = await DatabaseHelper.instance
           .getOutstandingBalanceString(widget.zamindar.id!);
+      final advanceBalance = await DatabaseHelper.instance.getAdvanceBalance(
+        widget.zamindar.id!,
+      );
       final count = await DatabaseHelper.instance.countKisaansForZamindar(
         widget.zamindar.id!,
       );
@@ -84,6 +88,8 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
       if (!mounted) return;
       setState(() {
         _outstandingBalanceDisplay = outstandingBalance;
+        _advancePaymentsDisplay =
+            'Rs. ${advanceBalance.toString().replaceAllMapped(RegExp(r'(\d)(?=(\d{3})+(?!\d))'), (m) => '${m[1]},')}';
         _kisaanCount = count;
         _isLoadingStats = false;
       });
@@ -113,14 +119,14 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
               }
             },
             actions: [
-              OutlinedButton.icon(
+              AppButton.secondary(
+                label: 'Edit',
+                icon: Icons.edit_outlined,
                 onPressed: () {
-                  // If parent provided an edit handler (Shell inline flow), use it.
                   if (widget.onEdit != null) {
                     widget.onEdit!.call();
                     return;
                   }
-                  // Otherwise push the AddZamindarScreen route for standalone flow.
                   Navigator.of(context).push(
                     MaterialPageRoute(
                       builder: (ctx) => AddZamindarScreen(
@@ -131,30 +137,15 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
                     ),
                   );
                 },
-                icon: const Icon(Icons.edit_outlined, size: 15),
-                label: const Text("Edit"),
               ),
-              const SizedBox(width: 8),
-              OutlinedButton.icon(
+              AppButton.pdf(
+                label: 'Export PDF',
                 onPressed: () => _showExportPdfDialog(z),
-                icon: const Icon(Icons.file_download_outlined, size: 15),
-                label: const Text("Export PDF"),
               ),
-              const SizedBox(width: 8),
-              OutlinedButton.icon(
+              AppButton.danger(
+                label: 'Delete',
+                icon: Icons.delete_outline,
                 onPressed: () => _confirmDelete(z),
-                icon: const Icon(
-                  Icons.delete_outline,
-                  size: 15,
-                  color: Color(0xFFA32D2D),
-                ),
-                label: const Text(
-                  "Delete",
-                  style: TextStyle(color: Color(0xFFA32D2D)),
-                ),
-                style: OutlinedButton.styleFrom(
-                  side: const BorderSide(color: Color(0xFFF09595)),
-                ),
               ),
             ],
           ),
@@ -223,6 +214,7 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
               if (z.isOverLimit && !isNarrow) ...[
                 const SizedBox(width: 14),
                 Container(
+                  margin: const EdgeInsets.only(right: 20),
                   padding: const EdgeInsets.symmetric(
                     horizontal: 10,
                     vertical: 4,
@@ -258,13 +250,15 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
               : Wrap(
                   spacing: 24,
                   runSpacing: 8,
-                  alignment: isNarrow
-                      ? WrapAlignment.start
-                      : WrapAlignment.end,
+                  alignment: isNarrow ? WrapAlignment.start : WrapAlignment.end,
                   children: [
                     _bannerStat(
                       _outstandingBalanceDisplay,
                       "Total outstanding balance",
+                    ),
+                    _bannerStat(
+                      _advancePaymentsDisplay,
+                      "Advance payments (wallet)",
                     ),
                     _bannerStat(
                       "${z.landArea.toStringAsFixed(0)} ${z.landUnit}",
@@ -312,6 +306,7 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
           return Row(
             children: [
               Expanded(child: identitySection),
+              const SizedBox(width: 16),
               statsSection,
             ],
           );
@@ -368,12 +363,17 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
                 _loadLiveStats();
               },
               child: Container(
-                padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 4),
+                padding: const EdgeInsets.symmetric(
+                  vertical: 14,
+                  horizontal: 4,
+                ),
                 margin: const EdgeInsets.only(right: 32),
                 decoration: BoxDecoration(
                   border: Border(
                     bottom: BorderSide(
-                      color: isActive ? AppColors.darkGreen : Colors.transparent,
+                      color: isActive
+                          ? AppColors.darkGreen
+                          : Colors.transparent,
                       width: 2.5,
                     ),
                   ),
@@ -393,7 +393,9 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
                       _tabs[i],
                       style: TextStyle(
                         fontSize: 14,
-                        fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
+                        fontWeight: isActive
+                            ? FontWeight.w600
+                            : FontWeight.w500,
                         color: isActive
                             ? AppColors.darkGreen
                             : AppColors.textMuted,
@@ -575,35 +577,38 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
       );
 
       if (action == ExportPdfAction.whatsapp) {
-        await PdfShare.sharePdfFile(
-          file: file,
-          fileName: p.basename(file.path),
-          text: 'AgriKhata Ledger - ${z.name} ($seasonLabel$cropNote)',
+        final shopName = await ShopSettings.getShopName();
+        final balances = await DatabaseHelper.instance.getZamindarBalancesSafe(
+          z.id!,
+        );
+        final amount =
+            (balances?['outstandingBalance'] as num?)?.toDouble() ?? 0;
+        await WhatsAppUrduService.sharePdfWithUrduCaption(
+          phone: z.whatsappNumber,
+          zamindarName: z.name,
+          shopName: shopName,
+          amount: amount,
+          pdfPath: file.path,
+          detailLines: [
+            if (seasonLabel.isNotEmpty) 'موسم: $seasonLabel',
+            if (cropNote.isNotEmpty) cropNote.trim(),
+          ],
           subject: 'AgriKhata Zamindar Ledger',
         );
         return;
       }
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              filtered.isEmpty
-                  ? 'PDF saved (no sales rows found) to ${file.path}'
-                  : 'PDF saved (${filtered.length} invoices) to ${file.path}',
-            ),
-            backgroundColor: AppColors.darkGreen,
-          ),
+        AppToast.showSuccess(
+          context,
+          filtered.isEmpty
+              ? 'PDF saved (no sales rows found) to ${file.path}'
+              : 'PDF saved (${filtered.length} invoices) to ${file.path}',
         );
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Export failed: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        AppToast.showError(context, 'Export failed: $e');
       }
     }
   }
@@ -648,9 +653,7 @@ class _ZamindarProfileScreenState extends State<ZamindarProfileScreen> {
       await DatabaseHelper.instance.deleteZamindar(id);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error deleting zamindar: $e')));
+        AppToast.showError(context, 'Error deleting zamindar: $e');
       }
     }
   }
@@ -804,8 +807,7 @@ class _ZamindarExportPdfSheetState extends State<_ZamindarExportPdfSheet> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (selected)
-              Icon(Icons.check, size: 14, color: selectedFg),
+            if (selected) Icon(Icons.check, size: 14, color: selectedFg),
             if (selected) const SizedBox(width: 4),
             Text(
               label,
@@ -871,7 +873,11 @@ class _ZamindarExportPdfSheetState extends State<_ZamindarExportPdfSheet> {
                   ),
                   IconButton(
                     onPressed: () => Navigator.of(context).pop(),
-                    icon: const Icon(Icons.close, color: Colors.white, size: 18),
+                    icon: const Icon(
+                      Icons.close,
+                      color: Colors.white,
+                      size: 18,
+                    ),
                   ),
                 ],
               ),

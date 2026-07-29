@@ -1,7 +1,7 @@
-import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Database/database_helper.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:agrikhata/theme/theme.dart';
 
 /// Daily attendance register — toggle P / A / ½ per active employee.
 /// Unmarked days leave no row in [employee_attendance].
@@ -23,7 +23,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   final Set<int> _savingIds = {};
 
   String get _dateIso {
-    final d = DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day);
+    final d = DateTime(
+      _selectedDate.year,
+      _selectedDate.month,
+      _selectedDate.day,
+    );
     return _dateKey.format(d);
   }
 
@@ -45,9 +49,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   Future<void> _load({bool silent = false}) async {
     if (!silent && mounted) setState(() => _loading = true);
     try {
-      final employees = await DatabaseHelper.instance.getEmployees(activeOnly: true);
-      final statuses =
-          await DatabaseHelper.instance.getAttendanceForDate(_dateIso);
+      final employees = await DatabaseHelper.instance.getEmployees(
+        activeOnly: true,
+      );
+      final statuses = await DatabaseHelper.instance.getAttendanceForDate(
+        _dateIso,
+      );
       if (!mounted) return;
       setState(() {
         _employees = employees;
@@ -57,13 +64,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _loading = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to load attendance: $e'),
-          backgroundColor: AppColors.dangerText,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      AppToast.showError(context, 'Failed to load attendance: $e');
     }
   }
 
@@ -76,9 +77,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       builder: (context, child) {
         return Theme(
           data: Theme.of(context).copyWith(
-            colorScheme: Theme.of(context).colorScheme.copyWith(
-              primary: AppColors.darkGreen,
-            ),
+            colorScheme: Theme.of(
+              context,
+            ).colorScheme.copyWith(primary: AppColors.darkGreen),
           ),
           child: child!,
         );
@@ -121,13 +122,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       if (!mounted) return;
       await _load(silent: true);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Could not update attendance: $e'),
-          backgroundColor: AppColors.dangerText,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      AppToast.showError(context, 'Could not update attendance: $e');
     } finally {
       if (mounted) {
         setState(() => _savingIds.remove(employeeId));
@@ -164,8 +159,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                       ),
                     )
                   : _employees.isEmpty
-                      ? _buildEmpty()
-                      : _buildList(),
+                  ? _buildEmpty()
+                  : _buildList(),
             ),
             _buildFooter(),
           ],
@@ -226,7 +221,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         child: Text(
           'No active employees yet.\nAdd employees from the Employees screen.',
           textAlign: TextAlign.center,
-          style: TextStyle(fontSize: 13, color: AppColors.textHint, height: 1.45),
+          style: TextStyle(
+            fontSize: 13,
+            color: AppColors.textHint,
+            height: 1.45,
+          ),
         ),
       ),
     );
@@ -432,7 +431,9 @@ class _AttendanceToggle extends StatelessWidget {
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(8),
               border: Border.all(
-                color: selected ? selectedFg.withValues(alpha: 0.35) : AppColors.border,
+                color: selected
+                    ? selectedFg.withValues(alpha: 0.35)
+                    : AppColors.border,
               ),
             ),
             child: Text(
