@@ -13,6 +13,7 @@ import '../services/partner_service.dart';
 import '../services/print_service.dart';
 import '../services/session_context.dart';
 import '../services/whatsapp_urdu_service.dart';
+import '../services/season_service.dart';
 import '../utils/season_utils.dart';
 import '../utils/smart_recommendations.dart';
 import '../utils/advance_checkout_overlay.dart';
@@ -597,7 +598,8 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     });
 
     try {
-      final season = SeasonUtils.getSeasonString(DateTime.now());
+      final season = SeasonService.instance.activeSeasonName ??
+          SeasonUtils.getSeasonString(DateTime.now());
       final results = await Future.wait([
         db.DatabaseHelper.instance.getProductsInStock(),
         db.DatabaseHelper.instance.getKisaanSeasonPurchaseLineItems(
@@ -1432,9 +1434,9 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
             : 'Fertilizer';
 
         // Get season string for the selected date
-        final String seasonString = SeasonUtils.getSeasonString(
-          _selectedDateTime,
-        );
+        final String seasonString =
+            SeasonService.instance.activeSeasonName ??
+            SeasonUtils.getSeasonString(_selectedDateTime);
 
         debugPrint(
           'SALE DEBUG: Converted ${saleItems.length} cart items to SaleLineItem format',
@@ -1663,7 +1665,8 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       final kisaanId = _selectedKisaan != null
           ? int.tryParse(_selectedKisaan!.id)
           : null;
-      final seasonString = SeasonUtils.getSeasonString(_selectedDateTime);
+      final seasonString = SeasonService.instance.activeSeasonName ??
+          SeasonUtils.getSeasonString(_selectedDateTime);
       final transactionType = _advanceTransactionType;
       final remarks = _advanceRemarksController.text.trim();
 
@@ -2087,7 +2090,8 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     final displayDate = isToday
         ? 'Today · ${timeFormat.format(_selectedDateTime)}'
         : dateFormat.format(_selectedDateTime);
-    final season = SeasonUtils.getSeasonString(_selectedDateTime);
+    final season = SeasonService.instance.activeSeasonName ??
+        SeasonUtils.getSeasonString(_selectedDateTime);
 
     return AppTopHeader(
       title: 'New sale',

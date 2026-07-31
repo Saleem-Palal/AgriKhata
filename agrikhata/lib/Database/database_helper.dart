@@ -9,6 +9,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../models/audit_log_model.dart';
 import '../models/partner_model.dart';
+import '../models/season.dart';
 import '../models/user_model.dart';
 import '../services/session_context.dart';
 import '../utils/season_utils.dart';
@@ -29,7 +30,7 @@ class DatabaseHelper with ChangeNotifier {
   static final DatabaseHelper instance = DatabaseHelper._internal();
 
   /// Current on-disk schema version. Bump only when adding a new `_migrateToV*`.
-  static const int schemaVersion = 36;
+  static const int schemaVersion = 37;
 
   static final NumberFormat _indianCurrencyFormat = NumberFormat('#,##,##0');
 
@@ -105,6 +106,8 @@ class DatabaseHelper with ChangeNotifier {
           await db.execute(_createZamindarsTable());
           await db.execute(_createKisaansTable());
           await db.execute(_createProductsTable());
+          // seasons before sales/payments so season_id FKs can reference them.
+          await db.execute(_createSeasonsTable());
           // sales/payments first — ledger_transactions FKs reference them.
           await db.execute(_createSalesTable());
           await db.execute(_createSaleItemsTable());
@@ -128,6 +131,7 @@ class DatabaseHelper with ChangeNotifier {
           await db.execute(_createAuditLogsTable());
           await _createIndexes(db);
           await _createLedgerSyncTriggers(db);
+          await ensureSeededActiveSeasonOn(db);
         },
         onOpen: (db) async {
           // Reinforce FK enforcement on every connection (Desktop FFI).
@@ -140,6 +144,7 @@ class DatabaseHelper with ChangeNotifier {
           await _ensureSalesAdvanceSchema(db);
           await _ensurePartnerSchema(db);
           await _ensureArchivedSeasonsSchema(db);
+          await _ensureSeasonsSchema(db);
           await _ensureUserAuthSchema(db);
           await _ensurePaymentEditAuditSchema(db);
           await _createLedgerSyncTriggers(db);
@@ -368,6 +373,12 @@ class DatabaseHelper with ChangeNotifier {
           toVersion: 36,
           description: 'payment edit audit columns (edited_at/by, original_amount, notes)',
           run: _migrateToV36,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 37,
+          description: 'manual seasons table + season_id on transactions',
+          run: _migrateToV37,
           verifyIntegrity: false,
         ),
       ],
@@ -790,6 +801,21 @@ class DatabaseHelper with ChangeNotifier {
   /// v36: payment edit audit trail + optional notes.
   Future<void> _migrateToV36(Database db, MigrationLog log) async {
     await _ensurePaymentEditAuditSchema(db, log: log);
+  }
+
+  /// v37: manual Season System — seasons master table + season_id FKs.
+  Future<void> _migrateToV37(Database db, MigrationLog log) async {
+    log.step('ensure seasons table + season_id columns');
+    await _ensureSeasonsSchema(db, log: log);
+
+    log.step('backfill seasons from distinct transaction labels');
+    await _backfillSeasonsFromLabels(db, log);
+
+    log.step('seed active season if missing');
+    await ensureSeededActiveSeasonOn(db);
+
+    log.step('recreate ledger sync triggers with season_id');
+    await _createLedgerSyncTriggers(db);
   }
 
   /// Adds edit-audit columns on [PaymentsTable] (idempotent).
@@ -1864,6 +1890,206 @@ END
     await db.execute(_createArchivedSeasonsTable());
   }
 
+  /// Creates [SeasonsTable] and nullable `season_id` columns (idempotent).
+  Future<void> _ensureSeasonsSchema(
+    DatabaseExecutor db, {
+    MigrationLog? log,
+  }) async {
+    await db.execute(_createSeasonsTable());
+    await addColumnIfMissing(
+      db,
+      table: SalesTable.name,
+      column: SalesTable.seasonId,
+      columnDefSql: '${SalesTable.seasonId} INTEGER',
+      log: log,
+    );
+    await addColumnIfMissing(
+      db,
+      table: PaymentsTable.name,
+      column: PaymentsTable.seasonId,
+      columnDefSql: '${PaymentsTable.seasonId} INTEGER',
+      log: log,
+    );
+    await addColumnIfMissing(
+      db,
+      table: LedgerTransactionTable.name,
+      column: LedgerTransactionTable.seasonId,
+      columnDefSql: '${LedgerTransactionTable.seasonId} INTEGER',
+      log: log,
+    );
+    await addColumnIfMissing(
+      db,
+      table: ExpenseTable.name,
+      column: ExpenseTable.seasonId,
+      columnDefSql: '${ExpenseTable.seasonId} INTEGER',
+      log: log,
+    );
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_sales_season_id
+      ON ${SalesTable.name}(${SalesTable.seasonId})
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_payments_season_id
+      ON ${PaymentsTable.name}(${PaymentsTable.seasonId})
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_ledger_season_id
+      ON ${LedgerTransactionTable.name}(${LedgerTransactionTable.seasonId})
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_expenses_season_id
+      ON ${ExpenseTable.name}(${ExpenseTable.seasonId})
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_seasons_active
+      ON ${SeasonsTable.name}(${SeasonsTable.isActive})
+    ''');
+  }
+
+  Future<void> _backfillSeasonsFromLabels(
+    Database db,
+    MigrationLog log,
+  ) async {
+    final labelRows = await db.rawQuery('''
+      SELECT DISTINCT label FROM (
+        SELECT TRIM(${SalesTable.season}) AS label FROM ${SalesTable.name}
+        UNION
+        SELECT TRIM(${PaymentsTable.season}) AS label FROM ${PaymentsTable.name}
+        UNION
+        SELECT TRIM(${LedgerTransactionTable.season}) AS label
+          FROM ${LedgerTransactionTable.name}
+      )
+      WHERE label IS NOT NULL AND label != ''
+    ''');
+
+    final calendarActive = SeasonUtils.getCurrentSeason().displayName;
+    final nowIso = _formatDateOnly(DateTime.now());
+
+    for (final row in labelRows) {
+      final label = (row['label'] as String?)?.trim() ?? '';
+      if (label.isEmpty) continue;
+
+      final existing = await db.query(
+        SeasonsTable.name,
+        columns: [SeasonsTable.id],
+        where: '${SeasonsTable.nameCol} = ?',
+        whereArgs: [label],
+        limit: 1,
+      );
+      if (existing.isNotEmpty) continue;
+
+      final parsed = SeasonUtils.parseSeasonDisplayName(label);
+      final type = parsed?.name == 'Rabi' ? SeasonType.rabi : SeasonType.kharif;
+      final start = parsed?.startDate ?? DateTime.now();
+      final end = parsed?.endDate;
+      final isActive = label == calendarActive ? 1 : 0;
+
+      await db.insert(SeasonsTable.name, {
+        SeasonsTable.nameCol: label,
+        SeasonsTable.seasonType: type,
+        SeasonsTable.startDate: _formatDateOnly(start),
+        SeasonsTable.endDate:
+            isActive == 1 ? null : (end == null ? null : _formatDateOnly(end)),
+        SeasonsTable.isActive: isActive,
+      });
+      log.step('seeded season row "$label" (active=$isActive)');
+    }
+
+    // Link sales / payments / ledger by label.
+    await db.execute('''
+      UPDATE ${SalesTable.name}
+      SET ${SalesTable.seasonId} = (
+        SELECT s.${SeasonsTable.id} FROM ${SeasonsTable.name} s
+        WHERE s.${SeasonsTable.nameCol} = TRIM(${SalesTable.name}.${SalesTable.season})
+        LIMIT 1
+      )
+      WHERE ${SalesTable.seasonId} IS NULL
+    ''');
+    await db.execute('''
+      UPDATE ${PaymentsTable.name}
+      SET ${PaymentsTable.seasonId} = (
+        SELECT s.${SeasonsTable.id} FROM ${SeasonsTable.name} s
+        WHERE s.${SeasonsTable.nameCol} = TRIM(${PaymentsTable.name}.${PaymentsTable.season})
+        LIMIT 1
+      )
+      WHERE ${PaymentsTable.seasonId} IS NULL
+    ''');
+    await db.execute('''
+      UPDATE ${LedgerTransactionTable.name}
+      SET ${LedgerTransactionTable.seasonId} = (
+        SELECT s.${SeasonsTable.id} FROM ${SeasonsTable.name} s
+        WHERE s.${SeasonsTable.nameCol}
+          = TRIM(${LedgerTransactionTable.name}.${LedgerTransactionTable.season})
+        LIMIT 1
+      )
+      WHERE ${LedgerTransactionTable.seasonId} IS NULL
+    ''');
+
+    // Expenses: map by calendar season of expense_date.
+    final expenses = await db.query(
+      ExpenseTable.name,
+      columns: [ExpenseTable.id, ExpenseTable.expenseDate],
+    );
+    for (final exp in expenses) {
+      final id = exp[ExpenseTable.id] as int?;
+      if (id == null) continue;
+      final raw = exp[ExpenseTable.expenseDate] as String? ?? '';
+      final date = DateTime.tryParse(raw) ?? DateTime.now();
+      final label = SeasonUtils.getSeasonString(date);
+      var seasonRows = await db.query(
+        SeasonsTable.name,
+        columns: [SeasonsTable.id],
+        where: '${SeasonsTable.nameCol} = ?',
+        whereArgs: [label],
+        limit: 1,
+      );
+      if (seasonRows.isEmpty) {
+        final parsed = SeasonUtils.parseSeasonDisplayName(label);
+        final type =
+            parsed?.name == 'Rabi' ? SeasonType.rabi : SeasonType.kharif;
+        final start = parsed?.startDate ?? date;
+        final newId = await db.insert(SeasonsTable.name, {
+          SeasonsTable.nameCol: label,
+          SeasonsTable.seasonType: type,
+          SeasonsTable.startDate: _formatDateOnly(start),
+          SeasonsTable.endDate: label == calendarActive
+              ? null
+              : _formatDateOnly(parsed?.endDate ?? date),
+          SeasonsTable.isActive: label == calendarActive ? 1 : 0,
+        });
+        seasonRows = [
+          {SeasonsTable.id: newId},
+        ];
+      }
+      await db.update(
+        ExpenseTable.name,
+        {ExpenseTable.seasonId: seasonRows.first[SeasonsTable.id]},
+        where: '${ExpenseTable.id} = ?',
+        whereArgs: [id],
+      );
+    }
+
+    // Ensure only one active season.
+    final actives = await db.query(
+      SeasonsTable.name,
+      where: '${SeasonsTable.isActive} = 1',
+      orderBy: '${SeasonsTable.startDate} DESC',
+    );
+    if (actives.length > 1) {
+      for (var i = 1; i < actives.length; i++) {
+        await db.update(
+          SeasonsTable.name,
+          {
+            SeasonsTable.isActive: 0,
+            SeasonsTable.endDate: nowIso,
+          },
+          where: '${SeasonsTable.id} = ?',
+          whereArgs: [actives[i][SeasonsTable.id]],
+        );
+      }
+    }
+  }
+
   /// Creates users / audit_logs and actor stamp columns (idempotent).
   Future<void> _ensureUserAuthSchema(Database db) async {
     await db.execute(_createUsersTable());
@@ -2508,7 +2734,8 @@ END
           ${LedgerTransactionTable.description},
           ${LedgerTransactionTable.amount},
           ${LedgerTransactionTable.dateTime},
-          ${LedgerTransactionTable.season}
+          ${LedgerTransactionTable.season},
+          ${LedgerTransactionTable.seasonId}
         ) VALUES (
           NEW.${SalesTable.zamindarId},
           NEW.${SalesTable.kisaanId},
@@ -2519,7 +2746,8 @@ END
           $saleDescriptionCase,
           NEW.${SalesTable.totalPayable},
           NEW.${SalesTable.dateTime},
-          NEW.${SalesTable.season}
+          NEW.${SalesTable.season},
+          NEW.${SalesTable.seasonId}
         );
       END;
     ''');
@@ -2556,7 +2784,8 @@ END
           ${LedgerTransactionTable.description},
           ${LedgerTransactionTable.amount},
           ${LedgerTransactionTable.dateTime},
-          ${LedgerTransactionTable.season}
+          ${LedgerTransactionTable.season},
+          ${LedgerTransactionTable.seasonId}
         ) VALUES (
           NEW.${SalesTable.zamindarId},
           NEW.${SalesTable.kisaanId},
@@ -2567,7 +2796,8 @@ END
           $saleDescriptionCase,
           NEW.${SalesTable.totalPayable},
           NEW.${SalesTable.dateTime},
-          NEW.${SalesTable.season}
+          NEW.${SalesTable.season},
+          NEW.${SalesTable.seasonId}
         );
 
         INSERT INTO ${LedgerTransactionTable.name} (
@@ -2580,7 +2810,8 @@ END
           ${LedgerTransactionTable.description},
           ${LedgerTransactionTable.amount},
           ${LedgerTransactionTable.dateTime},
-          ${LedgerTransactionTable.season}
+          ${LedgerTransactionTable.season},
+          ${LedgerTransactionTable.seasonId}
         )
         SELECT
           COALESCE(
@@ -2617,7 +2848,8 @@ END
           END,
           p.${PaymentsTable.amountPaid},
           p.${PaymentsTable.dateTime},
-          p.${PaymentsTable.season}
+          p.${PaymentsTable.season},
+          p.${PaymentsTable.seasonId}
         FROM ${PaymentsTable.name} p
         WHERE p.${PaymentsTable.invoiceNumber} = NEW.${SalesTable.invoiceNumber};
       END;
@@ -2642,7 +2874,8 @@ END
           ${LedgerTransactionTable.description},
           ${LedgerTransactionTable.amount},
           ${LedgerTransactionTable.dateTime},
-          ${LedgerTransactionTable.season}
+          ${LedgerTransactionTable.season},
+          ${LedgerTransactionTable.seasonId}
         ) VALUES (
           COALESCE(
             NEW.${PaymentsTable.zamindarId},
@@ -2663,7 +2896,8 @@ END
           $paymentDescriptionCase,
           NEW.${PaymentsTable.amountPaid},
           NEW.${PaymentsTable.dateTime},
-          NEW.${PaymentsTable.season}
+          NEW.${PaymentsTable.season},
+          NEW.${PaymentsTable.seasonId}
         );
       END;
     ''');
@@ -2701,7 +2935,8 @@ END
           ${LedgerTransactionTable.description},
           ${LedgerTransactionTable.amount},
           ${LedgerTransactionTable.dateTime},
-          ${LedgerTransactionTable.season}
+          ${LedgerTransactionTable.season},
+          ${LedgerTransactionTable.seasonId}
         ) VALUES (
           COALESCE(
             NEW.${PaymentsTable.zamindarId},
@@ -2722,7 +2957,8 @@ END
           $paymentDescriptionCase,
           NEW.${PaymentsTable.amountPaid},
           NEW.${PaymentsTable.dateTime},
-          NEW.${PaymentsTable.season}
+          NEW.${PaymentsTable.season},
+          NEW.${PaymentsTable.seasonId}
         );
       END;
     ''');
@@ -2968,6 +3204,7 @@ END
       ${LedgerTransactionTable.amount} INTEGER NOT NULL,
       ${LedgerTransactionTable.dateTime} TEXT NOT NULL,
       ${LedgerTransactionTable.season} TEXT NOT NULL,
+      ${LedgerTransactionTable.seasonId} INTEGER,
       FOREIGN KEY (${LedgerTransactionTable.zamindarId}) REFERENCES ${ZamindarTable.name}(${ZamindarTable.id})
         ON DELETE CASCADE,
       FOREIGN KEY (${LedgerTransactionTable.kisaanId}) REFERENCES ${KisaanTable.name}(${KisaanTable.id})
@@ -2992,6 +3229,7 @@ END
       ${SalesTable.paidAmount} INTEGER NOT NULL DEFAULT 0,
       ${SalesTable.paymentMethod} TEXT NOT NULL,
       ${SalesTable.season} TEXT NOT NULL,
+      ${SalesTable.seasonId} INTEGER,
       ${SalesTable.paymentTerm} TEXT,
       ${SalesTable.transactionType} TEXT NOT NULL
         DEFAULT '${SaleTransactionType.productSale}',
@@ -3038,6 +3276,7 @@ END
       ${PaymentsTable.amountPaid} INTEGER NOT NULL,
       ${PaymentsTable.paymentMethod} TEXT NOT NULL,
       ${PaymentsTable.season} TEXT NOT NULL,
+      ${PaymentsTable.seasonId} INTEGER,
       ${PaymentsTable.editedAt} TEXT,
       ${PaymentsTable.editedBy} TEXT,
       ${PaymentsTable.originalAmount} INTEGER,
@@ -3166,6 +3405,7 @@ END
       ${ExpenseTable.expenseDate} TEXT NOT NULL,
       ${ExpenseTable.employeeId} INTEGER,
       ${ExpenseTable.payrollType} TEXT,
+      ${ExpenseTable.seasonId} INTEGER,
       ${ActorColumns.createdByUserId} TEXT,
       ${ActorColumns.createdByUserName} TEXT,
       ${ActorColumns.createdAt} TEXT
@@ -3272,6 +3512,18 @@ END
       ${ArchivedSeasonTable.seasonLabel} TEXT PRIMARY KEY,
       ${ArchivedSeasonTable.archivedAt} TEXT NOT NULL,
       ${ArchivedSeasonTable.notes} TEXT
+    )
+  ''';
+
+  String _createSeasonsTable() =>
+      '''
+    CREATE TABLE IF NOT EXISTS ${SeasonsTable.name} (
+      ${SeasonsTable.id} INTEGER PRIMARY KEY AUTOINCREMENT,
+      ${SeasonsTable.nameCol} TEXT NOT NULL UNIQUE,
+      ${SeasonsTable.seasonType} TEXT NOT NULL,
+      ${SeasonsTable.startDate} TEXT NOT NULL,
+      ${SeasonsTable.endDate} TEXT,
+      ${SeasonsTable.isActive} INTEGER NOT NULL DEFAULT 0
     )
   ''';
 
@@ -3519,6 +3771,7 @@ END
         PaymentsTable.amountPaid: amount,
         PaymentsTable.paymentMethod: 'Cash',
         PaymentsTable.season: season,
+        PaymentsTable.seasonId: await _lookupSeasonIdForLabel(db, season),
       };
       if (usesIds) {
         values[PaymentsTable.zamindarId] = zamindarId;
@@ -5194,11 +5447,13 @@ END
 
     final db = await database;
     await _ensureExpensesSchema(db);
+    final active = await getActiveSeason();
     final row = <String, Object?>{
       ExpenseTable.category: trimmedCategory,
       ExpenseTable.amount: amount,
       ExpenseTable.remarks: remarks.trim(),
       ExpenseTable.expenseDate: _formatDateTime(DateTime.now()),
+      ExpenseTable.seasonId: active?.id,
     };
     _applyActorStamp(row);
     final id = await db.insert(ExpenseTable.name, row);
@@ -5302,15 +5557,302 @@ END
     );
   }
 
-  Future<void> assertSeasonEditable(String? seasonLabel) async {
+  Future<void> assertSeasonEditable(
+    String? seasonLabel, {
+    int? seasonId,
+    bool masterAdminAuthorized = false,
+  }) async {
+    final past = await isPastSeasonRecord(
+      seasonId: seasonId,
+      seasonLabel: seasonLabel,
+    );
+    if (!past) return;
+
+    final isOwner = SessionContext.currentUser?.isOwner == true;
+    if (isOwner || masterAdminAuthorized) return;
+
     final label = (seasonLabel ?? '').trim();
-    if (label.isEmpty) return;
-    if (await isSeasonArchived(label)) {
-      throw StateError(
-        'Season "$label" is locked & archived. '
-        'Past invoices for this closed season cannot be edited.',
+    throw StateError(
+      label.isEmpty
+          ? '🔒 Past-season entries are read-only. '
+              'Only the Owner / Master Admin can modify them.'
+          : '🔒 Season "$label" is closed. '
+              'Past-season entries are read-only for standard users.',
+    );
+  }
+
+  Future<bool> isPastSeasonRecord({
+    int? seasonId,
+    String? seasonLabel,
+  }) async {
+    final db = await database;
+    await _ensureSeasonsSchema(db);
+
+    if (seasonId != null) {
+      final rows = await db.query(
+        SeasonsTable.name,
+        columns: [SeasonsTable.isActive],
+        where: '${SeasonsTable.id} = ?',
+        whereArgs: [seasonId],
+        limit: 1,
       );
+      if (rows.isNotEmpty) {
+        return (rows.first[SeasonsTable.isActive] as num?)?.toInt() != 1;
+      }
     }
+
+    final label = (seasonLabel ?? '').trim();
+    if (label.isNotEmpty) {
+      final byName = await db.query(
+        SeasonsTable.name,
+        columns: [SeasonsTable.isActive],
+        where: '${SeasonsTable.nameCol} = ?',
+        whereArgs: [label],
+        limit: 1,
+      );
+      if (byName.isNotEmpty) {
+        return (byName.first[SeasonsTable.isActive] as num?)?.toInt() != 1;
+      }
+      if (await isSeasonArchived(label)) return true;
+    }
+    return false;
+  }
+
+  Future<Season?> getActiveSeason() async {
+    final db = await database;
+    await _ensureSeasonsSchema(db);
+    final rows = await db.query(
+      SeasonsTable.name,
+      where: '${SeasonsTable.isActive} = 1',
+      orderBy: '${SeasonsTable.startDate} DESC',
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return Season.fromMap(rows.first);
+  }
+
+  Future<Season?> getSeasonById(int id) async {
+    final db = await database;
+    await _ensureSeasonsSchema(db);
+    final rows = await db.query(
+      SeasonsTable.name,
+      where: '${SeasonsTable.id} = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return Season.fromMap(rows.first);
+  }
+
+  Future<Season?> getSeasonByName(String name) async {
+    final label = name.trim();
+    if (label.isEmpty) return null;
+    final db = await database;
+    await _ensureSeasonsSchema(db);
+    final rows = await db.query(
+      SeasonsTable.name,
+      where: '${SeasonsTable.nameCol} = ?',
+      whereArgs: [label],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return Season.fromMap(rows.first);
+  }
+
+  Future<List<Season>> getAllSeasons() async {
+    final db = await database;
+    await _ensureSeasonsSchema(db);
+    final rows = await db.query(
+      SeasonsTable.name,
+      orderBy: '${SeasonsTable.startDate} DESC',
+    );
+    return rows.map(Season.fromMap).toList();
+  }
+
+  Future<Season> ensureSeededActiveSeason() async {
+    final db = await database;
+    return ensureSeededActiveSeasonOn(db);
+  }
+
+  Future<Season> ensureSeededActiveSeasonOn(DatabaseExecutor db) async {
+    await _ensureSeasonsSchema(db);
+    final existing = await db.query(
+      SeasonsTable.name,
+      where: '${SeasonsTable.isActive} = 1',
+      limit: 1,
+    );
+    if (existing.isNotEmpty) {
+      return Season.fromMap(existing.first);
+    }
+
+    final calendar = SeasonUtils.getCurrentSeason();
+    final type =
+        calendar.name == 'Rabi' ? SeasonType.rabi : SeasonType.kharif;
+    // Prefer continuity with existing TEXT labels on first seed.
+    final name = calendar.displayName;
+    final byName = await db.query(
+      SeasonsTable.name,
+      where: '${SeasonsTable.nameCol} = ?',
+      whereArgs: [name],
+      limit: 1,
+    );
+    if (byName.isNotEmpty) {
+      await db.update(
+        SeasonsTable.name,
+        {
+          SeasonsTable.isActive: 1,
+          SeasonsTable.endDate: null,
+        },
+        where: '${SeasonsTable.id} = ?',
+        whereArgs: [byName.first[SeasonsTable.id]],
+      );
+      return Season.fromMap({
+        ...byName.first,
+        SeasonsTable.isActive: 1,
+        SeasonsTable.endDate: null,
+      });
+    }
+
+    final id = await db.insert(SeasonsTable.name, {
+      SeasonsTable.nameCol: name,
+      SeasonsTable.seasonType: type,
+      SeasonsTable.startDate: _formatDateOnly(calendar.startDate),
+      SeasonsTable.endDate: null,
+      SeasonsTable.isActive: 1,
+    });
+    return Season(
+      id: id,
+      name: name,
+      seasonType: type,
+      startDate: calendar.startDate,
+      endDate: null,
+      isActive: true,
+    );
+  }
+
+  /// Ends the current active season and opens a new one. Preserves history.
+  Future<Season> rollOverToNextSeason({
+    required String seasonType,
+    required int startYear,
+    String? notes,
+  }) async {
+    if (!SeasonType.isValid(seasonType)) {
+      throw ArgumentError('Invalid season type: $seasonType');
+    }
+    final db = await database;
+    await _ensureSeasonsSchema(db);
+    final window = Season.dateWindow(seasonType, startYear);
+    final name = Season.buildName(seasonType, startYear);
+    final today = DateTime.now();
+
+    late final Season next;
+    await db.transaction((txn) async {
+      final actives = await txn.query(
+        SeasonsTable.name,
+        where: '${SeasonsTable.isActive} = 1',
+      );
+      for (final row in actives) {
+        final label = row[SeasonsTable.nameCol] as String? ?? '';
+        await txn.update(
+          SeasonsTable.name,
+          {
+            SeasonsTable.isActive: 0,
+            SeasonsTable.endDate: _formatDateOnly(today),
+          },
+          where: '${SeasonsTable.id} = ?',
+          whereArgs: [row[SeasonsTable.id]],
+        );
+        if (label.isNotEmpty) {
+          await txn.insert(
+            ArchivedSeasonTable.name,
+            {
+              ArchivedSeasonTable.seasonLabel: label,
+              ArchivedSeasonTable.archivedAt: _formatDateTime(today),
+              ArchivedSeasonTable.notes:
+                  notes ?? 'Closed via manual season rollover',
+            },
+            conflictAlgorithm: ConflictAlgorithm.ignore,
+          );
+        }
+      }
+
+      final duplicate = await txn.query(
+        SeasonsTable.name,
+        where: '${SeasonsTable.nameCol} = ?',
+        whereArgs: [name],
+        limit: 1,
+      );
+      if (duplicate.isNotEmpty) {
+        await txn.update(
+          SeasonsTable.name,
+          {
+            SeasonsTable.isActive: 1,
+            SeasonsTable.endDate: null,
+            SeasonsTable.seasonType: seasonType,
+            SeasonsTable.startDate: _formatDateOnly(window.start),
+          },
+          where: '${SeasonsTable.id} = ?',
+          whereArgs: [duplicate.first[SeasonsTable.id]],
+        );
+        next = Season.fromMap({
+          ...duplicate.first,
+          SeasonsTable.isActive: 1,
+          SeasonsTable.endDate: null,
+          SeasonsTable.seasonType: seasonType,
+          SeasonsTable.startDate: _formatDateOnly(window.start),
+        });
+      } else {
+        final id = await txn.insert(SeasonsTable.name, {
+          SeasonsTable.nameCol: name,
+          SeasonsTable.seasonType: seasonType,
+          SeasonsTable.startDate: _formatDateOnly(window.start),
+          SeasonsTable.endDate: null,
+          SeasonsTable.isActive: 1,
+        });
+        next = Season(
+          id: id,
+          name: name,
+          seasonType: seasonType,
+          startDate: window.start,
+          endDate: null,
+          isActive: true,
+        );
+      }
+    });
+
+    await _writeAuditLog(
+      actionType: AuditActionType.seasonRollover,
+      referenceId: next.id.toString(),
+      description: 'Season rollover → ${next.name}',
+    );
+    notifyListeners();
+    return next;
+  }
+
+  Future<int?> _lookupSeasonIdForLabel(
+    DatabaseExecutor db,
+    String seasonLabel,
+  ) async {
+    final label = seasonLabel.trim();
+    if (label.isEmpty) return null;
+    final rows = await db.query(
+      SeasonsTable.name,
+      columns: [SeasonsTable.id],
+      where: '${SeasonsTable.nameCol} = ?',
+      whereArgs: [label],
+      limit: 1,
+    );
+    if (rows.isNotEmpty) {
+      return rows.first[SeasonsTable.id] as int?;
+    }
+    final active = await db.query(
+      SeasonsTable.name,
+      columns: [SeasonsTable.id],
+      where: '${SeasonsTable.isActive} = 1',
+      limit: 1,
+    );
+    if (active.isEmpty) return null;
+    return active.first[SeasonsTable.id] as int?;
   }
 
   // ---------------------------------------------------------------------------
@@ -7354,6 +7896,14 @@ END
     final expiryHorizon = todayStart.add(const Duration(days: 60));
     final expiryHorizonIso = _formatDateOnly(expiryHorizon);
     final todayStartDateIso = _formatDateOnly(todayStart);
+    final activeSeason = await getActiveSeason();
+    final seasonId = activeSeason?.id;
+    final seasonFilter = seasonId == null
+        ? ''
+        : ' AND ${SalesTable.seasonId} = $seasonId';
+    final paymentSeasonFilter = seasonId == null
+        ? ''
+        : ' AND ${PaymentsTable.seasonId} = $seasonId';
 
     final totalReceivables = await _sumTotalReceivables(db);
     final totalPayables = await _sumTotalPayables(db);
@@ -7433,6 +7983,7 @@ END
         drawingsReturned;
 
     // Today volumes for the snapshot cards (product sales only).
+    // Scoped to the active manual season when one exists.
     final todayCashSalesRows = await db.rawQuery(
       '''
       SELECT COALESCE(SUM(${SalesTable.paidAmount}), 0) AS total
@@ -7445,6 +7996,7 @@ END
           OR ${SalesTable.transactionType} = ?
           OR ${SalesTable.transactionType} NOT IN (?, ?, ?)
         )
+        $seasonFilter
       ''',
       [
         todayStartIso,
@@ -7465,6 +8017,7 @@ END
       WHERE ${PaymentsTable.paymentMethod} = 'Cash'
         AND ${PaymentsTable.dateTime} >= ?
         AND ${PaymentsTable.dateTime} < ?
+        $paymentSeasonFilter
       ''',
       [todayStartIso, todayEndIso],
     );
@@ -7501,6 +8054,7 @@ END
           OR ${SalesTable.transactionType} = ?
           OR ${SalesTable.transactionType} NOT IN (?, ?, ?)
         )
+        $seasonFilter
       ''',
       [
         todayStartIso,
@@ -8275,6 +8829,7 @@ END
       }
 
       // Step 1: Insert sale (after_sale_insert trigger writes ledger DEBIT).
+      final resolvedSeasonId = await _lookupSeasonIdForLabel(txn, season);
       final saleRow = <String, Object?>{
         SalesTable.invoiceNumber: invoiceNumber,
         SalesTable.dateTime: _formatDateTime(dateTime),
@@ -8286,6 +8841,7 @@ END
         SalesTable.paidAmount: salePaidAmount.round(),
         SalesTable.paymentMethod: paymentMethod,
         SalesTable.season: season,
+        SalesTable.seasonId: resolvedSeasonId,
         SalesTable.paymentTerm: isCreditSale ? paymentTerm : null,
         SalesTable.transactionType: SaleTransactionType.productSale,
         SalesTable.creditAmount: creditAmount.round(),
@@ -8372,6 +8928,7 @@ END
           PaymentsTable.amountPaid: drawdown.round(),
           PaymentsTable.paymentMethod: 'Advance Wallet Deduction',
           PaymentsTable.season: season,
+          PaymentsTable.seasonId: await _lookupSeasonIdForLabel(txn, season),
         });
 
         if (remainingPhysicalCash > 0) {
@@ -8385,6 +8942,7 @@ END
             PaymentsTable.amountPaid: remainingPhysicalCash.round(),
             PaymentsTable.paymentMethod: 'Cash',
             PaymentsTable.season: season,
+          PaymentsTable.seasonId: await _lookupSeasonIdForLabel(txn, season),
           });
         }
       } else if (hasCreditCashPayment) {
@@ -8398,6 +8956,7 @@ END
           PaymentsTable.amountPaid: effectivePaidAmount.round(),
           PaymentsTable.paymentMethod: 'Cash',
           PaymentsTable.season: season,
+          PaymentsTable.seasonId: await _lookupSeasonIdForLabel(txn, season),
         });
       }
       // Ledger CREDIT rows for payments are created by after_payment_insert.
@@ -8473,6 +9032,7 @@ END
 
     final db = await database;
     await db.transaction((txn) async {
+      final resolvedSeasonId = await _lookupSeasonIdForLabel(txn, season);
       final advanceRow = <String, Object?>{
         SalesTable.invoiceNumber: invoiceNumber,
         SalesTable.dateTime: _formatDateTime(dateTime),
@@ -8484,6 +9044,7 @@ END
         SalesTable.paidAmount: 0,
         SalesTable.paymentMethod: 'Credit',
         SalesTable.season: season,
+        SalesTable.seasonId: resolvedSeasonId,
         SalesTable.paymentTerm: 'After Harvest',
         SalesTable.transactionType: transactionType,
         SalesTable.creditAmount: amount.round(),
@@ -8664,11 +9225,19 @@ END
   /// Gets all sales with their associated items and payments
   Future<List<Map<String, dynamic>>> getAllSalesWithDetails({
     String? season,
+    int? seasonId,
   }) async {
     final db = await database;
 
-    final seasonClause =
-        season != null ? 'WHERE s.${SalesTable.season} = ?' : '';
+    String seasonClause = '';
+    List<Object?> args = [];
+    if (seasonId != null) {
+      seasonClause = 'WHERE s.${SalesTable.seasonId} = ?';
+      args = [seasonId];
+    } else if (season != null) {
+      seasonClause = 'WHERE s.${SalesTable.season} = ?';
+      args = [season];
+    }
     final salesMaps = await db.rawQuery(
       '''
       SELECT
@@ -8687,7 +9256,7 @@ END
       $seasonClause
       ORDER BY s.${SalesTable.dateTime} DESC
       ''',
-      season != null ? [season] : [],
+      args,
     );
 
     final salesWithDetails = <Map<String, dynamic>>[];
@@ -9668,6 +10237,7 @@ END
         PaymentsTable.amountPaid: amountPaid.round(),
         PaymentsTable.paymentMethod: paymentMethod,
         PaymentsTable.season: season,
+          PaymentsTable.seasonId: await _lookupSeasonIdForLabel(txn, season),
       });
       // after_payment_insert trigger writes the ledger CREDIT row.
 
@@ -9813,6 +10383,7 @@ END
           PaymentsTable.amountPaid: allocation.round(),
           PaymentsTable.paymentMethod: paymentMethod,
           PaymentsTable.season: season,
+          PaymentsTable.seasonId: await _lookupSeasonIdForLabel(txn, season),
         });
         // after_payment_insert trigger writes the ledger CREDIT row.
 
@@ -9845,13 +10416,19 @@ END
   }
 
   /// Gets all payments with aggregated sale line items for linked invoices.
-  Future<List<Map<String, dynamic>>> getAllPayments({String? season}) async {
+  Future<List<Map<String, dynamic>>> getAllPayments({
+    String? season,
+    int? seasonId,
+  }) async {
     final db = await database;
     await _ensurePaymentEditAuditSchema(db);
     final where = <String>[];
     final args = <Object?>[];
 
-    if (season != null) {
+    if (seasonId != null) {
+      where.add('p.${PaymentsTable.seasonId} = ?');
+      args.add(seasonId);
+    } else if (season != null) {
       where.add('p.${PaymentsTable.season} = ?');
       args.add(season);
     }
@@ -10351,6 +10928,7 @@ END
           SalesTable.paidAmount: salePaidAmount.round(),
           SalesTable.paymentMethod: paymentMethod,
           SalesTable.season: season,
+          SalesTable.seasonId: await _lookupSeasonIdForLabel(txn, season),
           SalesTable.paymentTerm: isCreditSale ? paymentTerm : null,
           SalesTable.transactionType: SaleTransactionType.productSale,
           SalesTable.creditAmount: creditAmount.round(),
@@ -10439,6 +11017,7 @@ END
           PaymentsTable.amountPaid: drawdown.round(),
           PaymentsTable.paymentMethod: 'Advance Wallet Deduction',
           PaymentsTable.season: season,
+          PaymentsTable.seasonId: await _lookupSeasonIdForLabel(txn, season),
         });
 
         if (remainingPhysicalCash > 0) {
@@ -10452,6 +11031,7 @@ END
             PaymentsTable.amountPaid: remainingPhysicalCash.round(),
             PaymentsTable.paymentMethod: 'Cash',
             PaymentsTable.season: season,
+          PaymentsTable.seasonId: await _lookupSeasonIdForLabel(txn, season),
           });
         }
       } else if (hasCreditCashPayment) {
@@ -10465,6 +11045,7 @@ END
           PaymentsTable.amountPaid: effectivePaidAmount.round(),
           PaymentsTable.paymentMethod: 'Cash',
           PaymentsTable.season: season,
+          PaymentsTable.seasonId: await _lookupSeasonIdForLabel(txn, season),
         });
       }
       // Ledger CREDIT rows for payments are created by after_payment_insert.
@@ -10557,6 +11138,7 @@ END
         PaymentsTable.amountPaid: amount,
         PaymentsTable.paymentMethod: 'Cash',
         PaymentsTable.season: season,
+          PaymentsTable.seasonId: await _lookupSeasonIdForLabel(txn, season),
       });
       // after_payment_insert trigger writes ADVANCE_PAYMENT ledger CREDIT.
     });
@@ -10649,6 +11231,7 @@ class LedgerTransactionTable {
   static const String amount = 'amount';
   static const String dateTime = 'date_time';
   static const String season = 'season';
+  static const String seasonId = 'season_id';
 }
 
 class LedgerTransactionType {
@@ -10672,6 +11255,7 @@ class SalesTable {
   static const String paidAmount = 'paid_amount';
   static const String paymentMethod = 'payment_method';
   static const String season = 'season';
+  static const String seasonId = 'season_id';
   static const String paymentTerm = 'payment_term';
   static const String transactionType = 'transaction_type';
   static const String creditAmount = 'credit_amount';
@@ -10761,6 +11345,7 @@ class PaymentsTable {
   static const String amountPaid = 'amount_paid';
   static const String paymentMethod = 'payment_method';
   static const String season = 'season';
+  static const String seasonId = 'season_id';
   static const String editedAt = 'edited_at';
   static const String editedBy = 'edited_by';
   static const String originalAmount = 'original_amount';
@@ -10883,6 +11468,7 @@ class ExpenseTable {
   static const String expenseDate = 'expense_date';
   static const String employeeId = 'employee_id';
   static const String payrollType = 'payroll_type';
+  static const String seasonId = 'season_id';
 }
 
 class EmployeeTable {
@@ -10972,6 +11558,16 @@ class ArchivedSeasonTable {
   static const String seasonLabel = 'season_label';
   static const String archivedAt = 'archived_at';
   static const String notes = 'notes';
+}
+
+class SeasonsTable {
+  static const String name = 'seasons';
+  static const String id = 'id';
+  static const String nameCol = 'name';
+  static const String seasonType = 'season_type';
+  static const String startDate = 'start_date';
+  static const String endDate = 'end_date';
+  static const String isActive = 'is_active';
 }
 
 /// Shared actor-stamp column names on transactional tables.

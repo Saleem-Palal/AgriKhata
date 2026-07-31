@@ -2,7 +2,10 @@ import 'package:agrikhata/Database/database_helper.dart';
 import 'package:agrikhata/Widgets/edit_cash_advance_dialog.dart';
 import 'package:agrikhata/Widgets/edit_payment_dialog.dart';
 import 'package:agrikhata/Widgets/ledger_widgets.dart';
+import 'package:agrikhata/Widgets/past_season_guard.dart';
+import 'package:agrikhata/models/season.dart';
 import 'package:agrikhata/screens/new_sale_screen.dart';
+import 'package:agrikhata/services/season_service.dart';
 import 'package:agrikhata/services/whatsapp_urdu_service.dart';
 import 'package:agrikhata/theme/theme.dart';
 import 'package:agrikhata/utils/pdf_generator.dart';
@@ -25,7 +28,7 @@ class ZamindarLedgerTab extends StatefulWidget {
 
 class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
   final TextEditingController _searchController = TextEditingController();
-  String _selectedSeason = "All seasons";
+  String _selectedSeason = SeasonFilterOption.current;
   List<Map<String, dynamic>> _allTransactions = [];
   Map<String, String> _invoiceItemSummaries = {};
   Map<String, Map<String, double>> _invoiceCollections = {};
@@ -38,7 +41,7 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
   String _zamindarName = 'Zamindar';
   String _zamindarWhatsapp = '';
 
-  List<String> _seasons = ["All seasons"];
+  List<String> _seasons = [SeasonFilterOption.current, SeasonFilterOption.allTime];
 
   @override
   void initState() {
@@ -46,16 +49,26 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
     _searchController.addListener(() => setState(() {}));
     _loadLedgerData();
     DatabaseHelper.instance.addListener(_onDatabaseChanged);
+    SeasonService.instance.activeSeasonNotifier.addListener(_onSeasonChanged);
   }
 
   @override
   void dispose() {
     _searchController.dispose();
     DatabaseHelper.instance.removeListener(_onDatabaseChanged);
+    SeasonService.instance.activeSeasonNotifier.removeListener(_onSeasonChanged);
     super.dispose();
   }
 
   void _onDatabaseChanged() => _loadLedgerData(showLoading: false);
+
+  void _onSeasonChanged() {
+    if (_selectedSeason == SeasonFilterOption.current) {
+      _loadLedgerData(showLoading: false);
+    } else {
+      setState(() {});
+    }
+  }
 
   Future<void> _loadLedgerData({bool showLoading = true}) async {
     if (showLoading) {
@@ -75,6 +88,19 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
           .getTotalPaymentsReceived(widget.zamindarId);
       final distinctSeasons = await DatabaseHelper.instance
           .getDistinctSeasonsForZamindar(widget.zamindarId);
+      final filterLabels = await SeasonService.instance.zamindarFilterLabels();
+      // Keep named prior seasons from ledger that aren't the previous slot.
+      final previous = await SeasonService.instance.getPreviousSeason();
+      final extras = distinctSeasons.where((s) {
+        if (previous != null && s == previous.name) return false;
+        final active = SeasonService.instance.activeSeasonName;
+        if (active != null && s == active) return false;
+        return true;
+      });
+      final seasons = <String>[
+        ...filterLabels,
+        ...extras.where((s) => !filterLabels.contains(s)),
+      ];
       final zamindar = await DatabaseHelper.instance.getZamindar(
         widget.zamindarId,
       );
@@ -101,9 +127,9 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
         _outstandingBalanceAmount =
             (balances?['outstandingBalance'] as num?)?.toDouble() ?? 0;
         _totalPaymentsReceived = totalPayments;
-        _seasons = ["All seasons", ...distinctSeasons];
+        _seasons = seasons;
         if (!_seasons.contains(_selectedSeason)) {
-          _selectedSeason = "All seasons";
+          _selectedSeason = SeasonFilterOption.current;
         }
         _zamindarName = zamindar?.name ?? 'Zamindar';
         _zamindarWhatsapp = zamindar?.whatsappNumber ?? '';
@@ -122,8 +148,15 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
     final query = _searchController.text.trim().toLowerCase();
 
     return _allTransactions.where((row) {
-      if (_selectedSeason != "All seasons") {
-        final season = row[LedgerTransactionTable.season] as String? ?? '';
+      final season = row[LedgerTransactionTable.season] as String? ?? '';
+      final activeName = SeasonService.instance.activeSeasonName;
+      if (_selectedSeason == SeasonFilterOption.current) {
+        if (activeName != null &&
+            activeName.isNotEmpty &&
+            season != activeName) {
+          return false;
+        }
+      } else if (_selectedSeason != SeasonFilterOption.allTime) {
         if (season != _selectedSeason) return false;
       }
 
@@ -161,12 +194,18 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
       );
 
   Future<List<Map<String, dynamic>>> _salesRowsForExport() async {
-    final seasons = _selectedSeason == 'All seasons'
-        ? <String>{}
-        : {_selectedSeason};
+    if (_selectedSeason == SeasonFilterOption.allTime) {
+      return DatabaseHelper.instance.getZamindarLedgerPdfRows(
+        zamindarId: widget.zamindarId,
+      );
+    }
+    final label = _selectedSeason == SeasonFilterOption.current
+        ? SeasonService.instance.activeSeasonName
+        : _selectedSeason;
+    final seasons = (label == null || label.isEmpty) ? null : {label};
     return DatabaseHelper.instance.getZamindarLedgerPdfRows(
       zamindarId: widget.zamindarId,
-      seasons: seasons.isEmpty ? null : seasons,
+      seasons: seasons,
     );
   }
 
@@ -466,7 +505,11 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
             iconColor: const Color(0xFF1B4332),
             borderColor: const Color(0xFFC6DEC9),
             tooltip: 'Edit Payment',
-            onTap: () => _handleEditPayment(row.paymentId!),
+            onTap: () => _handleEditPayment(
+              row.paymentId!,
+              seasonLabel: source[LedgerTransactionTable.season] as String?,
+              seasonId: source[LedgerTransactionTable.seasonId] as int?,
+            ),
           ),
         if (isSale || isAdvance) ...[
           _actionIconButton(
@@ -475,8 +518,18 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
             borderColor: const Color(0xFFC6DEC9),
             tooltip: 'Edit',
             onTap: () => isAdvance
-                ? _handleEditAdvance(invoiceNumber)
-                : _handleEditInvoice(invoiceNumber),
+                ? _handleEditAdvance(
+                    invoiceNumber,
+                    seasonLabel:
+                        source[LedgerTransactionTable.season] as String?,
+                    seasonId: source[LedgerTransactionTable.seasonId] as int?,
+                  )
+                : _handleEditInvoice(
+                    invoiceNumber,
+                    seasonLabel:
+                        source[LedgerTransactionTable.season] as String?,
+                    seasonId: source[LedgerTransactionTable.seasonId] as int?,
+                  ),
           ),
           const SizedBox(width: 6),
           _actionIconButton(
@@ -484,7 +537,11 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
             iconColor: const Color(0xFFDC3545),
             borderColor: const Color(0xFFF5C6C6),
             tooltip: 'Delete',
-            onTap: () => _handleDeleteInvoice(invoiceNumber),
+            onTap: () => _handleDeleteInvoice(
+              invoiceNumber,
+              seasonLabel: source[LedgerTransactionTable.season] as String?,
+              seasonId: source[LedgerTransactionTable.seasonId] as int?,
+            ),
           ),
           const SizedBox(width: 6),
           _actionIconButton(
@@ -499,7 +556,18 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
     );
   }
 
-  Future<void> _handleEditPayment(String paymentId) async {
+  Future<void> _handleEditPayment(
+    String paymentId, {
+    String? seasonLabel,
+    int? seasonId,
+  }) async {
+    final allowed = await ensurePastSeasonWriteAccess(
+      context,
+      seasonId: seasonId,
+      seasonLabel: seasonLabel,
+    );
+    if (!allowed || !mounted) return;
+
     final updated = await showEditPaymentDialog(
       context: context,
       paymentId: paymentId,
@@ -510,7 +578,18 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
     }
   }
 
-  Future<void> _handleEditAdvance(String invoiceNumber) async {
+  Future<void> _handleEditAdvance(
+    String invoiceNumber, {
+    String? seasonLabel,
+    int? seasonId,
+  }) async {
+    final allowed = await ensurePastSeasonWriteAccess(
+      context,
+      seasonId: seasonId,
+      seasonLabel: seasonLabel,
+    );
+    if (!allowed || !mounted) return;
+
     final updated = await showEditCashAdvanceDialog(
       context: context,
       invoiceNumber: invoiceNumber,
@@ -520,7 +599,18 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
     }
   }
 
-  Future<void> _handleEditInvoice(String invoiceNumber) async {
+  Future<void> _handleEditInvoice(
+    String invoiceNumber, {
+    String? seasonLabel,
+    int? seasonId,
+  }) async {
+    final allowed = await ensurePastSeasonWriteAccess(
+      context,
+      seasonId: seasonId,
+      seasonLabel: seasonLabel,
+    );
+    if (!allowed || !mounted) return;
+
     if (widget.onEditInvoice != null) {
       widget.onEditInvoice!(invoiceNumber);
       return;
@@ -537,7 +627,18 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
     );
   }
 
-  Future<void> _handleDeleteInvoice(String invoiceNumber) async {
+  Future<void> _handleDeleteInvoice(
+    String invoiceNumber, {
+    String? seasonLabel,
+    int? seasonId,
+  }) async {
+    final allowed = await ensurePastSeasonWriteAccess(
+      context,
+      seasonId: seasonId,
+      seasonLabel: seasonLabel,
+    );
+    if (!allowed || !mounted) return;
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(

@@ -98,10 +98,18 @@ class SeasonUtils {
     final parts = trimmed.split(' ');
     if (parts.length < 2) return null;
 
-    final year = int.tryParse(parts.last);
+    final name = parts.sublist(0, parts.length - 1).join(' ');
+    final yearToken = parts.last;
+
+    // Support `Rabi 2026-27` and legacy `Rabi 2025`.
+    int? year;
+    if (yearToken.contains('-')) {
+      year = int.tryParse(yearToken.split('-').first);
+    } else {
+      year = int.tryParse(yearToken);
+    }
     if (year == null) return null;
 
-    final name = parts.sublist(0, parts.length - 1).join(' ');
     if (name == 'Kharif') {
       return Season(
         name: 'Kharif',

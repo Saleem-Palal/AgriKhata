@@ -8,6 +8,7 @@ import 'package:agrikhata/services/google_oauth_config.dart';
 import 'package:agrikhata/utils/advance_checkout_overlay.dart';
 import 'package:agrikhata/utils/app_version.dart';
 import 'package:agrikhata/utils/shop_settings.dart';
+import 'package:agrikhata/Widgets/season_management_widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -778,7 +779,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         children: [
           const AgriHeader(
             breadcrumbs: ['System', 'Settings'],
-            actions: [],
+            actions: [
+              ActiveSeasonBadge(),
+            ],
           ),
           Expanded(
             child: !_loaded
@@ -831,6 +834,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ),
                           ],
                         ),
+                        const SizedBox(height: 24),
+                        _buildSectionLabel('Season Management'),
+                        const SizedBox(height: 8),
+                        const SeasonManagementCard(),
                         const SizedBox(height: 24),
                         _buildSectionLabel('Cloud Backup & Data Security'),
                         const SizedBox(height: 8),

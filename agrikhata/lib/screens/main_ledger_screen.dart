@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../models/ledger_models.dart';
+import '../services/season_service.dart';
 import '../services/whatsapp_urdu_service.dart';
 import '../utils/season_utils.dart';
 import '../utils/pdf_generator.dart';
@@ -8,6 +9,8 @@ import '../utils/shop_settings.dart';
 import '../Widgets/edit_cash_advance_dialog.dart';
 import '../Widgets/edit_payment_dialog.dart';
 import '../Widgets/ledger_widgets.dart';
+import '../Widgets/past_season_guard.dart';
+import '../Widgets/season_management_widgets.dart';
 import '../Database/database_helper.dart' as db;
 import '../theme/theme.dart';
 import '../Data/agri_header.dart';
@@ -29,6 +32,7 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
   late TabController _tabController;
   late Season _selectedSeason;
   late List<Season> _availableSeasons;
+  List<String> _dbSeasonLabels = const [];
 
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
@@ -53,7 +57,7 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
         setState(() {});
       }
     });
-    _selectedSeason = SeasonUtils.getCurrentSeason();
+    _selectedSeason = _resolveActiveLedgerSeason();
     _availableSeasons = [
       Season.all,
       ...SeasonUtils.getAvailableSeasons(yearsBack: 3),
@@ -68,6 +72,32 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
     });
 
     db.DatabaseHelper.instance.addListener(_onDatabaseChanged);
+    SeasonService.instance.activeSeasonNotifier.addListener(_onActiveSeasonChanged);
+  }
+
+  Season _resolveActiveLedgerSeason() {
+    final activeName = SeasonService.instance.activeSeasonName;
+    if (activeName != null && activeName.isNotEmpty) {
+      return SeasonUtils.parseSeasonDisplayName(activeName) ??
+          SeasonUtils.getCurrentSeason();
+    }
+    return SeasonUtils.getCurrentSeason();
+  }
+
+  void _onActiveSeasonChanged() {
+    if (!mounted) return;
+    setState(() => _selectedSeason = _resolveActiveLedgerSeason());
+    _loadLedgerData(showLoading: false);
+  }
+
+  @override
+  void dispose() {
+    SeasonService.instance.activeSeasonNotifier
+        .removeListener(_onActiveSeasonChanged);
+    db.DatabaseHelper.instance.removeListener(_onDatabaseChanged);
+    _tabController.dispose();
+    _searchController.dispose();
+    super.dispose();
   }
 
   void _onDatabaseChanged() {
@@ -108,7 +138,10 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
       }
 
       if (mounted) {
-        setState(() => _availableSeasons = withAll);
+        setState(() {
+          _dbSeasonLabels = seasonNames;
+          _availableSeasons = withAll;
+        });
       }
     } catch (e) {
       debugPrint('Failed to load season options: $e');
@@ -120,6 +153,30 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
 
   DateTime? get _seasonEnd =>
       _selectedSeason.isAllSeasons ? null : _selectedSeason.endDate;
+
+  /// Prefer the managed season's exact DB name (e.g. `Rabi 2026-27`).
+  String? get _seasonFilterName {
+    if (_selectedSeason.isAllSeasons) return null;
+    final active = SeasonService.instance.activeSeason;
+    if (active != null) {
+      final parsed = SeasonUtils.parseSeasonDisplayName(active.name);
+      if (parsed == _selectedSeason) return active.name;
+    }
+    for (final label in _dbSeasonLabels) {
+      final parsed = SeasonUtils.parseSeasonDisplayName(label);
+      if (parsed == _selectedSeason) return label;
+    }
+    return _selectedSeason.displayName;
+  }
+
+  int? get _seasonFilterId {
+    if (_selectedSeason.isAllSeasons) return null;
+    final active = SeasonService.instance.activeSeason;
+    if (active == null) return null;
+    final parsed = SeasonUtils.parseSeasonDisplayName(active.name);
+    if (parsed == _selectedSeason) return active.id;
+    return null;
+  }
 
   List<LineItem> _parseProductSummary(String? summary) {
     if (summary == null || summary.trim().isEmpty) return [];
@@ -161,15 +218,12 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
     try {
       final salesWithDetails = await db.DatabaseHelper.instance
           .getAllSalesWithDetails(
-            season: _selectedSeason.isAllSeasons
-                ? null
-                : _selectedSeason.displayName,
+            season: _seasonFilterName,
+            seasonId: _seasonFilterId,
           );
-
       final paymentsData = await db.DatabaseHelper.instance.getAllPayments(
-        season: _selectedSeason.isAllSeasons
-            ? null
-            : _selectedSeason.displayName,
+        season: _seasonFilterName,
+        seasonId: _seasonFilterId,
       );
 
       final purchaseRows = await db.DatabaseHelper.instance
@@ -346,14 +400,6 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
     _loadLedgerData();
   }
 
-  @override
-  void dispose() {
-    _tabController.dispose();
-    _searchController.dispose();
-    db.DatabaseHelper.instance.removeListener(_onDatabaseChanged);
-    super.dispose();
-  }
-
   List<LedgerEntry> get _filteredSalesEntries {
     if (_searchQuery.isEmpty) return _salesEntries;
     return _salesEntries.where((entry) {
@@ -526,7 +572,9 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
         children: [
           AgriHeader(
             breadcrumbs: const ['Finance', 'Ledger'],
-            actions: const [],
+            actions: const [
+              ActiveSeasonBadge(),
+            ],
           ),
           Expanded(
             child: Padding(
@@ -888,6 +936,12 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
   }
 
   Future<void> _handleEditPayment(PaymentLedgerEntry entry) async {
+    final allowed = await ensurePastSeasonWriteAccess(
+      context,
+      seasonLabel: entry.season,
+    );
+    if (!allowed || !mounted) return;
+
     final updated = await showEditPaymentDialog(
       context: context,
       paymentId: entry.paymentId,
@@ -899,6 +953,12 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
   }
 
   Future<void> _handleEditInvoice(LedgerEntry entry) async {
+    final allowed = await ensurePastSeasonWriteAccess(
+      context,
+      seasonLabel: entry.season,
+    );
+    if (!allowed || !mounted) return;
+
     if (entry.isAdvance) {
       await showEditCashAdvanceDialog(
         context: context,
@@ -915,6 +975,12 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
   }
 
   Future<void> _handleDeleteInvoice(LedgerEntry entry) async {
+    final allowed = await ensurePastSeasonWriteAccess(
+      context,
+      seasonLabel: entry.season,
+    );
+    if (!allowed || !mounted) return;
+
     final confirmed = await AppDialog.confirm(
       context: context,
       title: 'Delete Transaction?',

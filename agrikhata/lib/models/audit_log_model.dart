@@ -50,6 +50,7 @@ class AuditActionType {
   static const String recordExpense = 'RECORD_EXPENSE';
   static const String drawingEntry = 'DRAWING_ENTRY';
   static const String editPayment = 'EDIT_PAYMENT';
+  static const String seasonRollover = 'SEASON_ROLLOVER';
 
   static String label(String type) {
     switch (type) {
@@ -65,6 +66,8 @@ class AuditActionType {
         return 'Drawing Entry';
       case editPayment:
         return 'Edit Payment';
+      case seasonRollover:
+        return 'Season Rollover';
       default:
         return type;
     }

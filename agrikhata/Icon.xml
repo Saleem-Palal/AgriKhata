@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Background emerald gradient -->
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#155E45"/>
+      <stop offset="100%" stop-color="#0D3B2E"/>
+    </linearGradient>
+
+    <!-- Subtle inner glow at top of squircle -->
+    <radialGradient id="innerGlow" cx="50%" cy="18%" r="55%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.16"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Golden wheat / accent gradient -->
+    <linearGradient id="goldGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FBBF24"/>
+      <stop offset="100%" stop-color="#F59E0B"/>
+    </linearGradient>
+
+    <!-- Book cover edge gradient -->
+    <linearGradient id="coverGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FBBF24"/>
+      <stop offset="100%" stop-color="#D9860B"/>
+    </linearGradient>
+
+    <!-- Page gradient -->
+    <linearGradient id="pageGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#E6F4EA"/>
+    </linearGradient>
+
+    <!-- Leaf gradient -->
+    <linearGradient id="leafGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#34D399"/>
+      <stop offset="100%" stop-color="#0D9668"/>
+    </linearGradient>
+
+    <!-- Soft drop shadow for depth -->
+    <filter id="softShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#04231A" flood-opacity="0.35"/>
+    </filter>
+    <filter id="lightShadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#0D3B2E" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <!-- ===================== BACKGROUND SQUIRCLE ===================== -->
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#bgGradient)"/>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#innerGlow)"/>
+
+  <!-- subtle bottom vignette for depth -->
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="#000000" opacity="0.06"
+        style="mix-blend-mode:multiply" />
+
+  <!-- ===================== LEDGER BOOK ===================== -->
+  <g filter="url(#softShadow)">
+    <!-- Cover edge peeking behind pages -->
+    <rect x="132" y="298" width="248" height="150" rx="18" fill="url(#coverGradient)"/>
+
+    <!-- Open pages -->
+    <rect x="146" y="288" width="220" height="140" rx="14" fill="url(#pageGradient)"/>
+
+    <!-- Spine shadow line -->
+    <line x1="256" y1="292" x2="256" y2="422" stroke="#0D3B2E" stroke-opacity="0.18" stroke-width="4"/>
+
+    <!-- Left page ledger lines -->
+    <line x1="164" y1="316" x2="240" y2="316" stroke="#155E45" stroke-opacity="0.35" stroke-width="4" stroke-linecap="round"/>
+    <line x1="164" y1="336" x2="240" y2="336" stroke="#155E45" stroke-opacity="0.35" stroke-width="4" stroke-linecap="round"/>
+    <line x1="164" y1="356" x2="234" y2="356" stroke="#155E45" stroke-opacity="0.28" stroke-width="4" stroke-linecap="round"/>
+    <line x1="164" y1="376" x2="222" y2="376" stroke="#155E45" stroke-opacity="0.22" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- Right page ledger lines -->
+    <line x1="272" y1="316" x2="348" y2="316" stroke="#155E45" stroke-opacity="0.35" stroke-width="4" stroke-linecap="round"/>
+    <line x1="272" y1="336" x2="348" y2="336" stroke="#155E45" stroke-opacity="0.35" stroke-width="4" stroke-linecap="round"/>
+    <line x1="272" y1="356" x2="342" y2="356" stroke="#155E45" stroke-opacity="0.28" stroke-width="4" stroke-linecap="round"/>
+    <line x1="272" y1="376" x2="330" y2="376" stroke="#155E45" stroke-opacity="0.22" stroke-width="4" stroke-linecap="round"/>
+  </g>
+
+  <!-- ===================== LEAF BLADES AT BASE ===================== -->
+  <g filter="url(#lightShadow)">
+    <path d="M256,296 C224,290 198,272 188,244 C222,248 248,266 256,296 Z" fill="url(#leafGradient)"/>
+    <path d="M256,296 C288,290 314,272 324,244 C290,248 264,266 256,296 Z" fill="url(#leafGradient)"/>
+  </g>
+
+  <!-- ===================== WHEAT STALK ===================== -->
+  <g filter="url(#lightShadow)">
+    <!-- Stem -->
+    <path d="M256,300 C249,250 264,196 256,112" fill="none" stroke="url(#goldGradient)"
+          stroke-width="9" stroke-linecap="round"/>
+
+    <!-- Kernel pairs, alternating up the stalk -->
+    <g fill="url(#goldGradient)">
+      <ellipse cx="238" cy="272" rx="11" ry="19" transform="rotate(-32 238 272)"/>
+      <ellipse cx="274" cy="272" rx="11" ry="19" transform="rotate(32 274 272)"/>
+
+      <ellipse cx="235" cy="240" rx="11" ry="19" transform="rotate(-30 235 240)"/>
+      <ellipse cx="277" cy="240" rx="11" ry="19" transform="rotate(30 277 240)"/>
+
+      <ellipse cx="236" cy="206" rx="10.5" ry="18" transform="rotate(-28 236 206)"/>
+      <ellipse cx="276" cy="206" rx="10.5" ry="18" transform="rotate(28 276 206)"/>
+
+      <ellipse cx="239" cy="174" rx="10" ry="17" transform="rotate(-26 239 174)"/>
+      <ellipse cx="273" cy="174" rx="10" ry="17" transform="rotate(26 273 174)"/>
+
+      <ellipse cx="243" cy="144" rx="9" ry="15" transform="rotate(-24 243 144)"/>
+      <ellipse cx="269" cy="144" rx="9" ry="15" transform="rotate(24 269 144)"/>
+    </g>
+
+    <!-- Tip kernel -->
+    <ellipse cx="256" cy="108" rx="9" ry="20" fill="url(#goldGradient)"/>
+  </g>
+</svg>

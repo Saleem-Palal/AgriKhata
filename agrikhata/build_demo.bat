@@ -25,10 +25,30 @@ if exist "%ROOT_VERSION_JSON%" (
 echo.
 
 :: ---------------------------------------------------------------
+:: Google OAuth Client ID (optional env → dart-define; never commit secrets)
+::   set GOOGLE_CLIENT_ID=xxxx.apps.googleusercontent.com
+:: Production MSIX:
+::   flutter pub run msix:create --dart-define=GOOGLE_CLIENT_ID="<CLIENT_ID>"
+:: ---------------------------------------------------------------
+set "DART_DEFINES="
+if defined GOOGLE_CLIENT_ID (
+    set "DART_DEFINES=--dart-define=GOOGLE_CLIENT_ID=%GOOGLE_CLIENT_ID%"
+    echo  Using GOOGLE_CLIENT_ID from environment for this build.
+) else (
+    echo  WARNING: GOOGLE_CLIENT_ID is not set.
+    echo           Drive backup will rely on Settings at runtime, or rebuild with:
+    echo           flutter pub run msix:create --dart-define=GOOGLE_CLIENT_ID^="<CLIENT_ID>"
+)
+if defined GOOGLE_CLIENT_SECRET (
+    set "DART_DEFINES=%DART_DEFINES% --dart-define=GOOGLE_CLIENT_SECRET=%GOOGLE_CLIENT_SECRET%"
+)
+echo.
+
+:: ---------------------------------------------------------------
 :: 1) Native Windows release build
 :: ---------------------------------------------------------------
 echo  [1/4] Building Windows release...
-call flutter build windows --release
+call flutter build windows --release %DART_DEFINES%
 if errorlevel 1 (
     echo  ERROR: flutter build windows --release failed.
     exit /b 1
@@ -40,7 +60,7 @@ echo.
 :: 2) Package MSIX (uses msix_config in pubspec.yaml)
 :: ---------------------------------------------------------------
 echo  [2/4] Creating MSIX package...
-call flutter pub run msix:create
+call flutter pub run msix:create %DART_DEFINES%
 if errorlevel 1 (
     echo  ERROR: msix:create failed.
     exit /b 1

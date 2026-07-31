@@ -32,13 +32,27 @@ class PaymentService {
     }
 
     final seasonLabel = season.trim();
-    if (seasonLabel.isNotEmpty && await _db.isSeasonArchived(seasonLabel)) {
-      return const PaymentEditability(
-        isEditable: false,
-        requiresMasterAdmin: false,
-        reason:
-            '🔒 This payment belongs to a closed/settled season and cannot be modified.',
-      );
+    if (seasonLabel.isNotEmpty) {
+      final past = await _db.isPastSeasonRecord(seasonLabel: seasonLabel);
+      if (past) {
+        final isOwner = SessionContext.currentUser?.isOwner == true;
+        if (!isOwner) {
+          return const PaymentEditability(
+            isEditable: false,
+            requiresMasterAdmin: false,
+            reason:
+                '🔒 This payment belongs to a past season and is read-only. '
+                'Only the Owner / Master Admin can modify it.',
+          );
+        }
+        return PaymentEditability(
+          isEditable: true,
+          requiresMasterAdmin: true,
+          reason:
+              'This payment belongs to a past season. '
+              'Master Owner PIN is required to authorize the edit.',
+        );
+      }
     }
 
     final now = DateTime.now();

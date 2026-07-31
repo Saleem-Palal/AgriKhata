@@ -2,6 +2,7 @@ import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/screens/auth/login_screen.dart';
 import 'package:agrikhata/screens/auth/onboarding_screen.dart';
 import 'package:agrikhata/services/auth_service.dart';
+import 'package:agrikhata/services/season_service.dart';
 import 'package:agrikhata/shell.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -40,6 +41,7 @@ class _AuthGateState extends State<AuthGate> {
 
   Future<void> _bootstrap() async {
     await AuthService.instance.initialize();
+    await SeasonService.instance.initialize();
     final hasOwner = await AuthService.instance.hasOwner();
     if (!mounted) return;
     setState(() {

@@ -3,6 +3,8 @@ import 'dart:math' as math;
 import 'package:agrikhata/Data/agri_header.dart';
 import 'package:agrikhata/Database/database_helper.dart';
 import 'package:agrikhata/Widgets/dashboard/advances_reminder_card.dart';
+import 'package:agrikhata/Widgets/season_management_widgets.dart';
+import 'package:agrikhata/services/season_service.dart';
 import 'package:agrikhata/services/whatsapp_urdu_service.dart';
 import 'package:agrikhata/theme/theme.dart';
 import 'package:agrikhata/utils/season_utils.dart';
@@ -55,13 +57,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void initState() {
     super.initState();
     DatabaseHelper.instance.addListener(_onDatabaseChanged);
+    SeasonService.instance.activeSeasonNotifier.addListener(_onSeasonChanged);
     _loadMetrics();
   }
 
   @override
   void dispose() {
+    SeasonService.instance.activeSeasonNotifier.removeListener(_onSeasonChanged);
     DatabaseHelper.instance.removeListener(_onDatabaseChanged);
     super.dispose();
+  }
+
+  void _onSeasonChanged() {
+    if (!mounted) return;
+    _loadMetrics(showFullLoading: false);
   }
 
   void _onDatabaseChanged() {
@@ -180,6 +189,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           AgriHeader(
             breadcrumbs: const ['Main', 'Dashboard'],
             actions: [
+              const ActiveSeasonBadge(),
               Text(
                 clockLabel,
                 style: const TextStyle(fontSize: 11, color: AppColors.textHint),
