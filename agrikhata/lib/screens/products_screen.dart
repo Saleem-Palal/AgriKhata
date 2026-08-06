@@ -1,4 +1,3 @@
-import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Data/agri_header.dart';
 import 'package:agrikhata/Database/database_helper.dart';
 import 'package:agrikhata/Widgets/product_history_dialog.dart';

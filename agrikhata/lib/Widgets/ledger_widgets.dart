@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import '../Database/database_helper.dart' show SaleJoinColumns;
 import '../models/ledger_models.dart';
 import '../services/whatsapp_urdu_service.dart';
 import '../utils/pdf_generator.dart';
@@ -9,6 +10,84 @@ import '../theme/theme.dart';
 final _currencyFormat = NumberFormat('#,##,##0');
 final _dateFormat = DateFormat('dd MMM');
 final _timeFormat = DateFormat('hh:mm a');
+
+/// Expandable discount breakdown for product-sale ledger rows.
+class SaleDiscountBreakdownPanel extends StatelessWidget {
+  final double grossSubtotal;
+  final double itemDiscountsTotal;
+  final double overallDiscount;
+  final double netPayable;
+
+  const SaleDiscountBreakdownPanel({
+    super.key,
+    required this.grossSubtotal,
+    required this.itemDiscountsTotal,
+    required this.overallDiscount,
+    required this.netPayable,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F9F4),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: const Color(0xFFE2EBE0), width: 0.5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _line('Gross Subtotal', grossSubtotal),
+          if (itemDiscountsTotal > 0)
+            _line('Item Discount', -itemDiscountsTotal, isDiscount: true),
+          if (overallDiscount > 0)
+            _line('Overall Discount', -overallDiscount, isDiscount: true),
+          const Divider(height: 12, color: Color(0xFFE2EBE0)),
+          _line('Net Payable', netPayable, bold: true),
+        ],
+      ),
+    );
+  }
+
+  Widget _line(
+    String label,
+    double amount, {
+    bool bold = false,
+    bool isDiscount = false,
+  }) {
+    final prefix = amount < 0 ? '-₨ ' : '₨ ';
+    final value = _currencyFormat.format(amount.abs());
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: bold ? FontWeight.w600 : FontWeight.w500,
+              color: const Color(0xFF6B8F71),
+            ),
+          ),
+          Text(
+            '$prefix$value',
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: bold ? FontWeight.w600 : FontWeight.w500,
+              color: isDiscount
+                  ? const Color(0xFF28A745)
+                  : const Color(0xFF1B4332),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 class SeasonDropdown extends StatelessWidget {
   final Season selectedSeason;
@@ -63,6 +142,278 @@ class SeasonDropdown extends StatelessWidget {
           icon: const SizedBox.shrink(),
           isDense: true,
         ),
+      ),
+    );
+  }
+}
+
+class _MainLedgerExpandableRow extends StatefulWidget {
+  final LedgerEntry entry;
+  final bool isLast;
+  final Function(LedgerEntry)? onEdit;
+  final Function(LedgerEntry)? onDelete;
+  final VoidCallback onShowDetail;
+  final Widget Function(PaymentStatus status, double outstanding) buildStatusBadge;
+
+  const _MainLedgerExpandableRow({
+    required this.entry,
+    required this.isLast,
+    required this.onEdit,
+    required this.onDelete,
+    required this.onShowDetail,
+    required this.buildStatusBadge,
+  });
+
+  @override
+  State<_MainLedgerExpandableRow> createState() =>
+      _MainLedgerExpandableRowState();
+}
+
+class _MainLedgerExpandableRowState extends State<_MainLedgerExpandableRow> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final entry = widget.entry;
+    final canExpand = entry.hasSaleDiscountBreakdown;
+
+    return Container(
+      decoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(
+            color: widget.isLast ? Colors.transparent : const Color(0xFFE2EBE0),
+            width: 0.5,
+          ),
+        ),
+      ),
+      child: Column(
+        children: [
+          InkWell(
+            onTap: canExpand
+                ? () => setState(() => _expanded = !_expanded)
+                : widget.onShowDetail,
+            hoverColor: const Color(0xFFF0F7EB),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: 120,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            if (canExpand) ...[
+                              Icon(
+                                _expanded
+                                    ? Icons.expand_more
+                                    : Icons.chevron_right,
+                                size: 14,
+                                color: const Color(0xFF6B8F71),
+                              ),
+                              const SizedBox(width: 2),
+                            ],
+                            Expanded(
+                              child: Text(
+                                entry.invoiceNumber,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w500,
+                                  color: Color(0xFF1B4332),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '${_dateFormat.format(entry.date)} · ${_timeFormat.format(entry.date)}',
+                          style: const TextStyle(
+                            fontSize: 10,
+                            color: Color(0xFF95B89A),
+                          ),
+                        ),
+                        if (entry.createdByUserName != null &&
+                            entry.createdByUserName!.trim().isNotEmpty) ...[
+                          const SizedBox(height: 2),
+                          Text(
+                            'Recorded By: ${entry.createdByUserName!.trim()}',
+                            style: const TextStyle(
+                              fontSize: 10,
+                              color: Color(0xFF6B8F71),
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  SizedBox(
+                    width: 160,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          entry.stakeholderName,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                            color: Color(0xFF1B4332),
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        if (entry.kisaanName != null) ...[
+                          const SizedBox(height: 2),
+                          Text(
+                            'Kisaan: ${entry.kisaanName}',
+                            style: const TextStyle(
+                              fontSize: 10,
+                              color: Color(0xFF6B8F71),
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: Text(
+                      entry.ledgerSummary,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: Color(0xFF6B8F71),
+                        height: 1.4,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 2,
+                    ),
+                  ),
+                  SizedBox(
+                    width: 90,
+                    child: Text(
+                      '₨ ${_currencyFormat.format(entry.total)}',
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                        color: Color(0xFF1B4332),
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 90,
+                    child: Text(
+                      '₨ ${_currencyFormat.format(entry.paid)}',
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF2D6A4F),
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 140,
+                    child: Align(
+                      alignment: Alignment.centerRight,
+                      child: widget.buildStatusBadge(
+                        entry.status,
+                        entry.outstanding,
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 110,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        if (widget.onEdit != null)
+                          InkWell(
+                            onTap: () => widget.onEdit!(entry),
+                            borderRadius: BorderRadius.circular(7),
+                            child: Container(
+                              width: 28,
+                              height: 28,
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(7),
+                                border: Border.all(
+                                  color: const Color(0xFFC6DEC9),
+                                  width: 0.5,
+                                ),
+                              ),
+                              child: const Icon(
+                                Icons.edit_outlined,
+                                size: 14,
+                                color: Color(0xFF1B4332),
+                              ),
+                            ),
+                          ),
+                        if (widget.onEdit != null) const SizedBox(width: 6),
+                        if (widget.onDelete != null)
+                          InkWell(
+                            onTap: () => widget.onDelete!(entry),
+                            borderRadius: BorderRadius.circular(7),
+                            child: Container(
+                              width: 28,
+                              height: 28,
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(7),
+                                border: Border.all(
+                                  color: const Color(0xFFF5C6C6),
+                                  width: 0.5,
+                                ),
+                              ),
+                              child: const Icon(
+                                Icons.delete_outline,
+                                size: 14,
+                                color: Color(0xFFDC3545),
+                              ),
+                            ),
+                          ),
+                        if (widget.onDelete != null) const SizedBox(width: 6),
+                        InkWell(
+                          onTap: widget.onShowDetail,
+                          borderRadius: BorderRadius.circular(7),
+                          child: Container(
+                            width: 28,
+                            height: 28,
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(7),
+                              border: Border.all(
+                                color: const Color(0xFFC6DEC9),
+                                width: 0.5,
+                              ),
+                            ),
+                            child: const Icon(
+                              Icons.visibility_outlined,
+                              size: 14,
+                              color: Color(0xFF6B8F71),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (_expanded && canExpand)
+            Padding(
+              padding: const EdgeInsets.only(left: 14, right: 14, bottom: 10),
+              child: SaleDiscountBreakdownPanel(
+                grossSubtotal: entry.grossSubtotal!,
+                itemDiscountsTotal: entry.itemDiscountsTotal ?? 0,
+                overallDiscount: entry.overallDiscount ?? 0,
+                netPayable: entry.netPayable,
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -259,198 +610,13 @@ class LedgerTable extends StatelessWidget {
     Function(LedgerEntry)? onEdit,
     Function(LedgerEntry)? onDelete,
   ) {
-    return InkWell(
-      onTap: () => _showInvoiceDetail(context, entry),
-      hoverColor: const Color(0xFFF0F7EB),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-        decoration: BoxDecoration(
-          border: Border(
-            bottom: BorderSide(
-              color: isLast ? Colors.transparent : const Color(0xFFE2EBE0),
-              width: 0.5,
-            ),
-          ),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SizedBox(
-              width: 120,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    entry.invoiceNumber,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500,
-                      color: Color(0xFF1B4332),
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    '${_dateFormat.format(entry.date)} · ${_timeFormat.format(entry.date)}',
-                    style: const TextStyle(
-                      fontSize: 10,
-                      color: Color(0xFF95B89A),
-                    ),
-                  ),
-                  if (entry.createdByUserName != null &&
-                      entry.createdByUserName!.trim().isNotEmpty) ...[
-                    const SizedBox(height: 2),
-                    Text(
-                      'Recorded By: ${entry.createdByUserName!.trim()}',
-                      style: const TextStyle(
-                        fontSize: 10,
-                        color: Color(0xFF6B8F71),
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
-                ],
-              ),
-            ),
-            SizedBox(
-              width: 160,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    entry.stakeholderName,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500,
-                      color: Color(0xFF1B4332),
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  if (entry.kisaanName != null) ...[
-                    const SizedBox(height: 2),
-                    Text(
-                      'Kisaan: ${entry.kisaanName}',
-                      style: const TextStyle(
-                        fontSize: 10,
-                        color: Color(0xFF6B8F71),
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
-                ],
-              ),
-            ),
-            Expanded(
-              child: Text(
-                entry.ledgerSummary,
-                style: const TextStyle(
-                  fontSize: 11,
-                  color: Color(0xFF6B8F71),
-                  height: 1.4,
-                ),
-                overflow: TextOverflow.ellipsis,
-                maxLines: 2,
-              ),
-            ),
-            SizedBox(
-              width: 90,
-              child: Text(
-                '₨ ${_currencyFormat.format(entry.total)}',
-                textAlign: TextAlign.right,
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                  color: Color(0xFF1B4332),
-                ),
-              ),
-            ),
-            SizedBox(
-              width: 90,
-              child: Text(
-                '₨ ${_currencyFormat.format(entry.paid)}',
-                textAlign: TextAlign.right,
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: Color(0xFF2D6A4F),
-                ),
-              ),
-            ),
-            SizedBox(
-              width: 140,
-              child: Align(
-                alignment: Alignment.centerRight,
-                child: _buildStatusBadge(entry.status, entry.outstanding),
-              ),
-            ),
-            SizedBox(
-              width: 110,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  if (onEdit != null)
-                    InkWell(
-                      onTap: () => onEdit(entry),
-                      borderRadius: BorderRadius.circular(7),
-                      child: Container(
-                        width: 28,
-                        height: 28,
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(7),
-                          border: Border.all(color: const Color(0xFFC6DEC9), width: 0.5),
-                        ),
-                        child: const Icon(
-                          Icons.edit_outlined,
-                          size: 14,
-                          color: Color(0xFF1B4332),
-                        ),
-                      ),
-                    ),
-                  if (onEdit != null) const SizedBox(width: 6),
-                  if (onDelete != null)
-                    InkWell(
-                      onTap: () => onDelete(entry),
-                      borderRadius: BorderRadius.circular(7),
-                      child: Container(
-                        width: 28,
-                        height: 28,
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(7),
-                          border: Border.all(color: const Color(0xFFF5C6C6), width: 0.5),
-                        ),
-                        child: const Icon(
-                          Icons.delete_outline,
-                          size: 14,
-                          color: Color(0xFFDC3545),
-                        ),
-                      ),
-                    ),
-                  if (onDelete != null) const SizedBox(width: 6),
-                  InkWell(
-                    onTap: () => _showInvoiceDetail(context, entry),
-                    borderRadius: BorderRadius.circular(7),
-                    child: Container(
-                      width: 28,
-                      height: 28,
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(7),
-                        border: Border.all(color: const Color(0xFFC6DEC9), width: 0.5),
-                      ),
-                      child: const Icon(
-                        Icons.visibility_outlined,
-                        size: 14,
-                        color: Color(0xFF6B8F71),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
+    return _MainLedgerExpandableRow(
+      entry: entry,
+      isLast: isLast,
+      onEdit: onEdit,
+      onDelete: onDelete,
+      onShowDetail: () => _showInvoiceDetail(context, entry),
+      buildStatusBadge: _buildStatusBadge,
     );
   }
 
@@ -518,6 +684,10 @@ class ZamindarLedgerRow {
   final String? statusLabel;
   final bool isEdited;
   final String? paymentId;
+  final double? grossSubtotal;
+  final double? itemDiscountsTotal;
+  final double? overallDiscount;
+  final double? netPayableAmount;
 
   const ZamindarLedgerRow({
     required this.source,
@@ -533,7 +703,16 @@ class ZamindarLedgerRow {
     this.statusLabel,
     this.isEdited = false,
     this.paymentId,
+    this.grossSubtotal,
+    this.itemDiscountsTotal,
+    this.overallDiscount,
+    this.netPayableAmount,
   });
+
+  bool get isSaleDebit => category == 'SALE' && isDebit;
+
+  bool get hasSaleDiscountBreakdown =>
+      isSaleDebit && grossSubtotal != null;
 
   double get outstanding => (total - paid).clamp(0.0, double.infinity);
 
@@ -631,6 +810,16 @@ class ZamindarLedgerRow {
         statusLabel = _statusLabelForCategory(category);
       }
 
+      final grossSubtotal = isSale
+          ? (row[SaleJoinColumns.subtotal] as num?)?.toDouble()
+          : null;
+      final itemDiscountsTotal = isSale
+          ? (row[SaleJoinColumns.itemDiscountsTotal] as num?)?.toDouble() ?? 0
+          : null;
+      final overallDiscount = isSale
+          ? (row[SaleJoinColumns.overallDiscount] as num?)?.toDouble() ?? 0
+          : null;
+
       return ZamindarLedgerRow(
         source: row,
         isDebit: isDebit,
@@ -645,6 +834,10 @@ class ZamindarLedgerRow {
         statusLabel: statusLabel,
         isEdited: isEdited,
         paymentId: paymentId,
+        grossSubtotal: grossSubtotal,
+        itemDiscountsTotal: itemDiscountsTotal,
+        overallDiscount: overallDiscount,
+        netPayableAmount: isSale ? amount : null,
       );
     }).toList();
   }
@@ -671,6 +864,208 @@ class ZamindarLedgerRow {
       default:
         return category.isEmpty ? '—' : category;
     }
+  }
+}
+
+class _ZamindarLedgerExpandableRow extends StatefulWidget {
+  final ZamindarLedgerRow row;
+  final bool isLast;
+  final bool showActions;
+  final double actionsWidth;
+  final Widget Function(BuildContext context, ZamindarLedgerRow row)?
+      actionsBuilder;
+
+  const _ZamindarLedgerExpandableRow({
+    required this.row,
+    required this.isLast,
+    required this.showActions,
+    required this.actionsWidth,
+    this.actionsBuilder,
+  });
+
+  @override
+  State<_ZamindarLedgerExpandableRow> createState() =>
+      _ZamindarLedgerExpandableRowState();
+}
+
+class _ZamindarLedgerExpandableRowState
+    extends State<_ZamindarLedgerExpandableRow> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final row = widget.row;
+    final canExpand = row.hasSaleDiscountBreakdown;
+
+    return Container(
+      decoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(
+            color: widget.isLast ? Colors.transparent : const Color(0xFFE2EBE0),
+            width: 0.5,
+          ),
+        ),
+      ),
+      child: Column(
+        children: [
+          InkWell(
+            onTap: canExpand
+                ? () => setState(() => _expanded = !_expanded)
+                : null,
+            hoverColor: const Color(0xFFF0F7EB),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: 7,
+                    height: 7,
+                    margin: const EdgeInsets.only(top: 5, right: 10),
+                    decoration: BoxDecoration(
+                      color: row.isDebit
+                          ? const Color(0xFFC0DD97)
+                          : const Color(0xFF85B7EB),
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  SizedBox(
+                    width: 120,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            if (canExpand) ...[
+                              Icon(
+                                _expanded
+                                    ? Icons.expand_more
+                                    : Icons.chevron_right,
+                                size: 14,
+                                color: const Color(0xFF6B8F71),
+                              ),
+                              const SizedBox(width: 2),
+                            ],
+                            Expanded(
+                              child: Text(
+                                row.invoiceDisplay,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w500,
+                                  color: Color(0xFF1B4332),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '${_dateFormat.format(row.dateTime)} · ${_timeFormat.format(row.dateTime)}',
+                          style: const TextStyle(
+                            fontSize: 10,
+                            color: Color(0xFF95B89A),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  SizedBox(
+                    width: 140,
+                    child: Text(
+                      row.kisaanName,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                        color: Color(0xFF1B4332),
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  Expanded(
+                    child: Text(
+                      row.itemsText,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: Color(0xFF6B8F71),
+                        height: 1.4,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 2,
+                    ),
+                  ),
+                  SizedBox(
+                    width: 90,
+                    child: Text(
+                      '₨ ${_currencyFormat.format(row.total)}',
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                        color: Color(0xFF1B4332),
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 90,
+                    child: Text(
+                      '₨ ${_currencyFormat.format(row.paid)}',
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF2D6A4F),
+                      ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: 140,
+                    child: Align(
+                      alignment: Alignment.centerRight,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (row.isEdited) ...[
+                            _ZamindarLedgerStatusBadges.edited(),
+                            const SizedBox(width: 4),
+                          ],
+                          Flexible(
+                            child: row.paymentStatus != null
+                                ? _ZamindarLedgerStatusBadges.paymentStatus(
+                                    row.paymentStatus!,
+                                    row.outstanding,
+                                  )
+                                : _ZamindarLedgerStatusBadges.category(
+                                    row.statusLabel ?? '—',
+                                  ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  if (widget.showActions)
+                    SizedBox(
+                      width: widget.actionsWidth,
+                      child: Align(
+                        alignment: Alignment.centerRight,
+                        child: widget.actionsBuilder!(context, row),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          if (_expanded && canExpand)
+            Padding(
+              padding: const EdgeInsets.only(left: 31, right: 14, bottom: 10),
+              child: SaleDiscountBreakdownPanel(
+                grossSubtotal: row.grossSubtotal!,
+                itemDiscountsTotal: row.itemDiscountsTotal ?? 0,
+                overallDiscount: row.overallDiscount ?? 0,
+                netPayable: row.netPayableAmount ?? row.total,
+              ),
+            ),
+        ],
+      ),
+    );
   }
 }
 
@@ -821,138 +1216,18 @@ class ZamindarLedgerTable extends StatelessWidget {
   );
 
   Widget _buildRow(BuildContext context, ZamindarLedgerRow row, bool isLast) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-      decoration: BoxDecoration(
-        border: Border(
-          bottom: BorderSide(
-            color: isLast ? Colors.transparent : const Color(0xFFE2EBE0),
-            width: 0.5,
-          ),
-        ),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 7,
-            height: 7,
-            margin: const EdgeInsets.only(top: 5, right: 10),
-            decoration: BoxDecoration(
-              color: row.isDebit
-                  ? const Color(0xFFC0DD97)
-                  : const Color(0xFF85B7EB),
-              shape: BoxShape.circle,
-            ),
-          ),
-          SizedBox(
-            width: 120,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  row.invoiceDisplay,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                    color: Color(0xFF1B4332),
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  '${_dateFormat.format(row.dateTime)} · ${_timeFormat.format(row.dateTime)}',
-                  style: const TextStyle(
-                    fontSize: 10,
-                    color: Color(0xFF95B89A),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          SizedBox(
-            width: 140,
-            child: Text(
-              row.kisaanName,
-              style: const TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
-                color: Color(0xFF1B4332),
-              ),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          Expanded(
-            child: Text(
-              row.itemsText,
-              style: const TextStyle(
-                fontSize: 11,
-                color: Color(0xFF6B8F71),
-                height: 1.4,
-              ),
-              overflow: TextOverflow.ellipsis,
-              maxLines: 2,
-            ),
-          ),
-          SizedBox(
-            width: 90,
-            child: Text(
-              '₨ ${_currencyFormat.format(row.total)}',
-              textAlign: TextAlign.right,
-              style: const TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
-                color: Color(0xFF1B4332),
-              ),
-            ),
-          ),
-          SizedBox(
-            width: 90,
-            child: Text(
-              '₨ ${_currencyFormat.format(row.paid)}',
-              textAlign: TextAlign.right,
-              style: const TextStyle(
-                fontSize: 12,
-                color: Color(0xFF2D6A4F),
-              ),
-            ),
-          ),
-          SizedBox(
-            width: 140,
-            child: Align(
-              alignment: Alignment.centerRight,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (row.isEdited) ...[
-                    _buildEditedBadge(),
-                    const SizedBox(width: 4),
-                  ],
-                  Flexible(
-                    child: row.paymentStatus != null
-                        ? _buildPaymentStatusBadge(
-                            row.paymentStatus!,
-                            row.outstanding,
-                          )
-                        : _buildCategoryStatusBadge(row.statusLabel ?? '—'),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          if (_showActions)
-            SizedBox(
-              width: actionsWidth,
-              child: Align(
-                alignment: Alignment.centerRight,
-                child: actionsBuilder!(context, row),
-              ),
-            ),
-        ],
-      ),
+    return _ZamindarLedgerExpandableRow(
+      row: row,
+      isLast: isLast,
+      showActions: _showActions,
+      actionsWidth: actionsWidth,
+      actionsBuilder: actionsBuilder,
     );
   }
+}
 
-  Widget _buildEditedBadge() {
+class _ZamindarLedgerStatusBadges {
+  static Widget edited() {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
@@ -971,7 +1246,7 @@ class ZamindarLedgerTable extends StatelessWidget {
     );
   }
 
-  Widget _buildPaymentStatusBadge(PaymentStatus status, double outstanding) {
+  static Widget paymentStatus(PaymentStatus status, double outstanding) {
     Color backgroundColor;
     Color textColor;
     String text;
@@ -1012,7 +1287,7 @@ class ZamindarLedgerTable extends StatelessWidget {
     );
   }
 
-  Widget _buildCategoryStatusBadge(String label) {
+  static Widget category(String label) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
       decoration: BoxDecoration(
@@ -1268,6 +1543,45 @@ class _InvoiceDetailDialogState extends State<InvoiceDetailDialog> {
   }
 
   Widget _buildTotalSection() {
+    final entry = widget.entry;
+    final children = <Widget>[];
+
+    if (entry.hasSaleDiscountBreakdown) {
+      children.addAll([
+        _buildTotalRow('Gross Subtotal:', entry.grossSubtotal!),
+        if ((entry.itemDiscountsTotal ?? 0) > 0)
+          _buildTotalRow(
+            'Item Discount:',
+            entry.itemDiscountsTotal!,
+            color: const Color(0xFF28A745),
+          ),
+        if ((entry.overallDiscount ?? 0) > 0)
+          _buildTotalRow(
+            'Overall Discount:',
+            entry.overallDiscount!,
+            color: const Color(0xFF28A745),
+          ),
+        const Divider(height: 16),
+        _buildTotalRow('Net Payable:', entry.netPayable, bold: true),
+      ]);
+    } else {
+      children.add(_buildTotalRow('Total Amount:', entry.total, bold: true));
+    }
+
+    children.addAll([
+      const Divider(height: 24),
+      _buildTotalRow('Paid:', entry.paid),
+      const Divider(height: 24),
+      _buildTotalRow(
+        'Outstanding:',
+        entry.outstanding,
+        bold: true,
+        color: entry.outstanding > 0
+            ? const Color(0xFFDC3545)
+            : const Color(0xFF28A745),
+      ),
+    ]);
+
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -1275,22 +1589,7 @@ class _InvoiceDetailDialogState extends State<InvoiceDetailDialog> {
         border: Border.all(color: const Color(0xFF1B4332), width: 2),
         borderRadius: BorderRadius.circular(8),
       ),
-      child: Column(
-        children: [
-          _buildTotalRow('Total Amount:', widget.entry.total, bold: true),
-          const Divider(height: 24),
-          _buildTotalRow('Paid:', widget.entry.paid),
-          const Divider(height: 24),
-          _buildTotalRow(
-            'Outstanding:',
-            widget.entry.outstanding,
-            bold: true,
-            color: widget.entry.outstanding > 0
-                ? const Color(0xFFDC3545)
-                : const Color(0xFF28A745),
-          ),
-        ],
-      ),
+      child: Column(children: children),
     );
   }
 

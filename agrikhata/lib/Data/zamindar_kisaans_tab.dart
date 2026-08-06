@@ -1,4 +1,3 @@
-import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/Database/database_helper.dart';
 import 'package:agrikhata/Widgets/app_auto_suggest_field.dart';
 import 'package:agrikhata/services/whatsapp_urdu_service.dart';
@@ -837,28 +836,24 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
       builder: (context) => _BillSettlementDialog(
         zamindarId: widget.zamindarId,
         zamindarName: widget.zamindarName,
+        zamindarWhatsapp: _zamindarWhatsapp,
         kisaans: _kisaans,
         onSettlementApplied: (selectedKisaanId, kisaanName, amount) async {
-          try {
-            await DatabaseHelper.instance.settleKisaanBulkPayment(
-              zamindarId: widget.zamindarId,
-              kisaanName: kisaanName,
-              amountPaid: amount,
-              paymentMethod: 'Cash',
-              season: '',
+          final result = await DatabaseHelper.instance.settleKisaanBulkPayment(
+            zamindarId: widget.zamindarId,
+            kisaanName: kisaanName,
+            amountPaid: amount,
+            paymentMethod: 'Cash',
+            season: '',
+          );
+          await _loadKisaans();
+          if (mounted) {
+            AppToast.showSuccess(
+              context,
+              'Payment of Rs ${amount.toStringAsFixed(0)} recorded successfully',
             );
-            await _loadKisaans();
-            if (mounted) {
-              AppToast.showSuccess(
-                context,
-                'Payment of Rs ${amount.toStringAsFixed(0)} recorded successfully',
-              );
-            }
-          } catch (e) {
-            if (mounted) {
-              AppToast.showError(context, 'Error recording payment: $e');
-            }
           }
+          return result;
         },
       ),
     );
@@ -1986,13 +1981,19 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
 class _BillSettlementDialog extends StatefulWidget {
   final int zamindarId;
   final String zamindarName;
+  final String zamindarWhatsapp;
   final List<Kisaan> kisaans;
-  final void Function(int selectedKisaanId, String kisaanName, double amount)
+  final Future<BillSettlementResult?> Function(
+    int selectedKisaanId,
+    String kisaanName,
+    double amount,
+  )
   onSettlementApplied;
 
   const _BillSettlementDialog({
     required this.zamindarId,
     required this.zamindarName,
+    required this.zamindarWhatsapp,
     required this.kisaans,
     required this.onSettlementApplied,
   });
@@ -2006,7 +2007,9 @@ class _BillSettlementDialogState extends State<_BillSettlementDialog> {
   int? _selectedKisaanId;
   final _amountController = TextEditingController();
   bool _showReceiptActions = false;
+  bool _isSubmitting = false;
   String _lastSettledKisaanName = "";
+  BillSettlementResult? _settlementResult;
   double _kisaanDebt = 0;
   bool _isLoadingDebt = false;
 
@@ -2063,11 +2066,66 @@ class _BillSettlementDialogState extends State<_BillSettlementDialog> {
   double? get _enteredAmount => double.tryParse(_amountController.text.trim());
 
   bool get _canSubmit {
-    if (_selectedKisaanId == null || _isLoadingDebt) return false;
+    if (_selectedKisaanId == null || _isLoadingDebt || _isSubmitting) {
+      return false;
+    }
     final amt = _enteredAmount;
     if (amt == null || amt <= 0) return false;
     if (amt > _kisaanDebt) return false;
     return true;
+  }
+
+  Future<void> _printReceipt() async {
+    final result = _settlementResult;
+    if (result == null) return;
+    try {
+      await PdfGenerator.printBillSettlementReceipt(
+        zamindarName: result.zamindarName,
+        kisaanName: result.kisaanName,
+        amount: result.amountPaid.round(),
+        invoiceNumbers: result.invoiceNumbers,
+        invoiceSummaries: result.invoiceSummaries,
+        date: result.dateTime,
+        paymentMethod: result.paymentMethod,
+      );
+    } catch (e) {
+      if (mounted) {
+        AppToast.showError(context, 'Failed to print receipt: $e');
+      }
+    }
+  }
+
+  Future<void> _shareWhatsAppPdf() async {
+    final result = _settlementResult;
+    if (result == null) return;
+    try {
+      final shopName = await ShopSettings.getShopName();
+      final file = await PdfGenerator.saveBillSettlementReceiptToDocuments(
+        zamindarName: result.zamindarName,
+        kisaanName: result.kisaanName,
+        amount: result.amountPaid.round(),
+        invoiceNumbers: result.invoiceNumbers,
+        invoiceSummaries: result.invoiceSummaries,
+        date: result.dateTime,
+        paymentMethod: result.paymentMethod,
+      );
+      await WhatsAppUrduService.sharePdfWithUrduCaption(
+        phone: widget.zamindarWhatsapp,
+        zamindarName: result.zamindarName,
+        shopName: shopName,
+        amount: result.amountPaid,
+        pdfPath: file.path,
+        detailLines: [
+          'کسان: ${result.kisaanName}',
+          result.description,
+        ],
+        subject: 'Bill Settlement — ${result.zamindarName}',
+      );
+    } catch (e) {
+      if (mounted) {
+        AppToast.showError(context, 'Failed to share via WhatsApp: $e');
+      }
+    }
   }
 
   String _fmt(double value) {
@@ -2374,27 +2432,55 @@ class _BillSettlementDialogState extends State<_BillSettlementDialog> {
                       const SizedBox(width: 8),
                       ElevatedButton(
                         onPressed: _canSubmit
-                            ? () {
-                                if (!_formKey.currentState!.validate()) return;
+                            ? () async {
+                                if (!_formKey.currentState!.validate()) {
+                                  return;
+                                }
                                 final amt = _enteredAmount!;
                                 final targetKisaan = widget.kisaans.firstWhere(
                                   (k) => k.id == _selectedKisaanId,
                                 );
-                                widget.onSettlementApplied(
-                                  _selectedKisaanId!,
-                                  targetKisaan.name,
-                                  amt,
-                                );
-                                setState(() {
-                                  _lastSettledKisaanName = targetKisaan.name;
-                                  _showReceiptActions = true;
-                                });
+                                setState(() => _isSubmitting = true);
+                                try {
+                                  final result = await widget.onSettlementApplied(
+                                    _selectedKisaanId!,
+                                    targetKisaan.name,
+                                    amt,
+                                  );
+                                  if (!mounted) return;
+                                  if (result != null) {
+                                    setState(() {
+                                      _settlementResult = result;
+                                      _lastSettledKisaanName = targetKisaan.name;
+                                      _showReceiptActions = true;
+                                      _isSubmitting = false;
+                                    });
+                                  } else {
+                                    setState(() => _isSubmitting = false);
+                                  }
+                                } catch (e) {
+                                  if (!mounted) return;
+                                  setState(() => _isSubmitting = false);
+                                  AppToast.showError(
+                                    context,
+                                    'Error recording payment: $e',
+                                  );
+                                }
                               }
                             : null,
-                        child: const Text(
-                          "Post Voucher Entry",
-                          style: TextStyle(fontSize: 12),
-                        ),
+                        child: _isSubmitting
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : const Text(
+                                "Post Voucher Entry",
+                                style: TextStyle(fontSize: 12),
+                              ),
                       ),
                     ],
                   ),
@@ -2471,7 +2557,7 @@ class _BillSettlementDialogState extends State<_BillSettlementDialog> {
                         children: [
                           Expanded(
                             child: OutlinedButton.icon(
-                              onPressed: () {},
+                              onPressed: _printReceipt,
                               icon: const Icon(Icons.print, size: 14),
                               label: const Text(
                                 "Print Receipt",
@@ -2487,7 +2573,7 @@ class _BillSettlementDialogState extends State<_BillSettlementDialog> {
                           const SizedBox(width: 8),
                           Expanded(
                             child: ElevatedButton.icon(
-                              onPressed: () {},
+                              onPressed: _shareWhatsAppPdf,
                               icon: const Icon(Icons.send, size: 14),
                               label: const Text(
                                 "WhatsApp PDF",

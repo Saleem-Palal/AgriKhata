@@ -917,7 +917,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         _buildDangerCard(),
                         const SizedBox(height: 36),
                         Text(
-                          'AgriKhata ${_versionLabel.isEmpty ? 'v1.0.15' : _versionLabel}  •  Built with ❤️',
+                          'AgriKhata ${_versionLabel.isEmpty ? 'v1.0.16' : _versionLabel}  •  Built with ❤️',
                           textAlign: TextAlign.center,
                           style: const TextStyle(
                             fontSize: 11,

@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../models/audit_log_model.dart';
+import '../models/ledger_models.dart' hide Season;
 import '../models/partner_model.dart';
 import '../models/season.dart';
 import '../models/user_model.dart';
@@ -15,6 +16,9 @@ import '../services/session_context.dart';
 import '../utils/season_utils.dart';
 import '../utils/shop_settings.dart';
 import 'migration_framework.dart';
+
+export '../models/ledger_models.dart'
+    show BillSettlementInvoiceSummary, BillSettlementResult;
 
 /// Singleton database helper for the AgriKhata local relational database.
 ///
@@ -2674,7 +2678,7 @@ END
             WHERE item.${SaleItemsTable.invoiceNumber}
                 = NEW.${PaymentsTable.invoiceNumber}
           ), '—') || ')'
-        ELSE 'Payment received via ' || NEW.${PaymentsTable.paymentMethod}
+        ELSE 'Bill Payment for ' || NEW.${PaymentsTable.invoiceNumber}
       END
     ''';
     const saleCategoryCase = '''
@@ -2844,7 +2848,7 @@ END
                 WHERE item.${SaleItemsTable.invoiceNumber}
                     = p.${PaymentsTable.invoiceNumber}
               ), '—') || ')'
-            ELSE 'Payment received via ' || p.${PaymentsTable.paymentMethod}
+            ELSE 'Bill Payment for ' || p.${PaymentsTable.invoiceNumber}
           END,
           p.${PaymentsTable.amountPaid},
           p.${PaymentsTable.dateTime},
@@ -4580,12 +4584,18 @@ END
         p.${PaymentsTable.editedAt} AS payment_edited_at,
         p.${PaymentsTable.editedBy} AS payment_edited_by,
         p.${PaymentsTable.originalAmount} AS payment_original_amount,
-        p.${PaymentsTable.notes} AS payment_notes
+        p.${PaymentsTable.notes} AS payment_notes,
+        s.${SalesTable.subtotal} AS ${SaleJoinColumns.subtotal},
+        s.${SalesTable.itemDiscountsTotal} AS ${SaleJoinColumns.itemDiscountsTotal},
+        s.${SalesTable.overallDiscount} AS ${SaleJoinColumns.overallDiscount},
+        s.${SalesTable.totalPayable} AS ${SaleJoinColumns.totalPayable}
       FROM ${LedgerTransactionTable.name} lt
       LEFT JOIN ${KisaanTable.name} k
         ON lt.${LedgerTransactionTable.kisaanId} = k.${KisaanTable.id}
       LEFT JOIN ${PaymentsTable.name} p
         ON p.${PaymentsTable.paymentId} = lt.${LedgerTransactionTable.paymentId}
+      LEFT JOIN ${SalesTable.name} s
+        ON s.${SalesTable.invoiceNumber} = lt.${LedgerTransactionTable.invoiceNumber}
       WHERE lt.${LedgerTransactionTable.zamindarId} = ?
       ORDER BY lt.${LedgerTransactionTable.dateTime} DESC$limitClause
     ''',
@@ -10070,6 +10080,9 @@ END
         s.${SalesTable.season} AS season,
         s.${SalesTable.paymentMethod} AS payment_method,
         s.${SalesTable.paymentTerm} AS payment_term,
+        s.${SalesTable.subtotal} AS subtotal,
+        s.${SalesTable.itemDiscountsTotal} AS item_discounts_total,
+        s.${SalesTable.overallDiscount} AS overall_discount,
         s.${SalesTable.totalPayable} AS total,
         ($_sqlSaleCollectedExpr) AS paid,
         ($_sqlSaleRemainingExpr) AS remaining,
@@ -10169,6 +10182,11 @@ END
         'cost_per_product':
             costParts.isEmpty ? '-' : costParts.join(', '),
         'payment_type': paymentType,
+        'subtotal': (sale['subtotal'] as num?)?.toDouble() ?? 0.0,
+        'item_discounts_total':
+            (sale['item_discounts_total'] as num?)?.toDouble() ?? 0.0,
+        'overall_discount':
+            (sale['overall_discount'] as num?)?.toDouble() ?? 0.0,
         'total': (sale['total'] as num?)?.toDouble() ?? 0.0,
         'paid': (sale['paid'] as num?)?.toDouble() ?? 0.0,
         'remaining': (sale['remaining'] as num?)?.toDouble() ?? 0.0,
@@ -10192,6 +10210,59 @@ END
       }
     }
     return buffer.toString().split('').reversed.join('');
+  }
+
+  static String formatBillPaymentDescription(String invoiceNumber) {
+    final trimmed = invoiceNumber.trim();
+    return trimmed.isEmpty ? 'Bill Payment' : 'Bill Payment for $trimmed';
+  }
+
+  static String formatBillPaymentDescriptionForInvoices(
+    List<String> invoiceNumbers,
+  ) {
+    final unique = invoiceNumbers
+        .map((invoice) => invoice.trim())
+        .where((invoice) => invoice.isNotEmpty)
+        .toList();
+    if (unique.isEmpty) return 'Bill Payment';
+    return 'Bill Payment for ${unique.join(', ')}';
+  }
+
+  Future<void> _upsertBillPaymentLedgerEntry(
+    DatabaseExecutor txn, {
+    required String paymentId,
+    required int zamindarId,
+    int? kisaanId,
+    String? invoiceNumber,
+    required String paymentMethod,
+    required int amount,
+    required DateTime dateTime,
+    required String season,
+    int? seasonId,
+    required String description,
+  }) async {
+    await txn.delete(
+      LedgerTransactionTable.name,
+      where: '${LedgerTransactionTable.paymentId} = ?',
+      whereArgs: [paymentId],
+    );
+
+    final category = paymentMethod == 'Cash'
+        ? 'CASH_PAYMENT'
+        : 'PAYMENT';
+    await txn.insert(LedgerTransactionTable.name, {
+      LedgerTransactionTable.zamindarId: zamindarId,
+      LedgerTransactionTable.kisaanId: kisaanId,
+      LedgerTransactionTable.invoiceNumber: invoiceNumber,
+      LedgerTransactionTable.paymentId: paymentId,
+      LedgerTransactionTable.type: LedgerTransactionType.credit,
+      LedgerTransactionTable.category: category,
+      LedgerTransactionTable.description: description,
+      LedgerTransactionTable.amount: amount,
+      LedgerTransactionTable.dateTime: _formatDateTime(dateTime),
+      LedgerTransactionTable.season: season,
+      if (seasonId != null) LedgerTransactionTable.seasonId: seasonId,
+    });
   }
 
   /// Inserts a payment settlement for a specific invoice.
@@ -10228,6 +10299,8 @@ END
       resolvedPaymentId =
           paymentId ?? await generateNextPaymentId(txn, isAdvance: false);
 
+      final seasonId = await _lookupSeasonIdForLabel(txn, season);
+
       await txn.insert(PaymentsTable.name, {
         PaymentsTable.paymentId: resolvedPaymentId,
         PaymentsTable.invoiceNumber: invoiceNumber,
@@ -10237,9 +10310,22 @@ END
         PaymentsTable.amountPaid: amountPaid.round(),
         PaymentsTable.paymentMethod: paymentMethod,
         PaymentsTable.season: season,
-          PaymentsTable.seasonId: await _lookupSeasonIdForLabel(txn, season),
+        PaymentsTable.seasonId: seasonId,
       });
-      // after_payment_insert trigger writes the ledger CREDIT row.
+
+      await _upsertBillPaymentLedgerEntry(
+        txn,
+        paymentId: resolvedPaymentId,
+        zamindarId: zamindarId,
+        kisaanId: kisaanId,
+        invoiceNumber: invoiceNumber,
+        paymentMethod: paymentMethod,
+        amount: amountPaid.round(),
+        dateTime: dateTime,
+        season: season,
+        seasonId: seasonId,
+        description: formatBillPaymentDescription(invoiceNumber),
+      );
 
       await _recalculateZamindarBalanceOn(txn, zamindarId);
     });
@@ -10288,7 +10374,7 @@ END
   }
 
   /// Allocates a bulk Kisaan payment across unpaid invoices oldest-first (FIFO).
-  Future<void> settleKisaanBulkPayment({
+  Future<BillSettlementResult> settleKisaanBulkPayment({
     required int zamindarId,
     required String kisaanName,
     required double amountPaid,
@@ -10324,8 +10410,25 @@ END
       }
     }
 
+    final settledInvoices = <String>[];
+    final paymentIds = <String>[];
+    final cashPaidNowByInvoice = <String, double>{};
+    final now = DateTime.now();
+
+    String resolvedSeason = season.trim();
+    int? resolvedSeasonId;
+    if (resolvedSeason.isEmpty) {
+      final active = await getActiveSeason();
+      resolvedSeason = active?.name ?? '';
+      resolvedSeasonId = active?.id;
+    }
+
     final db = await database;
     await db.transaction((txn) async {
+      if (resolvedSeason.isNotEmpty && resolvedSeasonId == null) {
+        resolvedSeasonId = await _lookupSeasonIdForLabel(txn, resolvedSeason);
+      }
+
       double remainingCash = amountPaid;
 
       final List<Map<String, dynamic>> invoices = await txn.rawQuery(
@@ -10371,8 +10474,11 @@ END
         final allocation = remainingCash >= remainingDebt
             ? remainingDebt
             : remainingCash;
-        final now = DateTime.now();
         final paymentId = await generateNextPaymentId(txn, isAdvance: false);
+
+        settledInvoices.add(invoiceNumber);
+        paymentIds.add(paymentId);
+        cashPaidNowByInvoice[invoiceNumber] = allocation;
 
         await txn.insert(PaymentsTable.name, {
           PaymentsTable.paymentId: paymentId,
@@ -10382,16 +10488,70 @@ END
           PaymentsTable.kisaanId: kisaanId,
           PaymentsTable.amountPaid: allocation.round(),
           PaymentsTable.paymentMethod: paymentMethod,
-          PaymentsTable.season: season,
-          PaymentsTable.seasonId: await _lookupSeasonIdForLabel(txn, season),
+          PaymentsTable.season: resolvedSeason,
+          PaymentsTable.seasonId: resolvedSeasonId,
         });
-        // after_payment_insert trigger writes the ledger CREDIT row.
 
         remainingCash -= allocation;
       }
+
+      if (paymentIds.isNotEmpty) {
+        for (final paymentId in paymentIds) {
+          await txn.delete(
+            LedgerTransactionTable.name,
+            where: '${LedgerTransactionTable.paymentId} = ?',
+            whereArgs: [paymentId],
+          );
+        }
+
+        final description =
+            formatBillPaymentDescriptionForInvoices(settledInvoices);
+        await txn.insert(LedgerTransactionTable.name, {
+          LedgerTransactionTable.zamindarId: zamindarId,
+          LedgerTransactionTable.kisaanId: kisaanId,
+          LedgerTransactionTable.invoiceNumber: settledInvoices.first,
+          LedgerTransactionTable.paymentId: paymentIds.first,
+          LedgerTransactionTable.type: LedgerTransactionType.credit,
+          LedgerTransactionTable.category: paymentMethod == 'Cash'
+              ? 'CASH_PAYMENT'
+              : 'PAYMENT',
+          LedgerTransactionTable.description: description,
+          LedgerTransactionTable.amount: amountPaid.round(),
+          LedgerTransactionTable.dateTime: _formatDateTime(now),
+          LedgerTransactionTable.season: resolvedSeason,
+          if (resolvedSeasonId != null)
+            LedgerTransactionTable.seasonId: resolvedSeasonId,
+        });
+      }
+
+      await _recalculateZamindarBalanceOn(txn, zamindarId);
     });
 
     notifyListeners();
+
+    final invoiceSummaries = <BillSettlementInvoiceSummary>[];
+    for (final invoiceNumber in settledInvoices) {
+      invoiceSummaries.add(
+        await getInvoiceSettlementSnapshot(
+          invoiceNumber,
+          cashPaidNow: cashPaidNowByInvoice[invoiceNumber] ?? 0,
+        ),
+      );
+    }
+
+    return BillSettlementResult(
+      zamindarId: zamindarId,
+      zamindarName: zamindar.name,
+      kisaanId: kisaanId,
+      kisaanName: kisaanName,
+      amountPaid: amountPaid,
+      invoiceNumbers: List.unmodifiable(settledInvoices),
+      paymentId: paymentIds.isNotEmpty ? paymentIds.first : null,
+      dateTime: now,
+      description: formatBillPaymentDescriptionForInvoices(settledInvoices),
+      paymentMethod: paymentMethod,
+      invoiceSummaries: List.unmodifiable(invoiceSummaries),
+    );
   }
 
   /// Records a kisaan-level settlement via FIFO invoice allocation.
@@ -10723,22 +10883,47 @@ END
     );
   }
 
-  /// Calculates remaining balance for an invoice using the shared sales/payments
-  /// formula (same as dashboard receivables & zamindar balances).
+  /// Outstanding balance for a single invoice after all payments.
   Future<double> getInvoiceRemainingBalance(String invoiceNumber) async {
+    final snapshot = await getInvoiceSettlementSnapshot(invoiceNumber);
+    return snapshot.remainingBalance;
+  }
+
+  /// Paid / remaining snapshot for receipt printing after settlement.
+  Future<BillSettlementInvoiceSummary> getInvoiceSettlementSnapshot(
+    String invoiceNumber, {
+    double cashPaidNow = 0,
+  }) async {
     final db = await database;
     final rows = await db.rawQuery(
       '''
       SELECT
-        s.${SalesTable.totalPayable} - ($_sqlSaleCollectedExpr) AS remaining
+        s.${SalesTable.totalPayable} AS total,
+        ($_sqlSaleCollectedExpr) AS paid,
+        ($_sqlSaleRemainingExpr) AS remaining
       FROM ${SalesTable.name} s
       WHERE s.${SalesTable.invoiceNumber} = ?
       LIMIT 1
       ''',
       [invoiceNumber],
     );
-    if (rows.isEmpty) return 0.0;
-    return (rows.first['remaining'] as num?)?.toDouble() ?? 0.0;
+    if (rows.isEmpty) {
+      return BillSettlementInvoiceSummary(
+        invoiceNumber: invoiceNumber,
+        cashPaidNow: cashPaidNow,
+        totalPaidCash: 0,
+        remainingBalance: 0,
+        invoiceTotal: 0,
+      );
+    }
+    final row = rows.first;
+    return BillSettlementInvoiceSummary(
+      invoiceNumber: invoiceNumber,
+      cashPaidNow: cashPaidNow,
+      totalPaidCash: (row['paid'] as num?)?.toDouble() ?? 0,
+      remainingBalance: (row['remaining'] as num?)?.toDouble() ?? 0,
+      invoiceTotal: (row['total'] as num?)?.toDouble() ?? 0,
+    );
   }
 
   /// Updates an existing sale and fully resyncs payments + ledger rows so
@@ -11237,6 +11422,14 @@ class LedgerTransactionTable {
 class LedgerTransactionType {
   static const String debit = 'DEBIT';
   static const String credit = 'CREDIT';
+}
+
+/// Aliases for [SalesTable] columns joined onto ledger transaction queries.
+class SaleJoinColumns {
+  static const String subtotal = 'sale_subtotal';
+  static const String itemDiscountsTotal = 'sale_item_discounts_total';
+  static const String overallDiscount = 'sale_overall_discount';
+  static const String totalPayable = 'sale_total_payable';
 }
 
 class SalesTable {

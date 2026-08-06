@@ -258,6 +258,12 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
         final kisaanName = sale[db.SalesTable.kisaanName] as String?;
         final totalPayable =
             (sale[db.SalesTable.totalPayable] as num).toDouble();
+        final grossSubtotal =
+            (sale[db.SalesTable.subtotal] as num?)?.toDouble();
+        final itemDiscountsTotal =
+            (sale[db.SalesTable.itemDiscountsTotal] as num?)?.toDouble() ?? 0;
+        final overallDiscount =
+            (sale[db.SalesTable.overallDiscount] as num?)?.toDouble() ?? 0;
         final transactionType =
             sale[db.SalesTable.transactionType] as String? ??
             db.SaleTransactionType.productSale;
@@ -311,6 +317,9 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
             isWalkInCustomer: !registeredZamindarNames.contains(zamindarName),
             description: advanceDescription,
             transactionType: transactionType,
+            grossSubtotal: grossSubtotal,
+            itemDiscountsTotal: itemDiscountsTotal,
+            overallDiscount: overallDiscount,
             createdByUserId:
                 sale[db.ActorColumns.createdByUserId]?.toString(),
             createdByUserName:

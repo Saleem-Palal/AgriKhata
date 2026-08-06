@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:intl/intl.dart';
 import '../models/ledger_models.dart';
+import '../Database/database_helper.dart' show SaleJoinColumns;
 import 'receipt_acknowledgment.dart';
 import 'shop_settings.dart';
 
@@ -534,6 +535,47 @@ class PdfGenerator {
   }
 
   static pw.Widget _buildTotalSection(LedgerEntry entry) {
+    final summaryChildren = <pw.Widget>[];
+
+    if (entry.hasSaleDiscountBreakdown) {
+      summaryChildren.addAll([
+        _buildTotalRow('Gross Subtotal:', entry.grossSubtotal!),
+        if ((entry.itemDiscountsTotal ?? 0) > 0)
+          _buildTotalRow('Item Discount:', entry.itemDiscountsTotal!),
+        if ((entry.overallDiscount ?? 0) > 0)
+          _buildTotalRow('Overall Discount:', entry.overallDiscount!),
+        pw.Divider(color: PdfColor.fromHex('#1B4332')),
+        _buildTotalRow('Net Payable:', entry.netPayable, bold: true),
+      ]);
+    } else {
+      summaryChildren.add(_buildTotalRow('Total Amount:', entry.total, bold: true));
+    }
+
+    summaryChildren.addAll([
+      pw.Divider(color: PdfColor.fromHex('#1B4332')),
+      _buildTotalRow('Paid:', entry.paid),
+      pw.Divider(color: PdfColor.fromHex('#1B4332')),
+      _buildTotalRow(
+        'Outstanding:',
+        entry.outstanding,
+        bold: true,
+        highlight: entry.outstanding > 0,
+      ),
+      pw.SizedBox(height: 5),
+      pw.Text(
+        'Status: ${entry.status.displayName}',
+        style: pw.TextStyle(
+          fontSize: 10,
+          fontWeight: pw.FontWeight.bold,
+          color: entry.status == PaymentStatus.paid
+              ? PdfColor.fromHex('#28A745')
+              : entry.status == PaymentStatus.partial
+                  ? PdfColor.fromHex('#FFA500')
+                  : PdfColor.fromHex('#DC3545'),
+        ),
+      ),
+    ]);
+
     return pw.Row(
       mainAxisAlignment: pw.MainAxisAlignment.end,
       children: [
@@ -546,35 +588,34 @@ class PdfGenerator {
           ),
           child: pw.Column(
             crossAxisAlignment: pw.CrossAxisAlignment.start,
-            children: [
-              _buildTotalRow('Total Amount:', entry.total, bold: true),
-              pw.Divider(color: PdfColor.fromHex('#1B4332')),
-              _buildTotalRow('Paid:', entry.paid),
-              pw.Divider(color: PdfColor.fromHex('#1B4332')),
-              _buildTotalRow(
-                'Outstanding:',
-                entry.outstanding,
-                bold: true,
-                highlight: entry.outstanding > 0,
-              ),
-              pw.SizedBox(height: 5),
-              pw.Text(
-                'Status: ${entry.status.displayName}',
-                style: pw.TextStyle(
-                  fontSize: 10,
-                  fontWeight: pw.FontWeight.bold,
-                  color: entry.status == PaymentStatus.paid
-                      ? PdfColor.fromHex('#28A745')
-                      : entry.status == PaymentStatus.partial
-                          ? PdfColor.fromHex('#FFA500')
-                          : PdfColor.fromHex('#DC3545'),
-                ),
-              ),
-            ],
+            children: summaryChildren,
           ),
         ),
       ],
     );
+  }
+
+  static String _formatSaleDiscountDetail({
+    required double grossSubtotal,
+    required double itemDiscountsTotal,
+    required double overallDiscount,
+    required double netPayable,
+  }) {
+    final parts = <String>[
+      'Subtotal: Rs ${_currencyFormat.format(grossSubtotal)}',
+    ];
+    if (itemDiscountsTotal > 0) {
+      parts.add(
+        'Item Disc: Rs ${_currencyFormat.format(itemDiscountsTotal)}',
+      );
+    }
+    if (overallDiscount > 0) {
+      parts.add(
+        'Overall Disc: Rs ${_currencyFormat.format(overallDiscount)}',
+      );
+    }
+    parts.add('Net: Rs ${_currencyFormat.format(netPayable)}');
+    return parts.join(' · ');
   }
 
   static pw.Widget _buildTotalRow(
@@ -786,6 +827,61 @@ class PdfGenerator {
   }
 
   static pw.Widget _buildLedgerTable(List<LedgerEntry> entries) {
+    final tableRows = <pw.TableRow>[
+      pw.TableRow(
+        decoration: pw.BoxDecoration(
+          color: PdfColor.fromHex('#F7F9F4'),
+        ),
+        children: [
+          _buildTableHeader('Invoice'),
+          _buildTableHeader('Date'),
+          _buildTableHeader('Stakeholder'),
+          _buildTableHeader('Items'),
+          _buildTableHeader('Total'),
+          _buildTableHeader('Paid'),
+          _buildTableHeader('Status'),
+        ],
+      ),
+    ];
+
+    for (final entry in entries) {
+      tableRows.add(
+        pw.TableRow(
+          children: [
+            _buildTableCell(entry.invoiceNumber),
+            _buildTableCell(_dateFormat.format(entry.date)),
+            _buildStakeholderCell(entry),
+            _buildTableCell('${entry.items.length}'),
+            _buildTableCell('Rs ${_currencyFormat.format(entry.total)}'),
+            _buildTableCell('Rs ${_currencyFormat.format(entry.paid)}'),
+            _buildTableCell(entry.status.displayName),
+          ],
+        ),
+      );
+      if (entry.hasSaleDiscountBreakdown) {
+        tableRows.add(
+          pw.TableRow(
+            children: [
+              _buildTableCell(''),
+              _buildTableCell(''),
+              _buildTableCell(''),
+              _buildTableCell(
+                _formatSaleDiscountDetail(
+                  grossSubtotal: entry.grossSubtotal!,
+                  itemDiscountsTotal: entry.itemDiscountsTotal ?? 0,
+                  overallDiscount: entry.overallDiscount ?? 0,
+                  netPayable: entry.netPayable,
+                ),
+              ),
+              _buildTableCell(''),
+              _buildTableCell(''),
+              _buildTableCell(''),
+            ],
+          ),
+        );
+      }
+    }
+
     return pw.Table(
       border: pw.TableBorder.all(color: PdfColor.fromHex('#E0E0E0')),
       columnWidths: {
@@ -797,35 +893,7 @@ class PdfGenerator {
         5: const pw.FlexColumnWidth(1.5),
         6: const pw.FlexColumnWidth(1.5),
       },
-      children: [
-        pw.TableRow(
-          decoration: pw.BoxDecoration(
-            color: PdfColor.fromHex('#F7F9F4'),
-          ),
-          children: [
-            _buildTableHeader('Invoice'),
-            _buildTableHeader('Date'),
-            _buildTableHeader('Stakeholder'),
-            _buildTableHeader('Items'),
-            _buildTableHeader('Total'),
-            _buildTableHeader('Paid'),
-            _buildTableHeader('Status'),
-          ],
-        ),
-        ...entries.map(
-          (entry) => pw.TableRow(
-            children: [
-              _buildTableCell(entry.invoiceNumber),
-              _buildTableCell(_dateFormat.format(entry.date)),
-              _buildStakeholderCell(entry),
-              _buildTableCell('${entry.items.length}'),
-              _buildTableCell('Rs ${_currencyFormat.format(entry.total)}'),
-              _buildTableCell('Rs ${_currencyFormat.format(entry.paid)}'),
-              _buildTableCell(entry.status.displayName),
-            ],
-          ),
-        ),
-      ],
+      children: tableRows,
     );
   }
 
@@ -1082,11 +1150,12 @@ class PdfGenerator {
     return pw.Table(
       border: pw.TableBorder.all(color: PdfColor.fromHex('#E0E0E0')),
       columnWidths: {
-        0: const pw.FlexColumnWidth(1.5),
-        1: const pw.FlexColumnWidth(1.5),
-        2: const pw.FlexColumnWidth(2),
+        0: const pw.FlexColumnWidth(1.2),
+        1: const pw.FlexColumnWidth(2.2),
+        2: const pw.FlexColumnWidth(1.2),
         3: const pw.FlexColumnWidth(1.5),
-        4: const pw.FlexColumnWidth(1.5),
+        4: const pw.FlexColumnWidth(1.2),
+        5: const pw.FlexColumnWidth(1.2),
       },
       children: [
         pw.TableRow(
@@ -1095,6 +1164,7 @@ class PdfGenerator {
           ),
           children: [
             _buildTableHeader('Receipt'),
+            _buildTableHeader('Description'),
             _buildTableHeader('Invoice Linked'),
             _buildTableHeader('Stakeholder'),
             _buildTableHeader('Amount'),
@@ -1102,22 +1172,29 @@ class PdfGenerator {
           ],
         ),
         ...entries.map(
-          (entry) => pw.TableRow(
-            children: [
-              _buildTableCell(entry.paymentId),
-              _buildTableCell(entry.invoiceNumber ?? 'Advance Collection'),
-              _buildTableCell(
-                entry.kisaanName != null
-                    ? '${entry.zamindarName}\n${entry.kisaanName}'
-                    : entry.zamindarName,
-              ),
-              _buildTableCell(
-                'Rs ${_currencyFormat.format(entry.amountPaid)}',
-                bold: true,
-              ),
-              _buildTableCell(entry.paymentMethod),
-            ],
-          ),
+          (entry) {
+            final description = entry.invoiceNumber != null &&
+                    entry.invoiceNumber!.trim().isNotEmpty
+                ? formatBillPaymentDescription(entry.invoiceNumber)
+                : entry.itemsSummary;
+            return pw.TableRow(
+              children: [
+                _buildTableCell(entry.paymentId),
+                _buildTableCell(description),
+                _buildTableCell(entry.invoiceNumber ?? 'Advance Collection'),
+                _buildTableCell(
+                  entry.kisaanName != null
+                      ? '${entry.zamindarName}\n${entry.kisaanName}'
+                      : entry.zamindarName,
+                ),
+                _buildTableCell(
+                  'Rs ${_currencyFormat.format(entry.amountPaid)}',
+                  bold: true,
+                ),
+                _buildTableCell(entry.paymentMethod),
+              ],
+            );
+          },
         ),
       ],
     );
@@ -1367,6 +1444,284 @@ class PdfGenerator {
     );
   }
 
+  // ===== BILL SETTLEMENT RECEIPT =====
+
+  static String formatBillPaymentDescription(String? invoiceNumber) {
+    final trimmed = (invoiceNumber ?? '').trim();
+    return trimmed.isEmpty ? 'Bill Payment' : 'Bill Payment for $trimmed';
+  }
+
+  static String formatBillPaymentDescriptionForInvoices(
+    List<String> invoiceNumbers,
+  ) {
+    final unique = invoiceNumbers
+        .map((invoice) => invoice.trim())
+        .where((invoice) => invoice.isNotEmpty)
+        .toList();
+    if (unique.isEmpty) return 'Bill Payment';
+    return 'Bill Payment for ${unique.join(', ')}';
+  }
+
+  static Future<pw.Document> generateBillSettlementReceiptPdf({
+    String? shopName,
+    required String zamindarName,
+    required String kisaanName,
+    required int amount,
+    required List<String> invoiceNumbers,
+    required List<BillSettlementInvoiceSummary> invoiceSummaries,
+    required DateTime date,
+    String? paymentMethod,
+  }) async {
+    final pdf = pw.Document();
+    final resolvedShopName =
+        (shopName == null || shopName.trim().isEmpty)
+            ? await ShopSettings.getShopName()
+            : shopName.trim();
+    final shopPhone = await ShopSettings.getShopPhone();
+    final shopAddress = await ShopSettings.getShopAddress();
+    final showThumb =
+        await ShopSettings.getShowThumbprintBlockOnThermal();
+    final summaries = invoiceSummaries.isNotEmpty
+        ? invoiceSummaries
+        : invoiceNumbers
+            .map(
+              (invoice) => BillSettlementInvoiceSummary(
+                invoiceNumber: invoice,
+                cashPaidNow: invoiceNumbers.length == 1 ? amount.toDouble() : 0,
+                totalPaidCash: 0,
+                remainingBalance: 0,
+                invoiceTotal: 0,
+              ),
+            )
+            .toList();
+    final invoiceBlockMm = 46.0;
+    final baseHeightMm = showThumb ? 188.0 : 138.0;
+    final pageHeightMm =
+        baseHeightMm + summaries.length * invoiceBlockMm + (showThumb ? 40.0 : 0);
+    final invoiceLabel = formatBillPaymentDescriptionForInvoices(invoiceNumbers);
+    final method = (paymentMethod ?? 'Cash').trim();
+
+    pdf.addPage(
+      pw.Page(
+        pageFormat: PdfPageFormat(
+          80 * PdfPageFormat.mm,
+          pageHeightMm * PdfPageFormat.mm,
+        ),
+        build: (pw.Context context) {
+          return pw.Container(
+            padding: const pw.EdgeInsets.all(10),
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.center,
+              children: [
+                pw.Center(
+                  child: _buildBrandBlock(
+                    shopName: resolvedShopName,
+                    shopPhone: shopPhone,
+                    shopAddress: shopAddress,
+                    brandSize: 10,
+                    shopTitleSize: 13,
+                    contactSize: 8,
+                    brandColor: PdfColors.black,
+                    shopColor: PdfColors.black,
+                    contactColor: PdfColors.grey800,
+                    align: pw.CrossAxisAlignment.center,
+                  ),
+                ),
+                pw.SizedBox(height: 5),
+                pw.Container(
+                  width: double.infinity,
+                  height: 1,
+                  color: PdfColors.grey600,
+                ),
+                pw.SizedBox(height: 10),
+                pw.Text(
+                  'BILL SETTLEMENT RECEIPT',
+                  style: pw.TextStyle(
+                    fontSize: 12,
+                    fontWeight: pw.FontWeight.bold,
+                  ),
+                  textAlign: pw.TextAlign.center,
+                ),
+                pw.SizedBox(height: 15),
+                _buildReceiptRow('Date:', _dateFormat.format(date)),
+                _buildReceiptRow('Time:', _timeFormat.format(date)),
+                pw.SizedBox(height: 10),
+                pw.Container(
+                  width: double.infinity,
+                  height: 0.5,
+                  color: PdfColors.grey400,
+                ),
+                pw.SizedBox(height: 10),
+                _buildReceiptRow(
+                  'Received From:',
+                  _pdfSafeText(zamindarName),
+                ),
+                pw.SizedBox(height: 6),
+                _buildReceiptRow(
+                  'Kisaan Account:',
+                  _pdfSafeText(kisaanName),
+                ),
+                pw.SizedBox(height: 6),
+                _buildReceiptRow('Payment Method:', _pdfSafeText(method)),
+                pw.SizedBox(height: 6),
+                _buildReceiptRow('Description:', _pdfSafeText(invoiceLabel)),
+                pw.SizedBox(height: 12),
+                pw.Container(
+                  width: double.infinity,
+                  padding: const pw.EdgeInsets.symmetric(
+                    vertical: 8,
+                    horizontal: 10,
+                  ),
+                  decoration: pw.BoxDecoration(
+                    color: PdfColor.fromHex('#E8F4EA'),
+                    borderRadius: const pw.BorderRadius.all(pw.Radius.circular(4)),
+                  ),
+                  child: pw.Row(
+                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                    children: [
+                      pw.Text(
+                        'Cash Paid Now',
+                        style: pw.TextStyle(
+                          fontSize: 11,
+                          fontWeight: pw.FontWeight.bold,
+                        ),
+                      ),
+                      pw.Text(
+                        'Rs ${_currencyFormat.format(amount)}',
+                        style: pw.TextStyle(
+                          fontSize: 14,
+                          fontWeight: pw.FontWeight.bold,
+                          color: PdfColor.fromHex('#27500A'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                pw.SizedBox(height: 12),
+                ...summaries.expand((summary) {
+                  return [
+                    pw.Container(
+                      width: double.infinity,
+                      padding: const pw.EdgeInsets.all(8),
+                      decoration: pw.BoxDecoration(
+                        border: pw.Border.all(
+                          color: PdfColor.fromHex('#D8E6DA'),
+                        ),
+                        borderRadius:
+                            const pw.BorderRadius.all(pw.Radius.circular(4)),
+                      ),
+                      child: pw.Column(
+                        crossAxisAlignment: pw.CrossAxisAlignment.start,
+                        children: [
+                          pw.Text(
+                            'Invoice: ${_pdfSafeText(summary.invoiceNumber)}',
+                            style: pw.TextStyle(
+                              fontSize: 9,
+                              fontWeight: pw.FontWeight.bold,
+                            ),
+                          ),
+                          pw.SizedBox(height: 6),
+                          _buildReceiptRow(
+                            'Cash Paid Now:',
+                            'Rs ${_currencyFormat.format(summary.cashPaidNow.round())}',
+                          ),
+                          _buildReceiptRow(
+                            'Total Paid Cash:',
+                            'Rs ${_currencyFormat.format(summary.totalPaidCash.round())}',
+                          ),
+                          _buildReceiptRow(
+                            'Remaining Balance:',
+                            'Rs ${_currencyFormat.format(summary.remainingBalance.round())}',
+                          ),
+                        ],
+                      ),
+                    ),
+                    pw.SizedBox(height: 8),
+                  ];
+                }),
+                if (showThumb) ...[
+                  pw.SizedBox(height: 8),
+                  pw.Text(
+                    'Received with thanks',
+                    style: const pw.TextStyle(fontSize: 9),
+                  ),
+                  pw.SizedBox(height: 24),
+                  pw.Container(
+                    width: 80,
+                    height: 0.5,
+                    color: PdfColors.grey600,
+                  ),
+                  pw.SizedBox(height: 4),
+                  pw.Text(
+                    'Thumb Impression',
+                    style: const pw.TextStyle(fontSize: 8),
+                  ),
+                ],
+              ],
+            ),
+          );
+        },
+      ),
+    );
+
+    return pdf;
+  }
+
+  static Future<File> saveBillSettlementReceiptToDocuments({
+    String? shopName,
+    required String zamindarName,
+    required String kisaanName,
+    required int amount,
+    required List<String> invoiceNumbers,
+    required List<BillSettlementInvoiceSummary> invoiceSummaries,
+    required DateTime date,
+    String? paymentMethod,
+  }) async {
+    final pdf = await generateBillSettlementReceiptPdf(
+      shopName: shopName,
+      zamindarName: zamindarName,
+      kisaanName: kisaanName,
+      amount: amount,
+      invoiceNumbers: invoiceNumbers,
+      invoiceSummaries: invoiceSummaries,
+      date: date,
+      paymentMethod: paymentMethod,
+    );
+    final bytes = await pdf.save();
+    final fileName = buildExportFileName(
+      prefix: 'agrikhata_settlement',
+      subject: zamindarName,
+      seasonLabel: _dateFormat.format(date),
+    );
+    return _writePdfBytes(bytes: bytes, fileName: fileName);
+  }
+
+  static Future<void> printBillSettlementReceipt({
+    String? shopName,
+    required String zamindarName,
+    required String kisaanName,
+    required int amount,
+    required List<String> invoiceNumbers,
+    required List<BillSettlementInvoiceSummary> invoiceSummaries,
+    required DateTime date,
+    String? paymentMethod,
+  }) async {
+    final resolvedShopName = shopName ?? await ShopSettings.getShopName();
+    final pdf = await generateBillSettlementReceiptPdf(
+      shopName: resolvedShopName,
+      zamindarName: zamindarName,
+      kisaanName: kisaanName,
+      amount: amount,
+      invoiceNumbers: invoiceNumbers,
+      invoiceSummaries: invoiceSummaries,
+      date: date,
+      paymentMethod: paymentMethod,
+    );
+    await Printing.layoutPdf(
+      onLayout: (PdfPageFormat format) async => pdf.save(),
+    );
+  }
+
   // ===== SALES-INVOICE ZAMINDAR LEDGER =====
 
   static Future<pw.Document> generateZamindarLedgerPdf({
@@ -1544,11 +1899,18 @@ class PdfGenerator {
             _buildTableHeader('Remaining'),
           ],
         ),
-        ...rows.map((row) {
+        ...rows.expand((row) {
           final total = (row['total'] as num?)?.toDouble() ?? 0;
           final paid = (row['paid'] as num?)?.toDouble() ?? 0;
           final remaining = (row['remaining'] as num?)?.toDouble() ?? 0;
-          return pw.TableRow(
+          final subtotal = (row['subtotal'] as num?)?.toDouble() ?? total;
+          final itemDiscountsTotal =
+              (row['item_discounts_total'] as num?)?.toDouble() ?? 0;
+          final overallDiscount =
+              (row['overall_discount'] as num?)?.toDouble() ?? 0;
+          final hasDiscountDetail = subtotal > 0;
+
+          final mainRow = pw.TableRow(
             children: [
               _buildTableCell(row['invoice_number']?.toString() ?? '-'),
               _buildTableCell(_formatDateTimeValue(row['date_time'])),
@@ -1562,6 +1924,33 @@ class PdfGenerator {
               _buildTableCell(_formatMoney(remaining)),
             ],
           );
+
+          if (!hasDiscountDetail) return [mainRow];
+
+          return [
+            mainRow,
+            pw.TableRow(
+              children: [
+                _buildTableCell(''),
+                _buildTableCell(''),
+                _buildTableCell(''),
+                _buildTableCell(
+                  _formatSaleDiscountDetail(
+                    grossSubtotal: subtotal,
+                    itemDiscountsTotal: itemDiscountsTotal,
+                    overallDiscount: overallDiscount,
+                    netPayable: total,
+                  ),
+                ),
+                _buildTableCell(''),
+                _buildTableCell(''),
+                _buildTableCell(''),
+                _buildTableCell(''),
+                _buildTableCell(''),
+                _buildTableCell(''),
+              ],
+            ),
+          ];
         }),
         pw.TableRow(
           decoration: pw.BoxDecoration(
@@ -1725,7 +2114,7 @@ class PdfGenerator {
                       _buildTableHeader('Amount'),
                     ],
                   ),
-                  ...transactions.map((row) {
+                  ...transactions.expand((row) {
                     final type = row['type'] as String? ?? '';
                     final amount =
                         (row['amount'] as num?)?.toDouble() ?? 0.0;
@@ -1743,7 +2132,23 @@ class PdfGenerator {
                     final dateLabel = parsed != null
                         ? _dateFormat.format(parsed)
                         : dateRaw;
-                    return pw.TableRow(
+
+                    final isSaleDebit =
+                        category == 'SALE' && type == 'DEBIT';
+                    final grossSubtotal =
+                        (row[SaleJoinColumns.subtotal] as num?)?.toDouble();
+                    final itemDiscountsTotal =
+                        (row[SaleJoinColumns.itemDiscountsTotal] as num?)
+                                ?.toDouble() ??
+                            0;
+                    final overallDiscount =
+                        (row[SaleJoinColumns.overallDiscount] as num?)
+                                ?.toDouble() ??
+                            0;
+                    final hasDiscountDetail =
+                        isSaleDebit && grossSubtotal != null;
+
+                    final mainRow = pw.TableRow(
                       children: [
                         _buildTableCell(dateLabel),
                         _buildTableCell(
@@ -1758,6 +2163,31 @@ class PdfGenerator {
                         ),
                       ],
                     );
+
+                    if (!hasDiscountDetail) return [mainRow];
+
+                    final saleSubtotal = grossSubtotal ?? 0;
+
+                    return [
+                      mainRow,
+                      pw.TableRow(
+                        children: [
+                          _buildTableCell(''),
+                          _buildTableCell(''),
+                          _buildTableCell(
+                            _formatSaleDiscountDetail(
+                              grossSubtotal: saleSubtotal,
+                              itemDiscountsTotal: itemDiscountsTotal,
+                              overallDiscount: overallDiscount,
+                              netPayable: amount,
+                            ),
+                          ),
+                          _buildTableCell(''),
+                          _buildTableCell(''),
+                          _buildTableCell(''),
+                        ],
+                      ),
+                    ];
                   }),
                 ],
               ),

@@ -306,7 +306,7 @@ try {
   ) async {
     final identity = await _readMsixIdentityVersion(msixPath);
     if (identity == null) return false;
-    // Identity is usually 1.0.15.0 — compare first 3 segments to expected 1.0.15
+    // Identity is usually 1.0.16.0 — compare first 3 segments to expected 1.0.16
     return !_isNewerVersion(expected, identity) &&
         !_isNewerVersion(identity, expected);
   }

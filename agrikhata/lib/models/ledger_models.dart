@@ -110,6 +110,15 @@ class LedgerEntry {
   /// Sales `transaction_type` (e.g. PRODUCT_SALE, CASH_ADVANCE).
   final String? transactionType;
 
+  /// Invoice-level gross subtotal before discounts (sales only).
+  final double? grossSubtotal;
+
+  /// Invoice-level item discounts total (sales only).
+  final double? itemDiscountsTotal;
+
+  /// Invoice-level overall discount (sales only).
+  final double? overallDiscount;
+
   /// Permanent actor snapshot from the invoice row (never a live user lookup).
   final String? createdByUserId;
   final String? createdByUserName;
@@ -130,6 +139,9 @@ class LedgerEntry {
     this.purchaseTerms,
     this.description,
     this.transactionType,
+    this.grossSubtotal,
+    this.itemDiscountsTotal,
+    this.overallDiscount,
     this.createdByUserId,
     this.createdByUserName,
     this.createdAt,
@@ -140,6 +152,14 @@ class LedgerEntry {
       transactionType == 'CASH_ADVANCE' ||
       transactionType == 'DIESEL_ADVANCE' ||
       transactionType == 'PETROL_ADVANCE';
+
+  bool get isProductSale =>
+      transactionType == null || transactionType == 'PRODUCT_SALE';
+
+  bool get hasSaleDiscountBreakdown =>
+      isProductSale && grossSubtotal != null;
+
+  double get netPayable => total;
 
   double get outstanding => total - paid;
 
@@ -336,4 +356,48 @@ class PaymentSummary {
     totalAdvanceCollected: 0,
     totalWalletDeductions: 0,
   );
+}
+
+class BillSettlementInvoiceSummary {
+  final String invoiceNumber;
+  final double cashPaidNow;
+  final double totalPaidCash;
+  final double remainingBalance;
+  final double invoiceTotal;
+
+  const BillSettlementInvoiceSummary({
+    required this.invoiceNumber,
+    required this.cashPaidNow,
+    required this.totalPaidCash,
+    required this.remainingBalance,
+    required this.invoiceTotal,
+  });
+}
+
+class BillSettlementResult {
+  final int zamindarId;
+  final String zamindarName;
+  final int? kisaanId;
+  final String kisaanName;
+  final double amountPaid;
+  final List<String> invoiceNumbers;
+  final String? paymentId;
+  final DateTime dateTime;
+  final String description;
+  final String paymentMethod;
+  final List<BillSettlementInvoiceSummary> invoiceSummaries;
+
+  const BillSettlementResult({
+    required this.zamindarId,
+    required this.zamindarName,
+    this.kisaanId,
+    required this.kisaanName,
+    required this.amountPaid,
+    required this.invoiceNumbers,
+    this.paymentId,
+    required this.dateTime,
+    required this.description,
+    required this.paymentMethod,
+    required this.invoiceSummaries,
+  });
 }

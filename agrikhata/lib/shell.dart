@@ -10,8 +10,8 @@ import 'package:agrikhata/screens/purchase_screen.dart';
 import 'package:agrikhata/screens/reports_screen.dart';
 import 'package:agrikhata/screens/settings_screen.dart';
 import 'package:agrikhata/screens/partners/partner_management_screen.dart';
-import 'package:agrikhata/screens/partners/partners_screen.dart';
 import 'package:agrikhata/screens/users/users_screen.dart';
+import 'package:agrikhata/Widgets/sales/pos_confirm_dialog.dart';
 import 'package:agrikhata/screens/wholesalers_screen.dart';
 import 'package:agrikhata/screens/zamindar_directory.dart';
 import 'package:agrikhata/screens/zamindar_profile_screen.dart';
@@ -44,7 +44,11 @@ class _ShellState extends State<Shell> {
   String? _editInvoiceNumber; // For edit mode
   /// Sidebar index to restore after edit save/cancel (e.g. Zamindar Ledger / Main Ledger).
   int? _editReturnIndex;
-  int _ledgerRefreshToken = 0; // For forcing ledger refresh
+  int _ledgerRefreshToken = 0; // For forcing main ledger refresh
+  int _zamindarLedgerRefreshToken =
+      0; // For forcing zamindar profile ledger refresh
+  int _pendingZamindarLedgerNav =
+      0; // Invalidates stale async dashboard navigations
   String _appVersion = '';
   String _shopName = ShopSettings.defaultShopName;
 
@@ -82,26 +86,85 @@ class _ShellState extends State<Shell> {
     }
   }
 
-  void _selectNavIndex(int index) {
+  void _onShopNameChanged(String name) => setState(() => _shopName = name);
+
+  void _invalidatePendingZamindarLedgerNav() => _pendingZamindarLedgerNav++;
+
+  void _repairZamindarState() {
+    if (_zamindarView == ZamindarView.profile && _selectedZamindar == null) {
+      _zamindarView = ZamindarView.directory;
+      _profileInitialTabIndex = null;
+    }
+  }
+
+  ZamindarView get _effectiveZamindarView {
+    if (_zamindarView == ZamindarView.profile && _selectedZamindar == null) {
+      return ZamindarView.directory;
+    }
+    return _zamindarView;
+  }
+
+  void _clearSaleNavState() {
+    _editInvoiceNumber = null;
+    _editReturnIndex = null;
+    _preSelectedZamindarIdForSale = null;
+    _preSelectedKisaanIdForSale = null;
+  }
+
+  Future<bool> _confirmAbandonEdit() {
+    return PosConfirmDialog.ask(
+      context: context,
+      title: 'Discard invoice edit?',
+      message:
+          'Leave edit mode and lose unsaved changes to this invoice?\n\n'
+          'Press Enter for Yes, Esc for No.',
+      yesLabel: 'Yes — Discard (Enter)',
+      noLabel: 'No — Keep Editing (Esc)',
+      danger: true,
+    );
+  }
+
+  Future<void> _selectNavIndex(int index) async {
     if (!RolePermissions.canAccessIndex(_role, index)) {
+      _invalidatePendingZamindarLedgerNav();
       setState(() {
         _selectedIndex = RolePermissions.fallbackIndex(_role);
       });
       return;
     }
+
+    final reTappingNewSaleWhileEditing =
+        _editInvoiceNumber != null && index == 2 && _selectedIndex == 2;
+    final leavingEditSession =
+        _editInvoiceNumber != null && index != _selectedIndex;
+
+    if (reTappingNewSaleWhileEditing || leavingEditSession) {
+      final confirmed = await _confirmAbandonEdit();
+      if (!confirmed || !mounted) return;
+    }
+
+    _invalidatePendingZamindarLedgerNav();
+    final previousIndex = _selectedIndex;
     setState(() {
+      if (reTappingNewSaleWhileEditing || leavingEditSession) {
+        _clearSaleNavState();
+      } else {
+        if (previousIndex == 2 && index != 2) {
+          _preSelectedZamindarIdForSale = null;
+          _preSelectedKisaanIdForSale = null;
+        }
+        if (index == 2 && _editInvoiceNumber == null) {
+          _preSelectedZamindarIdForSale = null;
+          _preSelectedKisaanIdForSale = null;
+        }
+      }
+
       _selectedIndex = index;
-      if (index == 1) {
+      if (index == 1 && previousIndex != 1) {
         _zamindarView = ZamindarView.directory;
         _profileInitialTabIndex = null;
       }
-      // Clear edit mode when manually navigating away from an edit session
-      if (index == 2 || _editInvoiceNumber != null) {
-        _editInvoiceNumber = null;
-        _editReturnIndex = null;
-        _preSelectedZamindarIdForSale = null;
-        _preSelectedKisaanIdForSale = null;
-      }
+      _repairZamindarState();
     });
   }
 
@@ -122,49 +185,48 @@ class _ShellState extends State<Shell> {
   }
 
   void _navigateToSaleWithZamindar(int zamindarId, {int? kisaanId}) {
+    _invalidatePendingZamindarLedgerNav();
     setState(() {
       _preSelectedZamindarIdForSale = zamindarId;
       _preSelectedKisaanIdForSale = kisaanId;
-      _editInvoiceNumber =
-          null; // Clear edit mode when navigating from zamindar
+      _editInvoiceNumber = null;
       _editReturnIndex = null;
-      _selectedIndex = 2; // Navigate to New Sale screen
+      _selectedIndex = 2;
     });
   }
 
   void _navigateToEditInvoice(String invoiceNumber) {
+    _invalidatePendingZamindarLedgerNav();
     setState(() {
       _editReturnIndex = _selectedIndex;
       _editInvoiceNumber = invoiceNumber;
-      _preSelectedZamindarIdForSale = null; // Clear pre-selection
+      _preSelectedZamindarIdForSale = null;
       _preSelectedKisaanIdForSale = null;
-      _selectedIndex = 2; // Navigate to New Sale screen in edit mode
-      _ledgerRefreshToken++; // Increment to trigger refresh when coming back
+      _selectedIndex = 2;
     });
   }
 
   void _clearEditState() {
-    print('🧹 Shell: Clearing edit state (was: $_editInvoiceNumber)');
     setState(() {
       final returnIndex = _editReturnIndex;
       _editInvoiceNumber = null;
       _preSelectedZamindarIdForSale = null;
       _preSelectedKisaanIdForSale = null;
       _editReturnIndex = null;
-      // Return to the screen where Edit was clicked (after save or discard).
       if (returnIndex != null) {
         _selectedIndex = returnIndex;
-        // Avoid resetting Zamindar profile → directory when returning to Zamindars.
         if (returnIndex == 1) {
+          _zamindarLedgerRefreshToken++;
+        } else if (returnIndex == 6) {
           _ledgerRefreshToken++;
         }
       }
+      _repairZamindarState();
     });
-    print('🧹 Shell: Edit state cleared (now: $_editInvoiceNumber)');
   }
 
   Widget _buildZamindarsScreen() {
-    switch (_zamindarView) {
+    switch (_effectiveZamindarView) {
       case ZamindarView.add:
         return AddZamindarScreen(
           zamindar: _selectedZamindar,
@@ -184,21 +246,10 @@ class _ShellState extends State<Shell> {
           }),
         );
       case ZamindarView.profile:
-        final selected = _selectedZamindar;
-        if (selected == null) {
-          return ZamindarDirectoryScreen(
-            key: ValueKey(_directoryRefreshToken),
-            onAddZamindar: () =>
-                setState(() => _zamindarView = ZamindarView.add),
-            onZamindarTap: (zamindar) => setState(() {
-              _selectedZamindar = zamindar;
-              _zamindarView = ZamindarView.profile;
-            }),
-          );
-        }
+        final selected = _selectedZamindar!;
         return ZamindarProfileScreen(
           key: ValueKey(
-            'profile-${selected.id}-tab-${_profileInitialTabIndex ?? 0}',
+            'profile-${selected.id}-tab-${_profileInitialTabIndex ?? 0}-zledger-$_zamindarLedgerRefreshToken',
           ),
           zamindar: selected,
           initialTabIndex: _profileInitialTabIndex,
@@ -244,35 +295,39 @@ class _ShellState extends State<Shell> {
     setState(() {
       _selectedZamindar = null;
       _zamindarView = ZamindarView.directory;
-      _editInvoiceNumber = null;
-      _editReturnIndex = null;
-      _preSelectedZamindarIdForSale = null;
-      _preSelectedKisaanIdForSale = null;
+      _profileInitialTabIndex = null;
+      _clearSaleNavState();
       _directoryRefreshToken++;
       _ledgerRefreshToken++;
+      _zamindarLedgerRefreshToken++;
+      _guardSelectedIndex();
     });
   }
 
   void _navigateToNewSaleFromDashboard() {
-    _selectNavIndex(2);
-    if (_selectedIndex == 2) {
-      setState(() {
-        _editInvoiceNumber = null;
-        _editReturnIndex = null;
-        _preSelectedZamindarIdForSale = null;
-        _preSelectedKisaanIdForSale = null;
-      });
+    if (!RolePermissions.canAccessIndex(_role, 2)) {
+      setState(() => _selectedIndex = RolePermissions.fallbackIndex(_role));
+      return;
     }
+    _invalidatePendingZamindarLedgerNav();
+    setState(() {
+      _selectedIndex = 2;
+      _clearSaleNavState();
+    });
   }
 
   void _navigateToAddZamindarFromDashboard() {
-    _selectNavIndex(1);
-    if (_selectedIndex == 1) {
-      setState(() {
-        _selectedZamindar = null;
-        _zamindarView = ZamindarView.add;
-      });
+    if (!RolePermissions.canAccessIndex(_role, 1)) {
+      setState(() => _selectedIndex = RolePermissions.fallbackIndex(_role));
+      return;
     }
+    _invalidatePendingZamindarLedgerNav();
+    setState(() {
+      _selectedIndex = 1;
+      _selectedZamindar = null;
+      _zamindarView = ZamindarView.add;
+      _profileInitialTabIndex = null;
+    });
   }
 
   void _navigateToWholesalersFromDashboard() {
@@ -280,23 +335,23 @@ class _ShellState extends State<Shell> {
   }
 
   Future<void> _navigateToZamindarLedgerFromDashboard(int zamindarId) async {
+    final navId = ++_pendingZamindarLedgerNav;
     try {
       final zamindar = await DatabaseHelper.instance.getZamindar(zamindarId);
-      if (!mounted) return;
-      if (zamindar == null ||
-          !RolePermissions.canAccessIndex(_role, 1)) {
-        _selectNavIndex(1);
+      if (!mounted || navId != _pendingZamindarLedgerNav) return;
+      if (zamindar == null || !RolePermissions.canAccessIndex(_role, 1)) {
+        await _selectNavIndex(1);
         return;
       }
       setState(() {
         _selectedIndex = 1;
         _selectedZamindar = zamindar;
-        _profileInitialTabIndex = 2; // Ledger tab
+        _profileInitialTabIndex = 2;
         _zamindarView = ZamindarView.profile;
       });
     } catch (_) {
-      if (!mounted) return;
-      _selectNavIndex(1);
+      if (!mounted || navId != _pendingZamindarLedgerNav) return;
+      await _selectNavIndex(1);
     }
   }
 
@@ -321,9 +376,7 @@ class _ShellState extends State<Shell> {
     const PurchaseScreen(),
     const WholesalersScreen(),
     MainLedgerScreen(
-      key: ValueKey(
-        'ledger-$_ledgerRefreshToken',
-      ), // Refresh when token changes
+      key: ValueKey('ledger-$_ledgerRefreshToken'),
       onEditInvoice: _navigateToEditInvoice,
     ),
     const ExpenseScreen(),
@@ -332,7 +385,7 @@ class _ShellState extends State<Shell> {
     const PartnerManagementScreen(),
     SettingsScreen(
       onDataReset: _handleApplicationDataReset,
-      onShopNameChanged: (name) => setState(() => _shopName = name),
+      onShopNameChanged: _onShopNameChanged,
     ),
   ];
 
@@ -390,9 +443,7 @@ class _ShellState extends State<Shell> {
                         padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            ..._buildNavSections(),
-                          ],
+                          children: [..._buildNavSections()],
                         ),
                       ),
                     ),
@@ -526,6 +577,7 @@ class _ShellState extends State<Shell> {
     return Padding(
       padding: const EdgeInsets.only(bottom: 3),
       child: _SidebarNavItem(
+        key: ValueKey(index),
         icon: icon,
         label: label,
         isSelected: isSelected,
@@ -664,6 +716,7 @@ class _SidebarNavItem extends StatefulWidget {
   final VoidCallback onTap;
 
   const _SidebarNavItem({
+    super.key,
     required this.icon,
     required this.label,
     required this.isSelected,
@@ -678,18 +731,41 @@ class _SidebarNavItemState extends State<_SidebarNavItem> {
   bool _hovered = false;
 
   @override
+  void didUpdateWidget(covariant _SidebarNavItem oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Hover offset/scale must not linger into the selected state.
+    if (widget.isSelected && _hovered) {
+      _hovered = false;
+    }
+  }
+
+  void _handleTap() {
+    if (_hovered) setState(() => _hovered = false);
+    widget.onTap();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final isSelected = widget.isSelected;
     final showHover = _hovered && !isSelected;
+    // Snap into selected styling; animate only for idle ↔ hover transitions.
+    final animDuration = isSelected
+        ? Duration.zero
+        : const Duration(milliseconds: 180);
+    final scaleDuration = isSelected
+        ? Duration.zero
+        : const Duration(milliseconds: 220);
 
     return MouseRegion(
-      onEnter: (_) => setState(() => _hovered = true),
+      onEnter: (_) {
+        if (!isSelected) setState(() => _hovered = true);
+      },
       onExit: (_) => setState(() => _hovered = false),
       cursor: SystemMouseCursors.click,
       child: GestureDetector(
-        onTap: widget.onTap,
+        onTap: _handleTap,
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
+          duration: animDuration,
           curve: Curves.easeOut,
           transform: Matrix4.translationValues(showHover ? 3.0 : 0.0, 0, 0),
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -744,7 +820,7 @@ class _SidebarNavItemState extends State<_SidebarNavItem> {
                 children: [
                   AnimatedScale(
                     scale: showHover ? 1.15 : 1.0,
-                    duration: const Duration(milliseconds: 220),
+                    duration: scaleDuration,
                     curve: Curves.easeOutBack,
                     child: Icon(
                       widget.icon,
