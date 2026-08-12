@@ -32,6 +32,8 @@ class _PartnerManagementScreenState extends State<PartnerManagementScreen> {
   List<OverheadSplitRow> _overheadRows = [];
   List<PartnerDrawingModel> _drawings = [];
   Map<String, String> _zamindarNames = {};
+  double _seasonAdjustmentsYield = 0;
+  double _discountsAbsorbed = 0;
 
   static const _headerBg = Color(0xFFEEF3EC);
   static const _headerBorder = Color(0xFFDCE6D9);
@@ -80,6 +82,8 @@ class _PartnerManagementScreenState extends State<PartnerManagementScreen> {
       final overhead = await _svc.getOverheadSplitRows();
       final drawings = await _svc.getDrawings();
       final zamindars = await DatabaseHelper.instance.getAllZamindars();
+      final adjustments =
+          await DatabaseHelper.instance.getProductSaleAdjustmentTotals();
       if (!mounted) return;
       setState(() {
         _partners = partners;
@@ -92,6 +96,8 @@ class _PartnerManagementScreenState extends State<PartnerManagementScreen> {
           for (final z in zamindars)
             if (z.id != null) z.id.toString(): z.name,
         };
+        _seasonAdjustmentsYield = adjustments['seasonalIncrements'] ?? 0;
+        _discountsAbsorbed = adjustments['totalDiscounts'] ?? 0;
         _loading = false;
         _error = null;
       });
@@ -327,6 +333,25 @@ class _PartnerManagementScreenState extends State<PartnerManagementScreen> {
           valueColor: _debtRed),
       _kpi('Unsettled Profit Pool', _pkr(unsettled), 'Available to reinvest',
           subColor: _btnBlue),
+      _kpi(
+        'Total Season Adjustments Yield',
+        _pkr(_seasonAdjustmentsYield),
+        'Seasonal increments collected on sales',
+        subColor: const Color(0xFF0C447C),
+      ),
+      _kpi(
+        'Total Discounts Absorbed',
+        _pkr(_discountsAbsorbed),
+        'Item + overall discounts conceded',
+        valueColor: const Color(0xFF28A745),
+      ),
+      _kpi(
+        'Net Partner Distributable Equity',
+        _pkr(unsettled),
+        'After seasonal yield & discounts in net profit',
+        subColor: _btnGreen,
+        boldSub: true,
+      ),
     ];
     return LayoutBuilder(
       builder: (context, c) {

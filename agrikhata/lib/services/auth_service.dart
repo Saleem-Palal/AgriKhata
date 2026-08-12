@@ -2,12 +2,15 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:googleapis_auth/auth_io.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../Database/database_helper.dart';
 import '../models/user_model.dart';
 import '../utils/shop_settings.dart';
 import 'debug_auth_config.dart';
+import 'desktop_loopback_oauth_service.dart';
+import 'google_oauth_config.dart';
 import 'session_context.dart';
 
 /// Google identity payload used during Owner onboarding.
@@ -43,6 +46,21 @@ class AuthService extends ChangeNotifier {
   bool get isDebugBypassActive => kDebugMode && _debugBypassEnabled;
 
   bool get debugBypassEnabled => _debugBypassEnabled;
+
+  /// True when Google sign-in can run via native plugin or loopback OAuth.
+  Future<bool> get isGoogleSignInAvailable async {
+    try {
+      await _ensureGoogleInitialized();
+      if (GoogleSignIn.instance.supportsAuthenticate()) {
+        return true;
+      }
+    } catch (e, st) {
+      debugPrint(
+        'AuthService: native GoogleSignIn probe failed: $e\n$st',
+      );
+    }
+    return DesktopLoopbackOAuthService.instance.isAvailable;
+  }
 
   /// Restores a persisted session if the user still exists and is active.
   /// In debug + bypass mode, ensures a mock Owner session instead.
@@ -132,17 +150,50 @@ class AuthService extends ChangeNotifier {
     }
   }
 
-  /// Attempts native Google Sign-In. On unsupported desktop platforms this
-  /// throws [UnsupportedError] so the UI can fall back to account capture.
+  /// Attempts Google Sign-In using native auth when available, otherwise
+  /// desktop loopback OAuth (`http://localhost:<port>`).
   Future<OwnerGoogleProfile> signInWithGoogle() async {
     try {
-      await _ensureGoogleInitialized();
-      if (!GoogleSignIn.instance.supportsAuthenticate()) {
-        throw UnsupportedError(
-          'Google Sign-In authenticate is not available on this platform',
-        );
-      }
-      final account = await GoogleSignIn.instance.authenticate();
+      final native = await _tryNativeGoogleSignIn();
+      if (native != null) return native;
+    } on StateError {
+      rethrow;
+    } catch (e, st) {
+      debugPrint(
+        'AuthService: native Google Sign-In unavailable, trying loopback: '
+        '$e\n$st',
+      );
+    }
+
+    try {
+      final profile =
+          await DesktopLoopbackOAuthService.instance.signInForProfile();
+      return OwnerGoogleProfile(name: profile.name, email: profile.email);
+    } on UserConsentException catch (e) {
+      throw StateError(
+        e.message.contains('cancel') || e.message.contains('denied')
+            ? 'Google sign-in was cancelled'
+            : e.message,
+      );
+    } on GoogleOAuthNotConfiguredException {
+      rethrow;
+    } on DesktopLoopbackOAuthException {
+      rethrow;
+    } catch (e, st) {
+      debugPrint('AuthService.signInWithGoogle loopback failed: $e\n$st');
+      rethrow;
+    }
+  }
+
+  Future<OwnerGoogleProfile?> _tryNativeGoogleSignIn() async {
+    await _ensureGoogleInitialized();
+    if (!GoogleSignIn.instance.supportsAuthenticate()) {
+      return null;
+    }
+    try {
+      final account = await GoogleSignIn.instance.authenticate(
+        scopeHint: DesktopLoopbackOAuthService.scopes,
+      );
       final email = account.email.trim();
       if (email.isEmpty) {
         throw StateError('Google account did not return an email');
@@ -151,28 +202,19 @@ class AuthService extends ChangeNotifier {
           ? account.displayName!.trim()
           : email.split('@').first;
       return OwnerGoogleProfile(name: name, email: email);
-    } on UnsupportedError {
-      rethrow;
     } on GoogleSignInException catch (e) {
       if (e.code == GoogleSignInExceptionCode.canceled) {
         throw StateError('Google sign-in was cancelled');
       }
-      throw UnsupportedError(
-        'Google Sign-In is not available on this platform (${e.code})',
-      );
+      debugPrint('AuthService: native GoogleSignIn failed (${e.code}): $e');
+      return null;
     } catch (e) {
       final msg = e.toString();
       if (msg.contains('cancelled') || msg.contains('canceled')) {
-        rethrow;
+        throw StateError('Google sign-in was cancelled');
       }
-      if (msg.contains('Unsupported') ||
-          msg.contains('not available') ||
-          msg.contains('MissingPluginException')) {
-        throw UnsupportedError(
-          'Google Sign-In is not available on this platform',
-        );
-      }
-      rethrow;
+      debugPrint('AuthService: native GoogleSignIn failed: $e');
+      return null;
     }
   }
 

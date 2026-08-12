@@ -45,6 +45,9 @@ class _ShellState extends State<Shell> {
   /// Sidebar index to restore after edit save/cancel (e.g. Zamindar Ledger / Main Ledger).
   int? _editReturnIndex;
   int _ledgerRefreshToken = 0; // For forcing main ledger refresh
+  int? _ledgerInitialTabIndex;
+  int _wholesalerNavToken = 0;
+  int? _pendingWholesalerId;
   int _zamindarLedgerRefreshToken =
       0; // For forcing zamindar profile ledger refresh
   int _pendingZamindarLedgerNav =
@@ -163,6 +166,12 @@ class _ShellState extends State<Shell> {
       if (index == 1 && previousIndex != 1) {
         _zamindarView = ZamindarView.directory;
         _profileInitialTabIndex = null;
+      }
+      if (index != 5) {
+        _pendingWholesalerId = null;
+      }
+      if (index != 6) {
+        _ledgerInitialTabIndex = null;
       }
       _repairZamindarState();
     });
@@ -334,6 +343,45 @@ class _ShellState extends State<Shell> {
     _selectNavIndex(5);
   }
 
+  Future<void> _navigateToWholesalerProfileFromDashboard(
+    int wholesalerId,
+  ) async {
+    if (!RolePermissions.canAccessIndex(_role, 5)) {
+      await _selectNavIndex(5);
+      return;
+    }
+    setState(() {
+      _selectedIndex = 5;
+      _pendingWholesalerId = wholesalerId;
+      _wholesalerNavToken++;
+    });
+  }
+
+  Future<void> _navigateToCashLedgerFromDashboard() async {
+    if (!RolePermissions.canAccessIndex(_role, 6)) {
+      await _selectNavIndex(6);
+      return;
+    }
+    setState(() {
+      _selectedIndex = 6;
+      // Payments tab is the closest cash-account ledger surface.
+      _ledgerInitialTabIndex = 2;
+      _ledgerRefreshToken++;
+    });
+  }
+
+  Future<void> _navigateToSalesLedgerFromReports() async {
+    if (!RolePermissions.canAccessIndex(_role, 6)) {
+      await _selectNavIndex(6);
+      return;
+    }
+    setState(() {
+      _selectedIndex = 6;
+      _ledgerInitialTabIndex = 0;
+      _ledgerRefreshToken++;
+    });
+  }
+
   Future<void> _navigateToZamindarLedgerFromDashboard(int zamindarId) async {
     final navId = ++_pendingZamindarLedgerNav;
     try {
@@ -361,6 +409,8 @@ class _ShellState extends State<Shell> {
       onNavigateToAddZamindar: _navigateToAddZamindarFromDashboard,
       onNavigateToWholesalers: _navigateToWholesalersFromDashboard,
       onNavigateToZamindarLedger: _navigateToZamindarLedgerFromDashboard,
+      onNavigateToWholesalerProfile: _navigateToWholesalerProfileFromDashboard,
+      onNavigateToCashLedger: _navigateToCashLedgerFromDashboard,
     ),
     _buildZamindarsScreen(),
     NewSaleScreen(
@@ -374,13 +424,19 @@ class _ShellState extends State<Shell> {
     ),
     const ProductsScreen(),
     const PurchaseScreen(),
-    const WholesalersScreen(),
+    WholesalersScreen(
+      key: ValueKey('wholesaler-$_wholesalerNavToken-$_pendingWholesalerId'),
+      initialWholesalerId: _pendingWholesalerId,
+    ),
     MainLedgerScreen(
       key: ValueKey('ledger-$_ledgerRefreshToken'),
       onEditInvoice: _navigateToEditInvoice,
+      initialTabIndex: _ledgerInitialTabIndex,
     ),
     const ExpenseScreen(),
-    const ReportsScreen(),
+    ReportsScreen(
+      onNavigateToSalesLedger: _navigateToSalesLedgerFromReports,
+    ),
     const UsersScreen(),
     const PartnerManagementScreen(),
     SettingsScreen(

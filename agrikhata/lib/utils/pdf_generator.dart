@@ -277,6 +277,20 @@ class PdfGenerator {
               _buildInvoiceInfo(entry),
               pw.SizedBox(height: 20),
               _buildItemsTable(entry.items),
+              if (entry.description?.trim().isNotEmpty == true) ...[
+                pw.SizedBox(height: 12),
+                pw.Align(
+                  alignment: pw.Alignment.centerLeft,
+                  child: pw.Text(
+                    'Note: ${_pdfSafeText(entry.description!.trim())}',
+                    style: pw.TextStyle(
+                      fontSize: 10,
+                      fontStyle: pw.FontStyle.italic,
+                      color: PdfColor.fromHex('#2D6A4F'),
+                    ),
+                  ),
+                ),
+              ],
               pw.SizedBox(height: 20),
               _buildTotalSection(entry),
               pw.Spacer(),
@@ -539,7 +553,12 @@ class PdfGenerator {
 
     if (entry.hasSaleDiscountBreakdown) {
       summaryChildren.addAll([
-        _buildTotalRow('Gross Subtotal:', entry.grossSubtotal!),
+        _buildTotalRow('Base Sales Revenue:', entry.grossSubtotal!),
+        if ((entry.seasonalIncrementTotal ?? 0) > 0)
+          _buildTotalRow(
+            'Seasonal Increment:',
+            entry.seasonalIncrementTotal!,
+          ),
         if ((entry.itemDiscountsTotal ?? 0) > 0)
           _buildTotalRow('Item Discount:', entry.itemDiscountsTotal!),
         if ((entry.overallDiscount ?? 0) > 0)
@@ -597,13 +616,19 @@ class PdfGenerator {
 
   static String _formatSaleDiscountDetail({
     required double grossSubtotal,
+    double seasonalIncrementTotal = 0,
     required double itemDiscountsTotal,
     required double overallDiscount,
     required double netPayable,
   }) {
     final parts = <String>[
-      'Subtotal: Rs ${_currencyFormat.format(grossSubtotal)}',
+      'Base: Rs ${_currencyFormat.format(grossSubtotal)}',
     ];
+    if (seasonalIncrementTotal > 0) {
+      parts.add(
+        'Seasonal Inc: Rs ${_currencyFormat.format(seasonalIncrementTotal)}',
+      );
+    }
     if (itemDiscountsTotal > 0) {
       parts.add(
         'Item Disc: Rs ${_currencyFormat.format(itemDiscountsTotal)}',
@@ -837,6 +862,7 @@ class PdfGenerator {
           _buildTableHeader('Date'),
           _buildTableHeader('Stakeholder'),
           _buildTableHeader('Items'),
+          _buildTableHeader('Invoice Description'),
           _buildTableHeader('Total'),
           _buildTableHeader('Paid'),
           _buildTableHeader('Status'),
@@ -851,7 +877,12 @@ class PdfGenerator {
             _buildTableCell(entry.invoiceNumber),
             _buildTableCell(_dateFormat.format(entry.date)),
             _buildStakeholderCell(entry),
-            _buildTableCell('${entry.items.length}'),
+            _buildTableCell(entry.itemsSummary),
+            _buildTableCell(
+              entry.description?.trim().isNotEmpty == true
+                  ? entry.description!.trim()
+                  : '—',
+            ),
             _buildTableCell('Rs ${_currencyFormat.format(entry.total)}'),
             _buildTableCell('Rs ${_currencyFormat.format(entry.paid)}'),
             _buildTableCell(entry.status.displayName),
@@ -868,11 +899,14 @@ class PdfGenerator {
               _buildTableCell(
                 _formatSaleDiscountDetail(
                   grossSubtotal: entry.grossSubtotal!,
+                  seasonalIncrementTotal:
+                      entry.seasonalIncrementTotal ?? 0,
                   itemDiscountsTotal: entry.itemDiscountsTotal ?? 0,
                   overallDiscount: entry.overallDiscount ?? 0,
                   netPayable: entry.netPayable,
                 ),
               ),
+              _buildTableCell(''),
               _buildTableCell(''),
               _buildTableCell(''),
               _buildTableCell(''),
@@ -885,13 +919,14 @@ class PdfGenerator {
     return pw.Table(
       border: pw.TableBorder.all(color: PdfColor.fromHex('#E0E0E0')),
       columnWidths: {
-        0: const pw.FlexColumnWidth(1.5),
-        1: const pw.FlexColumnWidth(2),
-        2: const pw.FlexColumnWidth(3),
-        3: const pw.FlexColumnWidth(1.5),
-        4: const pw.FlexColumnWidth(1.5),
-        5: const pw.FlexColumnWidth(1.5),
-        6: const pw.FlexColumnWidth(1.5),
+        0: const pw.FlexColumnWidth(1.3),
+        1: const pw.FlexColumnWidth(1.5),
+        2: const pw.FlexColumnWidth(2.2),
+        3: const pw.FlexColumnWidth(2.2),
+        4: const pw.FlexColumnWidth(1.8),
+        5: const pw.FlexColumnWidth(1.2),
+        6: const pw.FlexColumnWidth(1.2),
+        7: const pw.FlexColumnWidth(1.2),
       },
       children: tableRows,
     );
@@ -1870,16 +1905,17 @@ class PdfGenerator {
     return pw.Table(
       border: pw.TableBorder.all(color: PdfColor.fromHex('#E0E0E0')),
       columnWidths: {
-        0: const pw.FlexColumnWidth(1.0),
-        1: const pw.FlexColumnWidth(1.4),
-        2: const pw.FlexColumnWidth(1.2),
-        3: const pw.FlexColumnWidth(1.8),
-        4: const pw.FlexColumnWidth(1.0),
-        5: const pw.FlexColumnWidth(1.2),
-        6: const pw.FlexColumnWidth(0.9),
-        7: const pw.FlexColumnWidth(0.9),
-        8: const pw.FlexColumnWidth(0.9),
-        9: const pw.FlexColumnWidth(0.9),
+        0: const pw.FlexColumnWidth(0.9),
+        1: const pw.FlexColumnWidth(1.2),
+        2: const pw.FlexColumnWidth(1.0),
+        3: const pw.FlexColumnWidth(1.6),
+        4: const pw.FlexColumnWidth(0.9),
+        5: const pw.FlexColumnWidth(1.0),
+        6: const pw.FlexColumnWidth(0.8),
+        7: const pw.FlexColumnWidth(1.5),
+        8: const pw.FlexColumnWidth(0.8),
+        9: const pw.FlexColumnWidth(0.8),
+        10: const pw.FlexColumnWidth(0.8),
       },
       children: [
         pw.TableRow(
@@ -1894,6 +1930,7 @@ class PdfGenerator {
             _buildTableHeader('Products Qty'),
             _buildTableHeader('Cost / Product'),
             _buildTableHeader('Payment'),
+            _buildTableHeader('Invoice Description'),
             _buildTableHeader('Total'),
             _buildTableHeader('Paid'),
             _buildTableHeader('Remaining'),
@@ -1904,11 +1941,16 @@ class PdfGenerator {
           final paid = (row['paid'] as num?)?.toDouble() ?? 0;
           final remaining = (row['remaining'] as num?)?.toDouble() ?? 0;
           final subtotal = (row['subtotal'] as num?)?.toDouble() ?? total;
+          final seasonalIncrementTotal =
+              (row['seasonal_increment_total'] as num?)?.toDouble() ?? 0;
           final itemDiscountsTotal =
               (row['item_discounts_total'] as num?)?.toDouble() ?? 0;
           final overallDiscount =
               (row['overall_discount'] as num?)?.toDouble() ?? 0;
-          final hasDiscountDetail = subtotal > 0;
+          final hasDiscountDetail = subtotal > 0 ||
+              seasonalIncrementTotal > 0 ||
+              itemDiscountsTotal > 0 ||
+              overallDiscount > 0;
 
           final mainRow = pw.TableRow(
             children: [
@@ -1919,6 +1961,12 @@ class PdfGenerator {
               _buildTableCell(row['products_qty']?.toString() ?? '-'),
               _buildTableCell(row['cost_per_product']?.toString() ?? '-'),
               _buildTableCell(row['payment_type']?.toString() ?? '-'),
+              _buildTableCell(
+                (row['invoice_description'] as String?)?.trim().isNotEmpty ==
+                        true
+                    ? (row['invoice_description'] as String).trim()
+                    : '—',
+              ),
               _buildTableCell(_formatMoney(total), bold: true),
               _buildTableCell(_formatMoney(paid)),
               _buildTableCell(_formatMoney(remaining)),
@@ -1937,11 +1985,13 @@ class PdfGenerator {
                 _buildTableCell(
                   _formatSaleDiscountDetail(
                     grossSubtotal: subtotal,
+                    seasonalIncrementTotal: seasonalIncrementTotal,
                     itemDiscountsTotal: itemDiscountsTotal,
                     overallDiscount: overallDiscount,
                     netPayable: total,
                   ),
                 ),
+                _buildTableCell(''),
                 _buildTableCell(''),
                 _buildTableCell(''),
                 _buildTableCell(''),
@@ -1958,6 +2008,7 @@ class PdfGenerator {
           ),
           children: [
             _buildTableCell('Cumulative', bold: true),
+            _buildTableCell(''),
             _buildTableCell(''),
             _buildTableCell(''),
             _buildTableCell(''),
@@ -2005,6 +2056,8 @@ class PdfGenerator {
     required String outstandingBalance,
     required int totalPaymentsReceived,
     required int totalDebit,
+    Map<String, String>? itemSummaries,
+    Map<String, String>? saleRemarks,
   }) async {
     final pdf = pw.Document();
     final shop = await _loadShopBranding();
@@ -2093,12 +2146,13 @@ class PdfGenerator {
               pw.Table(
                 border: pw.TableBorder.all(color: PdfColor.fromHex('#E0E0E0')),
                 columnWidths: {
-                  0: const pw.FlexColumnWidth(1.1),
-                  1: const pw.FlexColumnWidth(1.4),
-                  2: const pw.FlexColumnWidth(2.8),
-                  3: const pw.FlexColumnWidth(1.1),
+                  0: const pw.FlexColumnWidth(1.0),
+                  1: const pw.FlexColumnWidth(1.2),
+                  2: const pw.FlexColumnWidth(2.2),
+                  3: const pw.FlexColumnWidth(1.6),
                   4: const pw.FlexColumnWidth(0.9),
-                  5: const pw.FlexColumnWidth(1.1),
+                  5: const pw.FlexColumnWidth(0.8),
+                  6: const pw.FlexColumnWidth(1.0),
                 },
                 children: [
                   pw.TableRow(
@@ -2108,7 +2162,8 @@ class PdfGenerator {
                     children: [
                       _buildTableHeader('Date'),
                       _buildTableHeader('Kisaan'),
-                      _buildTableHeader('Description'),
+                      _buildTableHeader('Items'),
+                      _buildTableHeader('Invoice Description'),
                       _buildTableHeader('Category'),
                       _buildTableHeader('Type'),
                       _buildTableHeader('Amount'),
@@ -2124,6 +2179,8 @@ class PdfGenerator {
                         (row['category'] as String? ?? '').toUpperCase();
                     final kisaanName =
                         (row['kisaan_name'] as String?)?.trim() ?? '';
+                    final invoiceNumber =
+                        (row['invoice_number'] as String?)?.trim() ?? '';
                     final dateRaw = row['date_time'] as String? ?? '';
                     DateTime? parsed;
                     try {
@@ -2137,6 +2194,10 @@ class PdfGenerator {
                         category == 'SALE' && type == 'DEBIT';
                     final grossSubtotal =
                         (row[SaleJoinColumns.subtotal] as num?)?.toDouble();
+                    final seasonalIncrementTotal =
+                        (row[SaleJoinColumns.seasonalIncrementTotal] as num?)
+                                ?.toDouble() ??
+                            0;
                     final itemDiscountsTotal =
                         (row[SaleJoinColumns.itemDiscountsTotal] as num?)
                                 ?.toDouble() ??
@@ -2146,7 +2207,35 @@ class PdfGenerator {
                                 ?.toDouble() ??
                             0;
                     final hasDiscountDetail =
-                        isSaleDebit && grossSubtotal != null;
+                        isSaleDebit &&
+                        (grossSubtotal != null ||
+                            seasonalIncrementTotal > 0 ||
+                            itemDiscountsTotal > 0 ||
+                            overallDiscount > 0);
+
+                    String itemsCell;
+                    String invoiceDescCell;
+                    if (isSaleDebit && invoiceNumber.isNotEmpty) {
+                      itemsCell = itemSummaries?[invoiceNumber]?.trim().isNotEmpty ==
+                              true
+                          ? itemSummaries![invoiceNumber]!.trim()
+                          : '—';
+                      final joinedRemarks =
+                          (row[SaleJoinColumns.remarks] as String?)?.trim() ??
+                              '';
+                      final batchRemarks =
+                          saleRemarks?[invoiceNumber]?.trim() ?? '';
+                      invoiceDescCell = joinedRemarks.isNotEmpty
+                          ? joinedRemarks
+                          : (batchRemarks.isNotEmpty ? batchRemarks : '—');
+                    } else {
+                      itemsCell = description.isNotEmpty ? description : '—';
+                      final paymentNotes =
+                          (row['payment_notes'] as String?)?.trim() ?? '';
+                      invoiceDescCell = paymentNotes.isNotEmpty
+                          ? paymentNotes
+                          : '—';
+                    }
 
                     final mainRow = pw.TableRow(
                       children: [
@@ -2154,7 +2243,8 @@ class PdfGenerator {
                         _buildTableCell(
                           kisaanName.isEmpty ? '-' : kisaanName,
                         ),
-                        _buildTableCell(description),
+                        _buildTableCell(itemsCell),
+                        _buildTableCell(invoiceDescCell),
                         _buildTableCell(category),
                         _buildTableCell(type.toUpperCase()),
                         _buildTableCell(
@@ -2177,11 +2267,13 @@ class PdfGenerator {
                           _buildTableCell(
                             _formatSaleDiscountDetail(
                               grossSubtotal: saleSubtotal,
+                              seasonalIncrementTotal: seasonalIncrementTotal,
                               itemDiscountsTotal: itemDiscountsTotal,
                               overallDiscount: overallDiscount,
                               netPayable: amount,
                             ),
                           ),
+                          _buildTableCell(''),
                           _buildTableCell(''),
                           _buildTableCell(''),
                           _buildTableCell(''),
@@ -2210,6 +2302,8 @@ class PdfGenerator {
     required String outstandingBalance,
     required int totalPaymentsReceived,
     required int totalDebit,
+    Map<String, String>? itemSummaries,
+    Map<String, String>? saleRemarks,
   }) async {
     final pdf = await generateZamindarTransactionLedgerPdf(
       zamindarName: zamindarName,
@@ -2218,6 +2312,8 @@ class PdfGenerator {
       outstandingBalance: outstandingBalance,
       totalPaymentsReceived: totalPaymentsReceived,
       totalDebit: totalDebit,
+      itemSummaries: itemSummaries,
+      saleRemarks: saleRemarks,
     );
     final bytes = await pdf.save();
     final fileName = buildExportFileName(
@@ -2490,13 +2586,16 @@ class PdfGenerator {
               pw.Table(
                 border: pw.TableBorder.all(color: PdfColor.fromHex('#E0E0E0')),
                 columnWidths: {
-                  0: const pw.FlexColumnWidth(1.2),
-                  1: const pw.FlexColumnWidth(1.5),
-                  2: const pw.FlexColumnWidth(1.5),
-                  3: const pw.FlexColumnWidth(1.8),
-                  4: const pw.FlexColumnWidth(1),
-                  5: const pw.FlexColumnWidth(1.1),
-                  6: const pw.FlexColumnWidth(1.2),
+                  0: const pw.FlexColumnWidth(1.1),
+                  1: const pw.FlexColumnWidth(1.3),
+                  2: const pw.FlexColumnWidth(1.2),
+                  3: const pw.FlexColumnWidth(1.5),
+                  4: const pw.FlexColumnWidth(0.8),
+                  5: const pw.FlexColumnWidth(0.9),
+                  6: const pw.FlexColumnWidth(0.9),
+                  7: const pw.FlexColumnWidth(0.85),
+                  8: const pw.FlexColumnWidth(0.85),
+                  9: const pw.FlexColumnWidth(1.0),
                 },
                 children: [
                   pw.TableRow(
@@ -2509,7 +2608,10 @@ class PdfGenerator {
                       _buildTableHeader('Kisaan Name'),
                       _buildTableHeader('Product Name'),
                       _buildTableHeader('Quantity'),
-                      _buildTableHeader('Product Price'),
+                      _buildTableHeader('Base Price'),
+                      _buildTableHeader('Seasonal Inc'),
+                      _buildTableHeader('Item Disc'),
+                      _buildTableHeader('Overall'),
                       _buildTableHeader('Total Price'),
                     ],
                   ),
@@ -2521,6 +2623,14 @@ class PdfGenerator {
                         : '$qty${uom.isNotEmpty ? ' $uom' : ''}';
                     final unitPrice =
                         (row['unit_price'] as num?)?.toDouble() ?? 0;
+                    final seasonalInc =
+                        (row['seasonal_increment'] as num?)?.toDouble() ?? 0;
+                    final itemDiscount =
+                        (row['item_discount'] as num?)?.toDouble() ?? 0;
+                    final overallDisc =
+                        (row['allocated_overall_discount'] as num?)
+                                ?.toDouble() ??
+                            0;
                     final lineTotal =
                         (row['line_total'] as num?)?.toDouble() ?? 0;
                     return pw.TableRow(
@@ -2537,7 +2647,22 @@ class PdfGenerator {
                         ),
                         _buildTableCell(qtyLabel),
                         _buildTableCell(_formatMoney(unitPrice)),
-                        _buildTableCell(_formatMoney(lineTotal)),
+                        _buildTableCell(
+                          seasonalInc > 0
+                              ? _formatMoney(seasonalInc)
+                              : '-',
+                        ),
+                        _buildTableCell(
+                          itemDiscount > 0
+                              ? _formatMoney(itemDiscount)
+                              : '-',
+                        ),
+                        _buildTableCell(
+                          overallDisc > 0
+                              ? _formatMoney(overallDisc)
+                              : '-',
+                        ),
+                        _buildTableCell(_formatMoney(lineTotal), bold: true),
                       ],
                     );
                   }),

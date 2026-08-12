@@ -1,5 +1,7 @@
 import 'package:agrikhata/Core/Themes/app_colors.dart';
 import 'package:agrikhata/services/auth_service.dart';
+import 'package:agrikhata/services/desktop_loopback_oauth_service.dart';
+import 'package:agrikhata/services/google_oauth_config.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -28,8 +30,22 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   bool _obscurePin = true;
   bool _obscureConfirm = true;
   String? _error;
+  bool? _googleSignInAvailable;
 
-  bool get _showDetails => _formUnlocked || _identity != null || _googleUnavailable;
+  bool get _showDetails =>
+      _formUnlocked || _identity != null || _googleUnavailable;
+
+  @override
+  void initState() {
+    super.initState();
+    _probeGoogleSignInAvailability();
+  }
+
+  Future<void> _probeGoogleSignInAvailability() async {
+    final available = await AuthService.instance.isGoogleSignInAvailable;
+    if (!mounted) return;
+    setState(() => _googleSignInAvailable = available);
+  }
 
   @override
   void dispose() {
@@ -53,30 +69,31 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         _identity = identity;
         _googleUnavailable = false;
         _formUnlocked = true;
+        _googleSignInAvailable = true;
         _nameController.text = identity.name;
       });
-    } on UnsupportedError {
+    } on GoogleOAuthNotConfiguredException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error =
+            '${e.message} You can enter owner details manually below, or add '
+            'a Desktop OAuth Client ID via Settings after setup.';
+        _formUnlocked = true;
+      });
+    } on DesktopLoopbackOAuthException catch (e) {
       if (!mounted) return;
       setState(() {
         _googleUnavailable = true;
         _formUnlocked = true;
-        _error =
-            'Native Google Sign-In is unavailable on this desktop build. '
-            'Complete the form below to continue.';
+        _error = e.message;
       });
     } catch (e) {
       if (!mounted) return;
-      final msg = e.toString();
-      if (msg.contains('cancelled')) {
+      final msg = e.toString().replaceFirst('Exception: ', '');
+      if (msg.contains('cancelled') || msg.contains('canceled')) {
         setState(() => _error = null);
       } else {
-        setState(() {
-          _googleUnavailable = true;
-          _formUnlocked = true;
-          _error =
-              'Could not complete Google Sign-In. '
-              'Complete the form below to continue.';
-        });
+        setState(() => _error = msg);
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -197,8 +214,22 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             _GoogleSignInButton(
               busy: _busy,
               signedInEmail: _identity?.email,
-              onPressed: _busy ? null : _handleGoogleSignIn,
+              onPressed: (_busy || _googleSignInAvailable == false)
+                  ? null
+                  : _handleGoogleSignIn,
             ),
+            if (_googleSignInAvailable == false) ...[
+              const SizedBox(height: 8),
+              const Text(
+                'Google Sign-In needs a Desktop OAuth Client ID. Complete the '
+                'form below, or configure credentials in Settings after setup.',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Color(0xFF8CA491),
+                  height: 1.4,
+                ),
+              ),
+            ],
             if (_identity == null && !_googleUnavailable) ...[
               const SizedBox(height: 8),
               TextButton(

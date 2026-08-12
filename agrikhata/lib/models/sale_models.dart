@@ -104,7 +104,9 @@ class CartItem {
   final String id;
   final Product product;
   int quantity;
+  /// Per-unit seasonal increment.
   double seasonalIncrement;
+  /// Per-unit discount.
   double discount;
 
   CartItem({
@@ -115,15 +117,20 @@ class CartItem {
     this.discount = 0,
   });
 
+  /// Net price for one unit after seasonal add-on and per-unit discount.
   double get effectiveUnitPrice =>
-      moneyRound(product.basePrice + seasonalIncrement);
+      moneyRound(product.basePrice + seasonalIncrement - discount);
 
-  double get subtotal {
-    return moneyRound((effectiveUnitPrice * quantity) - discount);
-  }
+  /// Line total: quantity × (unitPrice + seasonalInc − discount).
+  double get subtotal => moneyRound(effectiveUnitPrice * quantity);
 
-  double get totalSeasonalIncrement =>
+  double get totalItemDiscount => moneyRound(discount * quantity);
+
+  double get totalItemSeasonalInc =>
       moneyRound(seasonalIncrement * quantity);
+
+  /// Alias kept for existing call sites.
+  double get totalSeasonalIncrement => totalItemSeasonalInc;
 }
 
 class Recommendation {
@@ -163,28 +170,31 @@ class SaleSummary {
     this.paymentMethod = PaymentMethod.credit,
   });
 
+  /// Gross merchandise total before item discounts
+  /// (base + seasonal) × qty — item discounts shown separately.
   double get subtotal {
     return moneyRound(
       items.fold<double>(
         0,
-        (sum, item) => sum + (item.effectiveUnitPrice * item.quantity),
+        (sum, item) => sum + item.subtotal + item.totalItemDiscount,
       ),
     );
   }
 
   double get itemDiscounts {
     return moneyRound(
-      items.fold<double>(0, (sum, item) => sum + item.discount),
+      items.fold<double>(0, (sum, item) => sum + item.totalItemDiscount),
     );
   }
 
   double get totalSeasonalIncrements {
     return moneyRound(
-      items.fold<double>(0, (sum, item) => sum + item.totalSeasonalIncrement),
+      items.fold<double>(0, (sum, item) => sum + item.totalItemSeasonalInc),
     );
   }
 
   double get totalPayable {
+    // Equivalent to Σ line subtotals − overall discount.
     final total = moneyRound(subtotal - itemDiscounts - overallDiscount);
     return total < 0 ? 0 : total;
   }

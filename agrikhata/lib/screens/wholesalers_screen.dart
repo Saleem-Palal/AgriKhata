@@ -151,7 +151,13 @@ String formatPKR(num amount) {
 // ---------------------------------------------------------------------------
 
 class WholesalersScreen extends StatefulWidget {
-  const WholesalersScreen({super.key});
+  const WholesalersScreen({
+    super.key,
+    this.initialWholesalerId,
+  });
+
+  /// When set (e.g. from dashboard payables drill-down), open that profile.
+  final int? initialWholesalerId;
 
   @override
   State<WholesalersScreen> createState() => _WholesalersScreenState();
@@ -168,6 +174,7 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
   WholesalerView _view = WholesalerView.directory;
   Wholesaler? _active;
   _ProfileTab _profileTab = _ProfileTab.ledger;
+  bool _didOpenInitialWholesaler = false;
 
   late List<Wholesaler> _wholesalers;
   bool _loading = true;
@@ -235,10 +242,30 @@ class _WholesalersScreenState extends State<WholesalersScreen> {
           }
         }
       });
+      await _openInitialWholesalerIfNeeded();
     } catch (e) {
       if (!mounted) return;
       setState(() => _loading = false);
     }
+  }
+
+  Future<void> _openInitialWholesalerIfNeeded() async {
+    final targetId = widget.initialWholesalerId;
+    if (targetId == null || !mounted || _didOpenInitialWholesaler) return;
+    if (_active != null && _active!.id == '$targetId') {
+      _didOpenInitialWholesaler = true;
+      return;
+    }
+    Wholesaler? match;
+    for (final w in _wholesalers) {
+      if (w.id == '$targetId') {
+        match = w;
+        break;
+      }
+    }
+    if (match == null) return;
+    _didOpenInitialWholesaler = true;
+    _openProfile(match);
   }
 
   Future<void> _loadLedger(int wholesalerId) async {

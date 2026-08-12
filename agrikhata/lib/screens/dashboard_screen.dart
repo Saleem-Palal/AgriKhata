@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:agrikhata/Data/agri_header.dart';
 import 'package:agrikhata/Database/database_helper.dart';
 import 'package:agrikhata/Widgets/dashboard/advances_reminder_card.dart';
+import 'package:agrikhata/Widgets/dashboard/kpi_breakdown_dialogs.dart';
 import 'package:agrikhata/Widgets/season_management_widgets.dart';
 import 'package:agrikhata/services/season_service.dart';
 import 'package:agrikhata/services/whatsapp_urdu_service.dart';
@@ -20,12 +21,16 @@ class DashboardScreen extends StatefulWidget {
     this.onNavigateToAddZamindar,
     this.onNavigateToWholesalers,
     this.onNavigateToZamindarLedger,
+    this.onNavigateToWholesalerProfile,
+    this.onNavigateToCashLedger,
   });
 
   final VoidCallback? onNavigateToNewSale;
   final VoidCallback? onNavigateToAddZamindar;
   final VoidCallback? onNavigateToWholesalers;
   final void Function(int zamindarId)? onNavigateToZamindarLedger;
+  final void Function(int wholesalerId)? onNavigateToWholesalerProfile;
+  final VoidCallback? onNavigateToCashLedger;
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
@@ -144,6 +149,33 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final rounded = amount.round();
     final sign = rounded < 0 ? '-' : '';
     return '₨ $sign${_currency.format(rounded.abs())}';
+  }
+
+  Future<void> _openReceivablesBreakdown() {
+    return showReceivablesBreakdownDialog(
+      context: context,
+      onOpenZamindarLedger: (id) {
+        widget.onNavigateToZamindarLedger?.call(id);
+      },
+    );
+  }
+
+  Future<void> _openPayablesBreakdown() {
+    return showPayablesBreakdownDialog(
+      context: context,
+      onOpenWholesaler: (id) {
+        widget.onNavigateToWholesalerProfile?.call(id);
+      },
+    );
+  }
+
+  Future<void> _openCashBreakdown() {
+    return showCashInHandBreakdownDialog(
+      context: context,
+      onViewCashLedger: () {
+        widget.onNavigateToCashLedger?.call();
+      },
+    );
   }
 
   Future<void> _openWhatsAppReminder(DashboardRecoveryRow row) async {
@@ -339,6 +371,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         subtextColor: const Color(0xFF4C8067),
         backgroundColor: AppColors.tagGreenBg,
         borderColor: const Color(0xFFBEE3CC),
+        onTap: _openReceivablesBreakdown,
       ),
       _KpiCard(
         emoji: '🔴',
@@ -350,6 +383,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         subtextColor: const Color(0xFFA85B5B),
         backgroundColor: AppColors.tagRedBg,
         borderColor: const Color(0xFFF3C6C6),
+        onTap: _openPayablesBreakdown,
       ),
       _KpiCard(
         emoji: '💵',
@@ -361,6 +395,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         subtextColor: const Color(0xFF5B84AA),
         backgroundColor: AppColors.tagBlueBg,
         borderColor: const Color(0xFFC3D9F0),
+        onTap: _openCashBreakdown,
       ),
       _KpiCard(
         emoji: '👥',
@@ -687,7 +722,7 @@ class _EmptyHint extends StatelessWidget {
   }
 }
 
-class _KpiCard extends StatelessWidget {
+class _KpiCard extends StatefulWidget {
   const _KpiCard({
     required this.emoji,
     required this.title,
@@ -698,6 +733,7 @@ class _KpiCard extends StatelessWidget {
     required this.subtextColor,
     required this.backgroundColor,
     required this.borderColor,
+    this.onTap,
   });
 
   final String emoji;
@@ -709,49 +745,110 @@ class _KpiCard extends StatelessWidget {
   final Color subtextColor;
   final Color backgroundColor;
   final Color borderColor;
+  final VoidCallback? onTap;
+
+  @override
+  State<_KpiCard> createState() => _KpiCardState();
+}
+
+class _KpiCardState extends State<_KpiCard> {
+  bool _hovered = false;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: backgroundColor,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: borderColor, width: 0.5),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '$emoji $title',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w500,
-              color: titleColor,
+    final clickable = widget.onTap != null;
+    final borderColor = _hovered && clickable
+        ? Color.lerp(widget.borderColor, widget.titleColor, 0.55)!
+        : widget.borderColor;
+
+    return MouseRegion(
+      onEnter: clickable ? (_) => setState(() => _hovered = true) : null,
+      onExit: clickable ? (_) => setState(() => _hovered = false) : null,
+      cursor: clickable ? SystemMouseCursors.click : SystemMouseCursors.basic,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 120),
+        transform: Matrix4.translationValues(0, _hovered && clickable ? -1 : 0, 0),
+        decoration: BoxDecoration(
+          color: widget.backgroundColor,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: borderColor,
+            width: _hovered && clickable ? 1.0 : 0.5,
+          ),
+          boxShadow: _hovered && clickable
+              ? [
+                  BoxShadow(
+                    color: widget.titleColor.withValues(alpha: 0.14),
+                    blurRadius: 10,
+                    offset: const Offset(0, 3),
+                  ),
+                ]
+              : const [],
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: widget.onTap,
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Stack(
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Padding(
+                        padding: EdgeInsets.only(right: clickable ? 18 : 0),
+                        child: Text(
+                          '${widget.emoji} ${widget.title}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w500,
+                            color: widget.titleColor,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        widget.value,
+                        style: TextStyle(
+                          fontSize: 21,
+                          fontWeight: FontWeight.w700,
+                          color: widget.valueColor,
+                          height: 1.15,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        widget.subtext,
+                        style: TextStyle(fontSize: 10, color: widget.subtextColor),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                  if (clickable)
+                    Positioned(
+                      top: 0,
+                      right: 0,
+                      child: Tooltip(
+                        message: 'Click for details',
+                        child: Icon(
+                          Icons.north_east_rounded,
+                          size: 14,
+                          color: widget.titleColor.withValues(alpha: 0.7),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
             ),
           ),
-          const SizedBox(height: 4),
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 21,
-              fontWeight: FontWeight.w700,
-              color: valueColor,
-              height: 1.15,
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          const SizedBox(height: 4),
-          Text(
-            subtext,
-            style: TextStyle(fontSize: 10, color: subtextColor),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ],
+        ),
       ),
     );
   }

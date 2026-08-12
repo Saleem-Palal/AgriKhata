@@ -50,11 +50,12 @@ class SaleController {
     for (final item in items) {
       final baseLine = moneyRound(item.product.basePrice * item.quantity);
       final seasonal = includeSeasonalIncrement
-          ? moneyRound(item.seasonalIncrement * item.quantity)
+          ? item.totalItemSeasonalInc
           : 0.0;
-      final discount = moneyRound(item.discount);
+      // Discount is per-unit — scale by quantity like seasonal increment.
+      final lineDiscount = item.totalItemDiscount;
       subtotal = moneyRound(subtotal + baseLine + seasonal);
-      itemDiscounts = moneyRound(itemDiscounts + discount);
+      itemDiscounts = moneyRound(itemDiscounts + lineDiscount);
       seasonalIncrements = moneyRound(seasonalIncrements + seasonal);
     }
 

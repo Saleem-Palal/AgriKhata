@@ -317,7 +317,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const SizedBox(height: 10),
                 const Text(
-                  'Authorized redirect URI (if prompted):\nhttp://localhost:8765/',
+                  'Authorized redirect URI (if prompted):\n'
+                  'http://localhost:8765/ (fallback ports 8766–8769 are tried automatically)',
                   style: TextStyle(fontSize: 12, color: _rowSub, height: 1.4),
                 ),
               ],
@@ -917,7 +918,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         _buildDangerCard(),
                         const SizedBox(height: 36),
                         Text(
-                          'AgriKhata ${_versionLabel.isEmpty ? 'v1.0.16' : _versionLabel}  •  Built with ❤️',
+                          'AgriKhata ${_versionLabel.isEmpty ? 'v1.0.17' : _versionLabel}  •  Built with ❤️',
                           textAlign: TextAlign.center,
                           style: const TextStyle(
                             fontSize: 11,

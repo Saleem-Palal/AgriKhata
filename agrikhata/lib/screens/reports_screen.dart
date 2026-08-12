@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:agrikhata/Data/agri_header.dart';
 import 'package:agrikhata/Database/database_helper.dart';
+import 'package:agrikhata/Widgets/dashboard/kpi_breakdown_dialogs.dart';
 import 'package:agrikhata/services/whatsapp_urdu_service.dart';
 import 'package:agrikhata/theme/theme.dart';
 import 'package:agrikhata/utils/shop_settings.dart';
@@ -92,6 +93,9 @@ class SeasonalMetrics {
     required this.collectionEfficiency,
     this.cashPurchases = 0,
     this.creditPurchases = 0,
+    this.grossSalesBase = 0,
+    this.seasonalIncrements = 0,
+    this.totalDiscounts = 0,
   });
 
   final String season;
@@ -107,6 +111,9 @@ class SeasonalMetrics {
   final double todaysRecovery;
   final double dailyTarget;
   final double collectionEfficiency;
+  final double grossSalesBase;
+  final double seasonalIncrements;
+  final double totalDiscounts;
 
   double get profitMargin =>
       totalRevenue > 0 ? (netProfit / totalRevenue) * 100.0 : 0.0;
@@ -143,6 +150,9 @@ class SeasonalMetrics {
       totalRevenue: (map['totalRevenue'] as num?)?.toDouble() ?? 0,
       cashSales: (map['cashSales'] as num?)?.toDouble() ?? 0,
       creditSales: (map['creditSales'] as num?)?.toDouble() ?? 0,
+      grossSalesBase: (map['grossSalesBase'] as num?)?.toDouble() ?? 0,
+      seasonalIncrements: (map['seasonalIncrements'] as num?)?.toDouble() ?? 0,
+      totalDiscounts: (map['totalDiscounts'] as num?)?.toDouble() ?? 0,
       netProfit: (map['netProfit'] as num?)?.toDouble() ?? 0,
       totalMarketDebt: (map['totalMarketDebt'] as num?)?.toDouble() ?? 0,
       highRiskDues: (map['highRiskDues'] as num?)?.toDouble() ?? 0,
@@ -159,7 +169,13 @@ class SeasonalMetrics {
 // ---------------------------------------------------------------------------
 
 class ReportsScreen extends StatefulWidget {
-  const ReportsScreen({super.key});
+  const ReportsScreen({
+    super.key,
+    this.onNavigateToSalesLedger,
+  });
+
+  /// Opens Finance → Ledger (Sales tab) from revenue drill-down.
+  final VoidCallback? onNavigateToSalesLedger;
 
   @override
   State<ReportsScreen> createState() => _ReportsScreenState();
@@ -550,7 +566,22 @@ class _ReportsScreenState extends State<ReportsScreen> {
         children: [
           const _SectionLabel('Season Performance (Sales, Revenue & Profit)'),
           const SizedBox(height: 8),
-          _SeasonPerformanceRow(metrics: _metrics),
+          _SeasonPerformanceRow(
+            metrics: _metrics,
+            onOpenRevenue: () => showRevenueBreakdownDialog(
+              context: context,
+              season: _metrics.season.isEmpty ? null : _metrics.season,
+              onViewSalesLedger: widget.onNavigateToSalesLedger,
+            ),
+            onOpenPurchases: () => showPurchasesBreakdownDialog(
+              context: context,
+              season: _metrics.season.isEmpty ? null : _metrics.season,
+            ),
+            onOpenNetProfit: () => showNetProfitAuditDialog(
+              context: context,
+              season: _metrics.season.isEmpty ? null : _metrics.season,
+            ),
+          ),
           const SizedBox(height: 16),
           const _SectionLabel('Outstanding Credit & Recovery Overview'),
           const SizedBox(height: 8),
@@ -618,21 +649,85 @@ class _SectionLabel extends StatelessWidget {
   }
 }
 
-class _ReportCard extends StatelessWidget {
-  const _ReportCard({required this.child});
+class _ReportCard extends StatefulWidget {
+  const _ReportCard({
+    required this.child,
+    this.onTap,
+    this.showDetailCue = false,
+  });
 
   final Widget child;
+  final VoidCallback? onTap;
+  final bool showDetailCue;
+
+  @override
+  State<_ReportCard> createState() => _ReportCardState();
+}
+
+class _ReportCardState extends State<_ReportCard> {
+  bool _hovered = false;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: AppColors.cardSurface,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.border, width: 0.5),
+    final clickable = widget.onTap != null;
+    final borderColor = _hovered && clickable
+        ? AppColors.recBorder
+        : AppColors.border;
+
+    return MouseRegion(
+      onEnter: clickable ? (_) => setState(() => _hovered = true) : null,
+      onExit: clickable ? (_) => setState(() => _hovered = false) : null,
+      cursor: clickable ? SystemMouseCursors.click : SystemMouseCursors.basic,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 120),
+        transform:
+            Matrix4.translationValues(0, _hovered && clickable ? -1 : 0, 0),
+        decoration: BoxDecoration(
+          color: AppColors.cardSurface,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: borderColor,
+            width: _hovered && clickable ? 1.0 : 0.5,
+          ),
+          boxShadow: _hovered && clickable
+              ? const [
+                  BoxShadow(
+                    color: Color(0x14000000),
+                    blurRadius: 10,
+                    offset: Offset(0, 3),
+                  ),
+                ]
+              : const [],
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: widget.onTap,
+            borderRadius: BorderRadius.circular(12),
+            child: Stack(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: widget.child,
+                ),
+                if (clickable || widget.showDetailCue)
+                  const Positioned(
+                    top: 10,
+                    right: 10,
+                    child: Tooltip(
+                      message: 'Click for details',
+                      child: Icon(
+                        Icons.info_outline,
+                        size: 14,
+                        color: AppColors.textHint,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
       ),
-      padding: const EdgeInsets.all(16),
-      child: child,
     );
   }
 }
@@ -766,9 +861,17 @@ String _fmt(num value) => '₨ ${NumberFormat('#,##,##0').format(value.round())}
 // ---------------------------------------------------------------------------
 
 class _SeasonPerformanceRow extends StatelessWidget {
-  const _SeasonPerformanceRow({required this.metrics});
+  const _SeasonPerformanceRow({
+    required this.metrics,
+    this.onOpenRevenue,
+    this.onOpenPurchases,
+    this.onOpenNetProfit,
+  });
 
   final SeasonalMetrics metrics;
+  final VoidCallback? onOpenRevenue;
+  final VoidCallback? onOpenPurchases;
+  final VoidCallback? onOpenNetProfit;
 
   @override
   Widget build(BuildContext context) {
@@ -786,6 +889,8 @@ class _SeasonPerformanceRow extends StatelessWidget {
             SizedBox(
               width: cardWidth.clamp(180, double.infinity),
               child: _ReportCard(
+                onTap: onOpenRevenue,
+                showDetailCue: true,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -793,6 +898,17 @@ class _SeasonPerformanceRow extends StatelessWidget {
                     const SizedBox(height: 6),
                     _KpiValue(_fmt(metrics.totalRevenue)),
                     const SizedBox(height: 12),
+                    Text(
+                      'Base: ${_fmt(metrics.grossSalesBase)}  |  '
+                      'Seasonal: +${_fmt(metrics.seasonalIncrements)}  |  '
+                      'Disc: -${_fmt(metrics.totalDiscounts)}',
+                      style: const TextStyle(
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w500,
+                        color: AppColors.textMuted,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
                     Text(
                       'Cash: ${_fmt(metrics.cashSales)} (${metrics.cashSalesPct.toStringAsFixed(0)}%)  |  '
                       'Credit: ${_fmt(metrics.creditSales)} (${metrics.creditSalesPct.toStringAsFixed(0)}%)',
@@ -809,6 +925,50 @@ class _SeasonPerformanceRow extends StatelessWidget {
             SizedBox(
               width: cardWidth.clamp(180, double.infinity),
               child: _ReportCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const _KpiLabel('SEASONAL INCREMENTS'),
+                    const SizedBox(height: 6),
+                    _KpiValue(_fmt(metrics.seasonalIncrements)),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Surcharge revenue this season',
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        color: AppColors.textHint,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            SizedBox(
+              width: cardWidth.clamp(180, double.infinity),
+              child: _ReportCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const _KpiLabel('DISCOUNTS GIVEN'),
+                    const SizedBox(height: 6),
+                    _KpiValue(_fmt(metrics.totalDiscounts)),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Item + overall discounts absorbed',
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        color: AppColors.textHint,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            SizedBox(
+              width: cardWidth.clamp(180, double.infinity),
+              child: _ReportCard(
+                onTap: onOpenPurchases,
+                showDetailCue: true,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -830,6 +990,8 @@ class _SeasonPerformanceRow extends StatelessWidget {
             SizedBox(
               width: cardWidth.clamp(180, double.infinity),
               child: _ReportCard(
+                onTap: onOpenNetProfit,
+                showDetailCue: true,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -851,6 +1013,8 @@ class _SeasonPerformanceRow extends StatelessWidget {
             SizedBox(
               width: cardWidth.clamp(180, double.infinity),
               child: _ReportCard(
+                onTap: onOpenNetProfit,
+                showDetailCue: true,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [

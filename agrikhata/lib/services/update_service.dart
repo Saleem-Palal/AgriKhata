@@ -26,7 +26,13 @@ class UpdateService {
       }
 
       final response = await http
-          .get(Uri.parse(_manifestUrl))
+          .get(
+            _cacheBustedUri(Uri.parse(_manifestUrl)),
+            headers: const {
+              'Cache-Control': 'no-cache',
+              'Pragma': 'no-cache',
+            },
+          )
           .timeout(const Duration(seconds: 8));
 
       if (response.statusCode != 200) {
@@ -147,16 +153,24 @@ class UpdateService {
 
       onStatus?.call('Verifying update package...');
       await _flushUiFrames();
-      final matches =
-          await _msixIdentityVersionMatches(msixFile.path, expectedVersion);
-      if (!matches) {
-        final found = await _readMsixIdentityVersion(msixFile.path);
+      final found = await _readMsixIdentityVersion(msixFile.path);
+      if (found == null) {
+        // Inspection can fail on some Windows/App Installer setups; do not
+        // block install — trust release tag / version.json metadata.
+        debugPrint(
+          'UpdateService: MSIX identity version unreadable; '
+          'trusting release metadata ($expectedVersion)',
+        );
+        onStatus?.call(
+          'Could not verify package identity; continuing with release $expectedVersion...',
+        );
+      } else if (!_versionsEqual(found, expectedVersion)) {
         try {
           await msixFile.delete();
         } catch (_) {}
         throw StateError(
           'Downloaded package version mismatch. '
-          'Expected $expectedVersion, got ${found ?? "unknown"}. '
+          'Expected $expectedVersion, got $found. '
           'Upload the correct agrikhata.msix for this release, then try again.',
         );
       }
@@ -209,25 +223,37 @@ class UpdateService {
     } catch (_) {}
   }
 
+  /// Appends a cache-busting `t=` query so CDNs/proxies don't serve a stale MSIX.
+  Uri _cacheBustedUri(Uri uri) {
+    final params = Map<String, String>.from(uri.queryParameters);
+    params['t'] = DateTime.now().millisecondsSinceEpoch.toString();
+    return uri.replace(queryParameters: params);
+  }
+
   /// Fail fast with a clear error when the GitHub release asset is missing.
   Future<void> _assertDownloadAvailable(Uri uri) async {
     final client = http.Client();
+    final busted = _cacheBustedUri(uri);
     try {
       // Prefer HEAD; some CDNs dislike it — fall back to a ranged GET.
       var response = await client
-          .head(uri, headers: {
+          .head(busted, headers: {
             'User-Agent': 'AgriKhata-Updater',
             'Accept': 'application/octet-stream,*/*',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache',
           })
           .timeout(const Duration(seconds: 15));
 
       if (response.statusCode == 405 || response.statusCode == 501) {
         response = await client
             .get(
-              uri,
+              busted,
               headers: {
                 'User-Agent': 'AgriKhata-Updater',
                 'Accept': 'application/octet-stream,*/*',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache',
                 'Range': 'bytes=0-0',
               },
             )
@@ -300,15 +326,19 @@ try {
   }
 
   /// True when the package identity version matches [expected] (3-part semver).
+  /// Returns false when identity cannot be read (caller may re-download).
   Future<bool> _msixIdentityVersionMatches(
     String msixPath,
     String expected,
   ) async {
     final identity = await _readMsixIdentityVersion(msixPath);
     if (identity == null) return false;
-    // Identity is usually 1.0.16.0 — compare first 3 segments to expected 1.0.16
-    return !_isNewerVersion(expected, identity) &&
-        !_isNewerVersion(identity, expected);
+    return _versionsEqual(identity, expected);
+  }
+
+  /// Compares versions after normalizing Windows 4-part identities (`1.0.16.0`).
+  bool _versionsEqual(String a, String b) {
+    return normalizeVersion(a) == normalizeVersion(b);
   }
 
   Future<void> _flushUiFrames() async {
@@ -353,9 +383,11 @@ try {
 
     final client = http.Client();
     try {
-      final request = http.Request('GET', uri);
+      final request = http.Request('GET', _cacheBustedUri(uri));
       request.headers['User-Agent'] = 'AgriKhata-Updater';
       request.headers['Accept'] = 'application/octet-stream,*/*';
+      request.headers['Cache-Control'] = 'no-cache';
+      request.headers['Pragma'] = 'no-cache';
 
       final streamed = await client
           .send(request)
@@ -519,6 +551,26 @@ try {
     return UpdateService()._isNewerVersion(remote, local);
   }
 
+  /// Strips build/prerelease metadata and trailing Windows revision
+  /// (`1.0.16.0` → `1.0.16`).
+  static String normalizeVersion(String version) {
+    final cleaned = version.split('+').first.split('-').first.trim();
+    final withoutV =
+        cleaned.startsWith('v') || cleaned.startsWith('V')
+            ? cleaned.substring(1)
+            : cleaned;
+    final parts = withoutV
+        .split('.')
+        .where((p) => p.isNotEmpty)
+        .take(3)
+        .map((p) => (int.tryParse(p) ?? 0).toString())
+        .toList();
+    while (parts.length < 3) {
+      parts.add('0');
+    }
+    return parts.join('.');
+  }
+
   bool _isNewerVersion(String remote, String local) {
     final remoteParts = _parseVersion(remote);
     final localParts = _parseVersion(local);
@@ -531,8 +583,8 @@ try {
   }
 
   List<int> _parseVersion(String version) {
-    final cleaned = version.split('+').first.split('-').first.trim();
-    final parts = cleaned.split('.');
+    final normalized = normalizeVersion(version);
+    final parts = normalized.split('.');
     return [
       for (var i = 0; i < 3; i++)
         i < parts.length ? (int.tryParse(parts[i]) ?? 0) : 0,

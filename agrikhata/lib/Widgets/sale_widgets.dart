@@ -208,17 +208,35 @@ class KisaanCard extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(
-                kisaan.name,
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                  color: SaleColors.textDark,
-                ),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      kisaan.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: isSelected
+                            ? SaleColors.darkGreen
+                            : SaleColors.textDark,
+                      ),
+                    ),
+                  ),
+                  if (isSelected)
+                    const Icon(
+                      Icons.push_pin,
+                      size: 14,
+                      color: SaleColors.darkGreen,
+                    ),
+                ],
               ),
               const SizedBox(height: 1),
               Text(
                 kisaan.village,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
                   fontSize: 11,
                   color: SaleColors.textLight,
@@ -227,21 +245,25 @@ class KisaanCard extends StatelessWidget {
               const SizedBox(height: 5),
               Row(
                 children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 6,
-                      vertical: 2,
-                    ),
-                    decoration: BoxDecoration(
-                      color: SaleColors.paleGreen,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text(
-                      kisaan.crop,
-                      style: const TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w500,
-                        color: SaleColors.midGreen,
+                  Flexible(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 2,
+                      ),
+                      decoration: BoxDecoration(
+                        color: SaleColors.paleGreen,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        kisaan.crop,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w500,
+                          color: SaleColors.midGreen,
+                        ),
                       ),
                     ),
                   ),
@@ -538,7 +560,7 @@ class QuantityControl extends StatelessWidget {
 }
 
 // Inline editable currency field for table
-class InlineEditableField extends StatelessWidget {
+class InlineEditableField extends StatefulWidget {
   final double value;
   final Function(double) onChanged;
   final double width;
@@ -551,16 +573,70 @@ class InlineEditableField extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
-    final controller = TextEditingController(text: value.toStringAsFixed(0));
-    controller.selection = TextSelection.fromPosition(
-      TextPosition(offset: controller.text.length),
-    );
+  State<InlineEditableField> createState() => _InlineEditableFieldState();
+}
 
+class _InlineEditableFieldState extends State<InlineEditableField> {
+  late final TextEditingController _controller;
+  final FocusNode _focusNode = FocusNode();
+
+  static String _format(double value) => value.toStringAsFixed(0);
+
+  static double _parse(String raw) {
+    final cleaned = raw.replaceAll(',', '').trim();
+    if (cleaned.isEmpty) return 0.0;
+    return double.tryParse(cleaned) ?? 0.0;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: _format(widget.value));
+    _focusNode.addListener(_onFocusChange);
+  }
+
+  void _onFocusChange() {
+    if (_focusNode.hasFocus) return;
+    final parsed = _parse(_controller.text);
+    final text = _format(parsed);
+    if (_controller.text != text) {
+      _controller.value = TextEditingValue(
+        text: text,
+        selection: TextSelection.collapsed(offset: text.length),
+      );
+    }
+  }
+
+  @override
+  void didUpdateWidget(InlineEditableField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // While focused, leave the raw text alone so clearing "" can stay empty
+    // while cart state already treats it as 0.0.
+    if (_focusNode.hasFocus || oldWidget.value == widget.value) return;
+    final text = _format(widget.value);
+    if (_controller.text != text) {
+      _controller.value = TextEditingValue(
+        text: text,
+        selection: TextSelection.collapsed(offset: text.length),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _focusNode.removeListener(_onFocusChange);
+    _focusNode.dispose();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return SizedBox(
-      width: width,
+      width: widget.width,
       child: TextField(
-        controller: controller,
+        controller: _controller,
+        focusNode: _focusNode,
         textAlign: TextAlign.right,
         keyboardType: TextInputType.number,
         style: const TextStyle(fontSize: 11, color: SaleColors.textDark),
@@ -595,10 +671,8 @@ class InlineEditableField extends StatelessWidget {
           fillColor: SaleColors.cardBg,
         ),
         onChanged: (val) {
-          final parsed = double.tryParse(val.replaceAll(',', ''));
-          if (parsed != null) {
-            onChanged(parsed);
-          }
+          // Empty / invalid input → 0.0 so subtotals update immediately.
+          widget.onChanged(_parse(val));
         },
       ),
     );
@@ -802,6 +876,166 @@ class SaleInputField extends StatelessWidget {
             fillColor: SaleColors.cardBg,
           ),
           onChanged: onChanged,
+        ),
+      ],
+    );
+  }
+}
+
+/// Compact numeric field with a vertical up/down stepper in the suffix.
+///
+/// Used on the New Sale screen for Qty (step 1) and Price / Seasonal Inc (step 20).
+class CustomStepperTextField extends StatelessWidget {
+  final String label;
+  final TextEditingController controller;
+  final double stepValue;
+  final double minValue;
+  final bool integerOnly;
+  final String? hintText;
+  final ValueChanged<String>? onChanged;
+
+  const CustomStepperTextField({
+    super.key,
+    required this.label,
+    required this.controller,
+    required this.stepValue,
+    this.minValue = 0,
+    this.integerOnly = false,
+    this.hintText,
+    this.onChanged,
+  });
+
+  void _step(bool increment) {
+    final raw = controller.text.replaceAll(RegExp(r'[^0-9.]'), '');
+    final current = double.tryParse(raw) ?? 0;
+    final next = increment
+        ? current + stepValue
+        : (current - stepValue).clamp(minValue, double.infinity);
+    final text = integerOnly
+        ? next.round().toString()
+        : (next == next.roundToDouble()
+              ? next.toStringAsFixed(0)
+              : next.toStringAsFixed(0));
+    controller.text = text;
+    controller.selection = TextSelection.collapsed(offset: text.length);
+    onChanged?.call(text);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w500,
+            color: SaleColors.textMuted,
+          ),
+        ),
+        const SizedBox(height: 4),
+        TextFormField(
+          controller: controller,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          style: const TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            color: SaleColors.textDark,
+          ),
+          onChanged: onChanged,
+          decoration: InputDecoration(
+            hintText: hintText,
+            hintStyle: const TextStyle(
+              fontSize: 11,
+              color: SaleColors.textLight,
+              fontWeight: FontWeight.w500,
+            ),
+            contentPadding: const EdgeInsets.fromLTRB(8, 8, 0, 8),
+            isDense: true,
+            suffixIconConstraints: const BoxConstraints(
+              minWidth: 28,
+              minHeight: 36,
+            ),
+            suffixIcon: Padding(
+              padding: const EdgeInsets.only(right: 2, top: 2, bottom: 2),
+              child: Material(
+                color: SaleColors.darkGreen,
+                borderRadius: BorderRadius.circular(7),
+                child: SizedBox(
+                  width: 26,
+                  height: 32,
+                  child: Column(
+                    children: [
+                      SizedBox(
+                        height: 15,
+                        width: 26,
+                        child: InkWell(
+                          onTap: () => _step(true),
+                          borderRadius: const BorderRadius.vertical(
+                            top: Radius.circular(7),
+                          ),
+                          child: const Center(
+                            child: Icon(
+                              Icons.arrow_drop_up,
+                              size: 18,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                      ),
+                      Container(
+                        height: 1,
+                        width: 26,
+                        color: Colors.white.withValues(alpha: 0.25),
+                      ),
+                      SizedBox(
+                        height: 16,
+                        width: 26,
+                        child: InkWell(
+                          onTap: () => _step(false),
+                          borderRadius: const BorderRadius.vertical(
+                            bottom: Radius.circular(7),
+                          ),
+                          child: const Center(
+                            child: Icon(
+                              Icons.arrow_drop_down,
+                              size: 18,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(9),
+              borderSide: const BorderSide(
+                color: SaleColors.borderMid,
+                width: 0.5,
+              ),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(9),
+              borderSide: const BorderSide(
+                color: SaleColors.borderMid,
+                width: 0.5,
+              ),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(9),
+              borderSide: const BorderSide(
+                color: SaleColors.accentGreen,
+                width: 1,
+              ),
+            ),
+            filled: true,
+            fillColor: SaleColors.cardBg,
+          ),
         ),
       ],
     );

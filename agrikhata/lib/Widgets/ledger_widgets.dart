@@ -11,9 +11,11 @@ final _currencyFormat = NumberFormat('#,##,##0');
 final _dateFormat = DateFormat('dd MMM');
 final _timeFormat = DateFormat('hh:mm a');
 
-/// Expandable discount breakdown for product-sale ledger rows.
+/// Expandable pricing breakdown for product-sale ledger rows.
+/// Formula: Base + Seasonal Inc − Item Disc − Overall Disc = Net Payable.
 class SaleDiscountBreakdownPanel extends StatelessWidget {
   final double grossSubtotal;
+  final double seasonalIncrementTotal;
   final double itemDiscountsTotal;
   final double overallDiscount;
   final double netPayable;
@@ -21,6 +23,7 @@ class SaleDiscountBreakdownPanel extends StatelessWidget {
   const SaleDiscountBreakdownPanel({
     super.key,
     required this.grossSubtotal,
+    this.seasonalIncrementTotal = 0,
     required this.itemDiscountsTotal,
     required this.overallDiscount,
     required this.netPayable,
@@ -40,7 +43,13 @@ class SaleDiscountBreakdownPanel extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _line('Gross Subtotal', grossSubtotal),
+          _line('Base Sales Revenue', grossSubtotal),
+          if (seasonalIncrementTotal > 0)
+            _line(
+              'Seasonal Increment',
+              seasonalIncrementTotal,
+              isSeasonal: true,
+            ),
           if (itemDiscountsTotal > 0)
             _line('Item Discount', -itemDiscountsTotal, isDiscount: true),
           if (overallDiscount > 0)
@@ -57,8 +66,9 @@ class SaleDiscountBreakdownPanel extends StatelessWidget {
     double amount, {
     bool bold = false,
     bool isDiscount = false,
+    bool isSeasonal = false,
   }) {
-    final prefix = amount < 0 ? '-₨ ' : '₨ ';
+    final prefix = amount < 0 ? '-₨ ' : (isSeasonal ? '+₨ ' : '₨ ');
     final value = _currencyFormat.format(amount.abs());
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
@@ -80,10 +90,143 @@ class SaleDiscountBreakdownPanel extends StatelessWidget {
               fontWeight: bold ? FontWeight.w600 : FontWeight.w500,
               color: isDiscount
                   ? const Color(0xFF28A745)
-                  : const Color(0xFF1B4332),
+                  : isSeasonal
+                      ? const Color(0xFF0C447C)
+                      : const Color(0xFF1B4332),
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Compact always-visible seasonal / discount lines for ledger table rows.
+class SaleDiscountInlineSummary extends StatelessWidget {
+  final double seasonalIncrementTotal;
+  final double itemDiscountsTotal;
+  final double overallDiscount;
+
+  const SaleDiscountInlineSummary({
+    super.key,
+    this.seasonalIncrementTotal = 0,
+    required this.itemDiscountsTotal,
+    required this.overallDiscount,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (seasonalIncrementTotal <= 0 &&
+        itemDiscountsTotal <= 0 &&
+        overallDiscount <= 0) {
+      return const SizedBox.shrink();
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (seasonalIncrementTotal > 0)
+            Text(
+              'Seasonal Inc: +₨ ${_currencyFormat.format(seasonalIncrementTotal)}',
+              style: const TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w500,
+                color: Color(0xFF0C447C),
+              ),
+            ),
+          if (itemDiscountsTotal > 0)
+            Text(
+              'Item Disc: -₨ ${_currencyFormat.format(itemDiscountsTotal)}',
+              style: const TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w500,
+                color: Color(0xFF28A745),
+              ),
+            ),
+          if (overallDiscount > 0)
+            Text(
+              'Overall Disc: -₨ ${_currencyFormat.format(overallDiscount)}',
+              style: const TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w500,
+                color: Color(0xFF28A745),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+const _kInvoiceDescriptionWidth = 140.0;
+
+/// Product lines + seasonal / discount adjustments (Items column).
+class LedgerItemsColumn extends StatelessWidget {
+  final String itemsText;
+  final bool showPricingAdjustments;
+  final double seasonalIncrementTotal;
+  final double itemDiscountsTotal;
+  final double overallDiscount;
+
+  const LedgerItemsColumn({
+    super.key,
+    required this.itemsText,
+    this.showPricingAdjustments = false,
+    this.seasonalIncrementTotal = 0,
+    this.itemDiscountsTotal = 0,
+    this.overallDiscount = 0,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          itemsText,
+          style: const TextStyle(
+            fontSize: 11,
+            color: Color(0xFF6B8F71),
+            height: 1.4,
+          ),
+          overflow: TextOverflow.ellipsis,
+          maxLines: 2,
+        ),
+        if (showPricingAdjustments)
+          SaleDiscountInlineSummary(
+            seasonalIncrementTotal: seasonalIncrementTotal,
+            itemDiscountsTotal: itemDiscountsTotal,
+            overallDiscount: overallDiscount,
+          ),
+      ],
+    );
+  }
+}
+
+/// Free-text invoice remarks (separate from product / pricing lines).
+class LedgerInvoiceDescriptionColumn extends StatelessWidget {
+  final String text;
+
+  const LedgerInvoiceDescriptionColumn({super.key, required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    final display = text.trim().isEmpty ? '—' : text.trim();
+    return SizedBox(
+      width: _kInvoiceDescriptionWidth,
+      child: Text(
+        display,
+        style: TextStyle(
+          fontSize: 11,
+          color: display == '—'
+              ? const Color(0xFF95B89A)
+              : const Color(0xFF6B8F71),
+          height: 1.4,
+        ),
+        overflow: TextOverflow.ellipsis,
+        maxLines: 3,
       ),
     );
   }
@@ -280,27 +423,47 @@ class _MainLedgerExpandableRowState extends State<_MainLedgerExpandableRow> {
                     ),
                   ),
                   Expanded(
-                    child: Text(
-                      entry.ledgerSummary,
-                      style: const TextStyle(
-                        fontSize: 11,
-                        color: Color(0xFF6B8F71),
-                        height: 1.4,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                      maxLines: 2,
+                    child: LedgerItemsColumn(
+                      itemsText: entry.itemsSummary,
+                      showPricingAdjustments: entry.isProductSale &&
+                          entry.hasVisiblePricingAdjustments,
+                      seasonalIncrementTotal:
+                          entry.seasonalIncrementTotal ?? 0,
+                      itemDiscountsTotal: entry.itemDiscountsTotal ?? 0,
+                      overallDiscount: entry.overallDiscount ?? 0,
                     ),
                   ),
+                  LedgerInvoiceDescriptionColumn(
+                    text: entry.invoiceDescriptionText,
+                  ),
+                  const SizedBox(width: 8),
                   SizedBox(
                     width: 90,
-                    child: Text(
-                      '₨ ${_currencyFormat.format(entry.total)}',
-                      textAlign: TextAlign.right,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                        color: Color(0xFF1B4332),
-                      ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        if (entry.isProductSale &&
+                            entry.hasVisiblePricingAdjustments &&
+                            entry.grossSubtotal != null)
+                          Text(
+                            '₨ ${_currencyFormat.format(entry.preDiscountTotal)}',
+                            textAlign: TextAlign.right,
+                            style: const TextStyle(
+                              fontSize: 10,
+                              color: Color(0xFF95B89A),
+                              decoration: TextDecoration.lineThrough,
+                            ),
+                          ),
+                        Text(
+                          '₨ ${_currencyFormat.format(entry.total)}',
+                          textAlign: TextAlign.right,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                            color: Color(0xFF1B4332),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                   SizedBox(
@@ -408,6 +571,7 @@ class _MainLedgerExpandableRowState extends State<_MainLedgerExpandableRow> {
               padding: const EdgeInsets.only(left: 14, right: 14, bottom: 10),
               child: SaleDiscountBreakdownPanel(
                 grossSubtotal: entry.grossSubtotal!,
+                seasonalIncrementTotal: entry.seasonalIncrementTotal ?? 0,
                 itemDiscountsTotal: entry.itemDiscountsTotal ?? 0,
                 overallDiscount: entry.overallDiscount ?? 0,
                 netPayable: entry.netPayable,
@@ -549,7 +713,7 @@ class LedgerTable extends StatelessWidget {
           ),
           Expanded(
             child: Text(
-              'ITEMS / DESCRIPTION',
+              'ITEMS',
               style: TextStyle(
                 fontSize: 10,
                 fontWeight: FontWeight.w500,
@@ -558,6 +722,19 @@ class LedgerTable extends StatelessWidget {
               ),
             ),
           ),
+          SizedBox(
+            width: _kInvoiceDescriptionWidth,
+            child: Text(
+              'INVOICE DESCRIPTION',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w500,
+                color: Color(0xFF6B8F71),
+                letterSpacing: 0.3,
+              ),
+            ),
+          ),
+          SizedBox(width: 8),
           SizedBox(
             width: 90,
             child: Text(
@@ -678,6 +855,7 @@ class ZamindarLedgerRow {
   final DateTime dateTime;
   final String kisaanName;
   final String itemsText;
+  final String invoiceDescriptionText;
   final double total;
   final double paid;
   final PaymentStatus? paymentStatus;
@@ -685,6 +863,7 @@ class ZamindarLedgerRow {
   final bool isEdited;
   final String? paymentId;
   final double? grossSubtotal;
+  final double? seasonalIncrementTotal;
   final double? itemDiscountsTotal;
   final double? overallDiscount;
   final double? netPayableAmount;
@@ -697,6 +876,7 @@ class ZamindarLedgerRow {
     required this.dateTime,
     required this.kisaanName,
     required this.itemsText,
+    this.invoiceDescriptionText = '—',
     required this.total,
     required this.paid,
     this.paymentStatus,
@@ -704,6 +884,7 @@ class ZamindarLedgerRow {
     this.isEdited = false,
     this.paymentId,
     this.grossSubtotal,
+    this.seasonalIncrementTotal,
     this.itemDiscountsTotal,
     this.overallDiscount,
     this.netPayableAmount,
@@ -712,7 +893,20 @@ class ZamindarLedgerRow {
   bool get isSaleDebit => category == 'SALE' && isDebit;
 
   bool get hasSaleDiscountBreakdown =>
-      isSaleDebit && grossSubtotal != null;
+      isSaleDebit &&
+      (grossSubtotal != null ||
+          (seasonalIncrementTotal ?? 0) > 0 ||
+          (itemDiscountsTotal ?? 0) > 0 ||
+          (overallDiscount ?? 0) > 0);
+
+  bool get hasVisibleDiscounts =>
+      (itemDiscountsTotal ?? 0) > 0 || (overallDiscount ?? 0) > 0;
+
+  bool get hasVisiblePricingAdjustments =>
+      (seasonalIncrementTotal ?? 0) > 0 || hasVisibleDiscounts;
+
+  double get preDiscountTotal =>
+      (grossSubtotal ?? 0) + (seasonalIncrementTotal ?? 0);
 
   double get outstanding => (total - paid).clamp(0.0, double.infinity);
 
@@ -736,6 +930,8 @@ class ZamindarLedgerRow {
     required List<Map<String, dynamic>> transactions,
     required Map<String, String> itemSummaries,
     required Map<String, Map<String, double>> collections,
+    Map<String, Map<String, double>>? saleDiscounts,
+    Map<String, String>? saleRemarks,
   }) {
     return transactions.map((row) {
       final type = row['type'] as String? ?? '';
@@ -764,25 +960,52 @@ class ZamindarLedgerRow {
       final isEdited = editedRaw != null && editedRaw.trim().isNotEmpty;
 
       String itemsText;
+      String invoiceDescriptionText = '—';
       // Advances store a generic line item ("Cash Advance x1"); prefer the
-      // ledger description so remarks are visible in the Items column.
+      // ledger description so remarks are visible in the invoice description column.
       if (isAdvanceCategory) {
         final trimmed = description.trim();
         if (trimmed.isEmpty || RegExp(r':\s*$').hasMatch(trimmed)) {
           itemsText = _statusLabelForCategory(category);
         } else {
-          itemsText = trimmed;
+          itemsText = _statusLabelForCategory(category);
+          invoiceDescriptionText = trimmed;
         }
       } else if (category == 'WALLET_DEDUCTION') {
         itemsText = PaymentLedgerEntry.formatAdvanceDeductionSummary(
           itemsFromInvoice.isNotEmpty ? itemsFromInvoice : description,
         );
+        if (description.trim().isNotEmpty) {
+          invoiceDescriptionText = description.trim();
+        }
+      } else if (isSale) {
+        itemsText = itemsFromInvoice.isNotEmpty ? itemsFromInvoice : '—';
+        final joinedDescription =
+            (row[SaleJoinColumns.description] as String?)?.trim() ?? '';
+        final joinedRemarks =
+            (row[SaleJoinColumns.remarks] as String?)?.trim() ?? '';
+        final batchRemarks = hasInvoice
+            ? (saleRemarks?[invoiceNumber]?.trim() ?? '')
+            : '';
+        final note = joinedDescription.isNotEmpty
+            ? joinedDescription
+            : (joinedRemarks.isNotEmpty ? joinedRemarks : batchRemarks);
+        if (note.isNotEmpty) invoiceDescriptionText = note;
       } else if (itemsFromInvoice.isNotEmpty) {
         itemsText = itemsFromInvoice;
       } else if (description.isNotEmpty) {
         itemsText = description;
       } else {
         itemsText = '—';
+      }
+
+      if (!isSale && !isAdvanceCategory && category != 'WALLET_DEDUCTION') {
+        final paymentNotes = (row['payment_notes'] as String?)?.trim() ?? '';
+        if (paymentNotes.isNotEmpty) {
+          invoiceDescriptionText = paymentNotes;
+        } else if (description.trim().isNotEmpty) {
+          invoiceDescriptionText = description.trim();
+        }
       }
 
       double total;
@@ -810,14 +1033,41 @@ class ZamindarLedgerRow {
         statusLabel = _statusLabelForCategory(category);
       }
 
+      Map<String, double>? discountFromBatch;
+      if (hasInvoice && saleDiscounts != null) {
+        discountFromBatch = saleDiscounts[invoiceNumber];
+      }
+      final joinedSubtotal =
+          (row[SaleJoinColumns.subtotal] as num?)?.toDouble();
+      final joinedSeasonal =
+          (row[SaleJoinColumns.seasonalIncrementTotal] as num?)?.toDouble();
+      final joinedItemDiscounts =
+          (row[SaleJoinColumns.itemDiscountsTotal] as num?)?.toDouble();
+      final joinedOverallDiscount =
+          (row[SaleJoinColumns.overallDiscount] as num?)?.toDouble();
+      final batchSubtotal = discountFromBatch != null
+          ? discountFromBatch['subtotal']
+          : null;
+      final batchSeasonal = discountFromBatch != null
+          ? discountFromBatch['seasonal_increment_total']
+          : null;
+      final batchItemDiscounts = discountFromBatch != null
+          ? discountFromBatch['item_discounts_total']
+          : null;
+      final batchOverallDiscount = discountFromBatch != null
+          ? discountFromBatch['overall_discount']
+          : null;
       final grossSubtotal = isSale
-          ? (row[SaleJoinColumns.subtotal] as num?)?.toDouble()
+          ? joinedSubtotal ?? batchSubtotal
+          : null;
+      final seasonalIncrementTotal = isSale
+          ? joinedSeasonal ?? batchSeasonal ?? 0
           : null;
       final itemDiscountsTotal = isSale
-          ? (row[SaleJoinColumns.itemDiscountsTotal] as num?)?.toDouble() ?? 0
+          ? joinedItemDiscounts ?? batchItemDiscounts ?? 0
           : null;
       final overallDiscount = isSale
-          ? (row[SaleJoinColumns.overallDiscount] as num?)?.toDouble() ?? 0
+          ? joinedOverallDiscount ?? batchOverallDiscount ?? 0
           : null;
 
       return ZamindarLedgerRow(
@@ -828,6 +1078,7 @@ class ZamindarLedgerRow {
         dateTime: dateTime,
         kisaanName: kisaanName.isEmpty ? '—' : kisaanName,
         itemsText: itemsText,
+        invoiceDescriptionText: invoiceDescriptionText,
         total: total,
         paid: paid,
         paymentStatus: paymentStatus,
@@ -835,6 +1086,7 @@ class ZamindarLedgerRow {
         isEdited: isEdited,
         paymentId: paymentId,
         grossSubtotal: grossSubtotal,
+        seasonalIncrementTotal: seasonalIncrementTotal,
         itemDiscountsTotal: itemDiscountsTotal,
         overallDiscount: overallDiscount,
         netPayableAmount: isSale ? amount : null,
@@ -982,27 +1234,47 @@ class _ZamindarLedgerExpandableRowState
                     ),
                   ),
                   Expanded(
-                    child: Text(
-                      row.itemsText,
-                      style: const TextStyle(
-                        fontSize: 11,
-                        color: Color(0xFF6B8F71),
-                        height: 1.4,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                      maxLines: 2,
+                    child: LedgerItemsColumn(
+                      itemsText: row.itemsText,
+                      showPricingAdjustments: row.isSaleDebit &&
+                          row.hasVisiblePricingAdjustments,
+                      seasonalIncrementTotal:
+                          row.seasonalIncrementTotal ?? 0,
+                      itemDiscountsTotal: row.itemDiscountsTotal ?? 0,
+                      overallDiscount: row.overallDiscount ?? 0,
                     ),
                   ),
+                  LedgerInvoiceDescriptionColumn(
+                    text: row.invoiceDescriptionText,
+                  ),
+                  const SizedBox(width: 8),
                   SizedBox(
                     width: 90,
-                    child: Text(
-                      '₨ ${_currencyFormat.format(row.total)}',
-                      textAlign: TextAlign.right,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                        color: Color(0xFF1B4332),
-                      ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        if (row.isSaleDebit &&
+                            row.hasVisiblePricingAdjustments &&
+                            row.grossSubtotal != null)
+                          Text(
+                            '₨ ${_currencyFormat.format(row.preDiscountTotal)}',
+                            textAlign: TextAlign.right,
+                            style: const TextStyle(
+                              fontSize: 10,
+                              color: Color(0xFF95B89A),
+                              decoration: TextDecoration.lineThrough,
+                            ),
+                          ),
+                        Text(
+                          '₨ ${_currencyFormat.format(row.total)}',
+                          textAlign: TextAlign.right,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                            color: Color(0xFF1B4332),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                   SizedBox(
@@ -1058,6 +1330,7 @@ class _ZamindarLedgerExpandableRowState
               padding: const EdgeInsets.only(left: 31, right: 14, bottom: 10),
               child: SaleDiscountBreakdownPanel(
                 grossSubtotal: row.grossSubtotal!,
+                seasonalIncrementTotal: row.seasonalIncrementTotal ?? 0,
                 itemDiscountsTotal: row.itemDiscountsTotal ?? 0,
                 overallDiscount: row.overallDiscount ?? 0,
                 netPayable: row.netPayableAmount ?? row.total,
@@ -1176,8 +1449,16 @@ class ZamindarLedgerTable extends StatelessWidget {
             child: Text('KISAAN', style: _headerStyle),
           ),
           const Expanded(
-            child: Text('ITEMS / DESCRIPTION', style: _headerStyle),
+            child: Text('ITEMS', style: _headerStyle),
           ),
+          SizedBox(
+            width: _kInvoiceDescriptionWidth,
+            child: const Text(
+              'INVOICE DESCRIPTION',
+              style: _headerStyle,
+            ),
+          ),
+          const SizedBox(width: 8),
           const SizedBox(
             width: 90,
             child: Text(
@@ -1521,7 +1802,7 @@ class _InvoiceDetailDialogState extends State<InvoiceDetailDialog> {
           if (item.discount > 0) ...[
             const SizedBox(height: 4),
             Text(
-              'Discount: Rs ${_currencyFormat.format(item.discount)}',
+              'Discount: Rs ${_currencyFormat.format(item.discount)} per unit',
               style: const TextStyle(fontSize: 12, color: Color(0xFF28A745)),
             ),
           ],
@@ -1548,7 +1829,13 @@ class _InvoiceDetailDialogState extends State<InvoiceDetailDialog> {
 
     if (entry.hasSaleDiscountBreakdown) {
       children.addAll([
-        _buildTotalRow('Gross Subtotal:', entry.grossSubtotal!),
+        _buildTotalRow('Base Sales Revenue:', entry.grossSubtotal!),
+        if ((entry.seasonalIncrementTotal ?? 0) > 0)
+          _buildTotalRow(
+            'Seasonal Increment:',
+            entry.seasonalIncrementTotal!,
+            color: const Color(0xFF0C447C),
+          ),
         if ((entry.itemDiscountsTotal ?? 0) > 0)
           _buildTotalRow(
             'Item Discount:',

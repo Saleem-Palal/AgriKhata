@@ -17,8 +17,13 @@ import '../Data/agri_header.dart';
 
 class MainLedgerScreen extends StatefulWidget {
   final Function(String)? onEditInvoice;
+  final int? initialTabIndex;
 
-  const MainLedgerScreen({super.key, this.onEditInvoice});
+  const MainLedgerScreen({
+    super.key,
+    this.onEditInvoice,
+    this.initialTabIndex,
+  });
 
   @override
   State<MainLedgerScreen> createState() => _MainLedgerScreenState();
@@ -51,7 +56,12 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    final initialTab = widget.initialTabIndex ?? 0;
+    _tabController = TabController(
+      length: 3,
+      vsync: this,
+      initialIndex: initialTab.clamp(0, 2),
+    );
     _tabController.addListener(() {
       if (!_tabController.indexIsChanging) {
         setState(() {});
@@ -259,8 +269,11 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
         final totalPayable =
             (sale[db.SalesTable.totalPayable] as num).toDouble();
         final grossSubtotal =
-            (sale[db.SalesTable.subtotal] as num?)?.toDouble();
-        final itemDiscountsTotal =
+            (sale[db.SalesTable.subtotal] as num).toDouble();
+        final seasonalIncrementTotal =
+            (sale[db.SalesTable.seasonalIncrementTotal] as num?)?.toDouble() ??
+                0;
+        var itemDiscountsTotal =
             (sale[db.SalesTable.itemDiscountsTotal] as num?)?.toDouble() ?? 0;
         final overallDiscount =
             (sale[db.SalesTable.overallDiscount] as num?)?.toDouble() ?? 0;
@@ -268,6 +281,8 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
             sale[db.SalesTable.transactionType] as String? ??
             db.SaleTransactionType.productSale;
         final remarks = (sale[db.SalesTable.remarks] as String?)?.trim();
+        final invoiceDescription =
+            (sale[db.SalesTable.description] as String?)?.trim();
 
         final items = itemsList.map((item) {
           return LineItem(
@@ -285,6 +300,22 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
           );
         }).toList();
 
+        var resolvedSeasonal = seasonalIncrementTotal;
+        if (resolvedSeasonal <= 0) {
+          final fromLines = items.fold<double>(
+            0,
+            (sum, item) => sum + item.totalItemSeasonalInc,
+          );
+          if (fromLines > 0) resolvedSeasonal = fromLines;
+        }
+        if (itemDiscountsTotal <= 0) {
+          final fromLineItems = items.fold<double>(
+            0,
+            (sum, item) => sum + item.totalItemDiscount,
+          );
+          if (fromLineItems > 0) itemDiscountsTotal = fromLineItems;
+        }
+
         PaymentStatus status;
         if (totalCollected >= totalPayable) {
           status = PaymentStatus.paid;
@@ -297,8 +328,12 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
         String? advanceDescription;
         if (db.SaleTransactionType.isAdvance(transactionType)) {
           final label = db.SaleTransactionType.displayLabel(transactionType);
-          advanceDescription = (remarks != null && remarks.isNotEmpty)
-              ? '$label: $remarks'
+          final note = (invoiceDescription != null &&
+                  invoiceDescription.isNotEmpty)
+              ? invoiceDescription
+              : remarks;
+          advanceDescription = (note != null && note.isNotEmpty)
+              ? '$label: $note'
               : label;
         }
 
@@ -315,9 +350,13 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
             status: status,
             season: _selectedSeason.displayName,
             isWalkInCustomer: !registeredZamindarNames.contains(zamindarName),
-            description: advanceDescription,
+            description: advanceDescription ??
+                ((invoiceDescription != null && invoiceDescription.isNotEmpty)
+                    ? invoiceDescription
+                    : null),
             transactionType: transactionType,
             grossSubtotal: grossSubtotal,
+            seasonalIncrementTotal: resolvedSeasonal,
             itemDiscountsTotal: itemDiscountsTotal,
             overallDiscount: overallDiscount,
             createdByUserId:
@@ -415,7 +454,8 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
       return entry.invoiceNumber.toLowerCase().contains(_searchQuery) ||
           entry.stakeholderName.toLowerCase().contains(_searchQuery) ||
           (entry.kisaanName?.toLowerCase().contains(_searchQuery) ?? false) ||
-          entry.ledgerSummary.toLowerCase().contains(_searchQuery);
+          entry.itemsSummary.toLowerCase().contains(_searchQuery) ||
+          (entry.description?.toLowerCase().contains(_searchQuery) ?? false);
     }).toList();
   }
 
@@ -425,7 +465,8 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
       return entry.invoiceNumber.toLowerCase().contains(_searchQuery) ||
           entry.stakeholderName.toLowerCase().contains(_searchQuery) ||
           (entry.kisaanName?.toLowerCase().contains(_searchQuery) ?? false) ||
-          entry.ledgerSummary.toLowerCase().contains(_searchQuery);
+          entry.itemsSummary.toLowerCase().contains(_searchQuery) ||
+          (entry.description?.toLowerCase().contains(_searchQuery) ?? false);
     }).toList();
   }
 
@@ -846,30 +887,64 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
 
     final summary = LedgerSummary.fromEntries(_filteredSalesEntries);
 
-    return Row(
+    return Column(
       children: [
-        Expanded(
-          child: _buildKpiCard(
-            'Total Volume Sold',
-            summary.totalVolume,
-            const Color(0xFF1B4332),
-          ),
+        Row(
+          children: [
+            Expanded(
+              child: _buildKpiCard(
+                'Gross Sales (Base)',
+                summary.grossSales > 0
+                    ? summary.grossSales
+                    : summary.totalVolume,
+                const Color(0xFF1B4332),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _buildKpiCard(
+                'Seasonal Increments',
+                summary.totalSeasonalIncrements,
+                const Color(0xFF0C447C),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _buildKpiCard(
+                'Discounts Given',
+                summary.totalDiscountsGiven,
+                const Color(0xFF28A745),
+              ),
+            ),
+          ],
         ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _buildKpiCard(
-            'Total Cash Received',
-            summary.totalCashReceived,
-            const Color(0xFF2D6A4F),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _buildKpiCard(
-            'Outstanding Credit',
-            summary.outstandingCredit,
-            const Color(0xFFA32D2D),
-          ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+              child: _buildKpiCard(
+                'Net Volume Sold',
+                summary.totalVolume,
+                const Color(0xFF1B4332),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _buildKpiCard(
+                'Total Cash Received',
+                summary.totalCashReceived,
+                const Color(0xFF2D6A4F),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _buildKpiCard(
+                'Outstanding Credit',
+                summary.outstandingCredit,
+                const Color(0xFFA32D2D),
+              ),
+            ),
+          ],
         ),
       ],
     );

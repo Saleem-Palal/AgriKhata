@@ -12,9 +12,8 @@ import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:url_launcher/url_launcher.dart';
-
 import '../Database/database_helper.dart';
+import 'desktop_loopback_oauth_service.dart';
 import 'google_oauth_config.dart';
 
 /// Metadata for a backup ZIP stored in Google Drive.
@@ -53,17 +52,7 @@ class BackupService {
   BackupService._();
   static final BackupService instance = BackupService._();
 
-  static const driveFileScope =
-      'https://www.googleapis.com/auth/drive.file';
-  static const userInfoEmailScope =
-      'https://www.googleapis.com/auth/userinfo.email';
-  static const openIdScope = 'openid';
-
-  static const List<String> _scopes = [
-    driveFileScope,
-    userInfoEmailScope,
-    openIdScope,
-  ];
+  static const List<String> _scopes = DesktopLoopbackOAuthService.scopes;
 
   static const _backupFolderName = 'AgriKhata_Backups';
   static const _prefsEmailKey = 'agrikhata_drive_account_email';
@@ -545,20 +534,8 @@ class BackupService {
       _authClient = null;
     }
 
-    final client = await clientViaUserConsent(
-      clientId,
-      _scopes,
-      (url) async {
-        final uri = Uri.parse(url);
-        final launched = await launchUrl(
-          uri,
-          mode: LaunchMode.externalApplication,
-        );
-        if (!launched) {
-          throw StateError('Could not open browser for Google sign-in');
-        }
-      },
-      listenPort: GoogleOAuthConfig.loopbackPort,
+    final client = await DesktopLoopbackOAuthService.instance.authorize(
+      forceConsent: forceConsent,
     );
 
     await _persistCredentials(client.credentials);

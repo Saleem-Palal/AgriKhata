@@ -12,44 +12,48 @@ flutter run -d windows
 
 ## Google Drive OAuth (desktop)
 
-Drive backup uses a Google Cloud **Desktop** OAuth client. Secrets must **not** be committed to Git.
+Drive backup and desktop Google sign-in use a Google Cloud **Desktop** OAuth client.
+Secrets must **not** be committed to Git.
+
+### Local setup
+
+```bash
+cd agrikhata
+copy .env.example .env
+# Edit .env with your Desktop OAuth Client ID / Secret
+```
+
+`.env` is gitignored and registered as a Flutter asset so Windows release builds
+bundle it for out-of-the-box OAuth. Keep real credentials only in `.env`.
 
 ### Resolution order
 
-1. Values saved in **Settings** (SharedPreferences on the device)
-2. Compile-time defines: `GOOGLE_CLIENT_ID` and optional `GOOGLE_CLIENT_SECRET`
+1. Values saved in **Settings** (SharedPreferences) — optional override
+2. Bundled `.env` via `flutter_dotenv` (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`)
+3. Compile-time `--dart-define=GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`
 
-If `GOOGLE_CLIENT_ID` is empty during development, the app logs a warning and keeps Drive backup disabled instead of crashing. Enter credentials in Settings, or pass defines at build time.
+If the Client ID is missing, the app logs a warning and keeps Google OAuth
+disabled instead of crashing.
 
 ### Production `.msix` builds
 
-Bake the Client ID into the package (never hardcode it in source):
+Prefer a release-machine `.env` next to `pubspec.yaml` so credentials ship in
+assets. Alternatively bake defines:
 
 ```bash
 flutter pub run msix:create --dart-define=GOOGLE_CLIENT_ID="<CLIENT_ID>"
 ```
-
-Optional secret (only if your OAuth client requires it):
-
-```bash
-flutter pub run msix:create ^
-  --dart-define=GOOGLE_CLIENT_ID="<CLIENT_ID>" ^
-  --dart-define=GOOGLE_CLIENT_SECRET="<CLIENT_SECRET>"
-```
-
-Or set an environment variable and use `build_demo.bat` (Windows), which forwards `GOOGLE_CLIENT_ID` when present.
 
 ### Setup checklist
 
 1. Google Cloud Console → enable **Google Drive API**
 2. Credentials → OAuth client ID → **Desktop app**
 3. Authorized redirect URI (if prompted): `http://localhost:8765/`
-4. Pass `GOOGLE_CLIENT_ID` via `--dart-define` for release builds, or enter it once in Settings for local testing
+4. Copy `.env.example` → `.env` and fill credentials before `flutter build windows`
 
 ## Demo / release package
 
 ```bash
-# Optional: set before running so MSIX embeds the Client ID
-set GOOGLE_CLIENT_ID=your-id.apps.googleusercontent.com
+# Ensure agrikhata/.env exists with GOOGLE_CLIENT_ID before packaging
 build_demo.bat
 ```

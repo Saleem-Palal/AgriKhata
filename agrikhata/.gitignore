@@ -12,6 +12,11 @@
 .swiftpm/
 migrate_working_dir/
 
+# Local secrets — never commit real OAuth credentials
+.env
+.env.local
+.env.*.local
+
 # IntelliJ related
 *.iml
 *.ipr

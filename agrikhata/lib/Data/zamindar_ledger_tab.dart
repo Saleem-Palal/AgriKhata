@@ -32,9 +32,10 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
   List<Map<String, dynamic>> _allTransactions = [];
   Map<String, String> _invoiceItemSummaries = {};
   Map<String, Map<String, double>> _invoiceCollections = {};
+  Map<String, Map<String, double>> _invoiceSaleDiscounts = {};
+  Map<String, String> _invoiceSaleRemarks = {};
   String _outstandingBalanceDisplay = "Rs. 0";
   double _outstandingBalanceAmount = 0;
-  int _totalPaymentsReceived = 0;
   bool _isLoading = true;
   bool _isExporting = false;
   String? _loadError;
@@ -84,8 +85,6 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
       );
       final outstandingBalance = await DatabaseHelper.instance
           .getOutstandingBalanceString(widget.zamindarId);
-      final totalPayments = await DatabaseHelper.instance
-          .getTotalPaymentsReceived(widget.zamindarId);
       final distinctSeasons = await DatabaseHelper.instance
           .getDistinctSeasonsForZamindar(widget.zamindarId);
       final filterLabels = await SeasonService.instance.zamindarFilterLabels();
@@ -117,16 +116,21 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
           .getSaleItemsSummariesForInvoices(invoiceNumbers);
       final collections = await DatabaseHelper.instance
           .getInvoiceCollectionSummaries(invoiceNumbers);
+      final saleDiscounts = await DatabaseHelper.instance
+          .getSaleDiscountSummariesForInvoices(invoiceNumbers);
+      final saleRemarks = await DatabaseHelper.instance
+          .getSaleRemarksForInvoices(invoiceNumbers);
 
       if (!mounted) return;
       setState(() {
         _allTransactions = transactions;
         _invoiceItemSummaries = itemSummaries;
         _invoiceCollections = collections;
+        _invoiceSaleDiscounts = saleDiscounts;
+        _invoiceSaleRemarks = saleRemarks;
         _outstandingBalanceDisplay = outstandingBalance;
         _outstandingBalanceAmount =
             (balances?['outstandingBalance'] as num?)?.toDouble() ?? 0;
-        _totalPaymentsReceived = totalPayments;
         _seasons = seasons;
         if (!_seasons.contains(_selectedSeason)) {
           _selectedSeason = SeasonFilterOption.current;
@@ -164,6 +168,8 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
 
       final invoiceNumber =
           row[LedgerTransactionTable.invoiceNumber] as String? ?? '';
+      final invoiceRemarks =
+          (_invoiceSaleRemarks[invoiceNumber] ?? '').toLowerCase();
       final kisaan = (row['kisaan_name'] as String? ?? '').toLowerCase();
       final description =
           (row[LedgerTransactionTable.description] as String? ?? '')
@@ -176,22 +182,11 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
       return invoiceNumber.toLowerCase().contains(query) ||
           kisaan.contains(query) ||
           description.contains(query) ||
+          invoiceRemarks.contains(query) ||
           category.contains(query) ||
           items.contains(query);
     }).toList();
   }
-
-  int get _totalDebit => _allTransactions
-      .where(
-        (row) =>
-            (row[LedgerTransactionTable.type] as String?) ==
-            LedgerTransactionType.debit,
-      )
-      .fold<int>(
-        0,
-        (sum, row) =>
-            sum + ((row[LedgerTransactionTable.amount] as num?)?.round() ?? 0),
-      );
 
   int get _filteredTotalDebit => _filteredTransactions
       .where(
@@ -217,6 +212,44 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
             sum + ((row[LedgerTransactionTable.amount] as num?)?.round() ?? 0),
       );
 
+  /// Pricing adjustments for SALE debit rows in the current filter window.
+  Map<String, double> get _filteredSaleAdjustments {
+    var gross = 0.0;
+    var seasonal = 0.0;
+    var discounts = 0.0;
+    final seen = <String>{};
+    for (final row in _filteredTransactions) {
+      final type = row[LedgerTransactionTable.type] as String?;
+      final category =
+          (row[LedgerTransactionTable.category] as String? ?? '').toUpperCase();
+      if (type != LedgerTransactionType.debit || category != 'SALE') continue;
+      final invoice =
+          (row[LedgerTransactionTable.invoiceNumber] as String?)?.trim();
+      if (invoice == null || invoice.isEmpty || !seen.add(invoice)) continue;
+
+      final joinedGross =
+          (row[SaleJoinColumns.subtotal] as num?)?.toDouble();
+      final joinedSeasonal =
+          (row[SaleJoinColumns.seasonalIncrementTotal] as num?)?.toDouble();
+      final joinedItemDisc =
+          (row[SaleJoinColumns.itemDiscountsTotal] as num?)?.toDouble();
+      final joinedOverall =
+          (row[SaleJoinColumns.overallDiscount] as num?)?.toDouble();
+      final batch = _invoiceSaleDiscounts[invoice];
+
+      gross += joinedGross ?? batch?['subtotal'] ?? 0;
+      seasonal +=
+          joinedSeasonal ?? batch?['seasonal_increment_total'] ?? 0;
+      discounts += (joinedItemDisc ?? batch?['item_discounts_total'] ?? 0) +
+          (joinedOverall ?? batch?['overall_discount'] ?? 0);
+    }
+    return {
+      'grossSales': gross,
+      'seasonalIncrements': seasonal,
+      'totalDiscounts': discounts,
+    };
+  }
+
   Future<void> _handleExportPdf() async {
     if (_isExporting) return;
     setState(() => _isExporting = true);
@@ -229,6 +262,8 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
         outstandingBalance: _outstandingBalanceDisplay,
         totalPaymentsReceived: _filteredTotalCredit,
         totalDebit: _filteredTotalDebit,
+        itemSummaries: _invoiceItemSummaries,
+        saleRemarks: _invoiceSaleRemarks,
       );
       if (!mounted) return;
       AppToast.showSuccess(context, 'PDF saved to ${file.path}');
@@ -252,6 +287,8 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
         outstandingBalance: _outstandingBalanceDisplay,
         totalPaymentsReceived: _filteredTotalCredit,
         totalDebit: _filteredTotalDebit,
+        itemSummaries: _invoiceItemSummaries,
+        saleRemarks: _invoiceSaleRemarks,
       );
 
       final shopName = await ShopSettings.getShopName();
@@ -283,6 +320,8 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
         outstandingBalance: _outstandingBalanceDisplay,
         totalPaymentsReceived: _filteredTotalCredit,
         totalDebit: _filteredTotalDebit,
+        itemSummaries: _invoiceItemSummaries,
+        saleRemarks: _invoiceSaleRemarks,
       );
       await PdfGenerator.printDocument(pdf);
     } catch (e) {
@@ -326,32 +365,69 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Expanded(
-                  child: _summaryCard(
-                    "Total sales (debit)",
-                    "Rs ${_fmt(_totalDebit.toDouble())}",
-                    const Color(0xFFA32D2D),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _summaryCard(
-                    "Total payments received",
-                    "Rs ${_fmt(_totalPaymentsReceived.toDouble())}",
-                    const Color(0xFF0C447C),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _summaryCard(
-                    "Total outstanding balance",
-                    _outstandingBalanceDisplay,
-                    const Color(0xFF27500A),
-                  ),
-                ),
-              ],
+            Builder(
+              builder: (context) {
+                final adj = _filteredSaleAdjustments;
+                return Column(
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _summaryCard(
+                            'Gross sales (base)',
+                            'Rs ${_fmt(adj['grossSales'] ?? 0)}',
+                            const Color(0xFF1B4332),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: _summaryCard(
+                            'Seasonal increments',
+                            'Rs ${_fmt(adj['seasonalIncrements'] ?? 0)}',
+                            const Color(0xFF0C447C),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: _summaryCard(
+                            'Discounts given',
+                            'Rs ${_fmt(adj['totalDiscounts'] ?? 0)}',
+                            const Color(0xFF28A745),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _summaryCard(
+                            'Net sales (debit)',
+                            'Rs ${_fmt(_filteredTotalDebit.toDouble())}',
+                            const Color(0xFFA32D2D),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: _summaryCard(
+                            'Payments received',
+                            'Rs ${_fmt(_filteredTotalCredit.toDouble())}',
+                            const Color(0xFF0C447C),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: _summaryCard(
+                            'Outstanding balance',
+                            _outstandingBalanceDisplay,
+                            const Color(0xFF27500A),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                );
+              },
             ),
             const SizedBox(height: 14),
             _buildFilterBar(),
@@ -436,6 +512,8 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
       transactions: _filteredTransactions,
       itemSummaries: _invoiceItemSummaries,
       collections: _invoiceCollections,
+      saleDiscounts: _invoiceSaleDiscounts,
+      saleRemarks: _invoiceSaleRemarks,
     );
   }
 
@@ -463,7 +541,7 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final minWidth = 980.0;
+        final minWidth = 1120.0;
         final width =
             constraints.maxWidth < minWidth ? minWidth : constraints.maxWidth;
         return SingleChildScrollView(

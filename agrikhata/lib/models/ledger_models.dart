@@ -110,10 +110,14 @@ class LedgerEntry {
   /// Sales `transaction_type` (e.g. PRODUCT_SALE, CASH_ADVANCE).
   final String? transactionType;
 
-  /// Invoice-level gross subtotal before discounts (sales only).
+  /// Invoice-level base (gross) before seasonal / discounts (sales only).
+  /// Equals `sum(qty * unit_price)` — does not include seasonal increment.
   final double? grossSubtotal;
 
-  /// Invoice-level item discounts total (sales only).
+  /// Invoice-level seasonal increment total: `sum(qty * seasonal_inc_per_unit)`.
+  final double? seasonalIncrementTotal;
+
+  /// Invoice-level item discounts total: `sum(qty * discount_per_unit)`.
   final double? itemDiscountsTotal;
 
   /// Invoice-level overall discount (sales only).
@@ -140,6 +144,7 @@ class LedgerEntry {
     this.description,
     this.transactionType,
     this.grossSubtotal,
+    this.seasonalIncrementTotal,
     this.itemDiscountsTotal,
     this.overallDiscount,
     this.createdByUserId,
@@ -157,7 +162,21 @@ class LedgerEntry {
       transactionType == null || transactionType == 'PRODUCT_SALE';
 
   bool get hasSaleDiscountBreakdown =>
-      isProductSale && grossSubtotal != null;
+      isProductSale &&
+      (grossSubtotal != null ||
+          (seasonalIncrementTotal ?? 0) > 0 ||
+          (itemDiscountsTotal ?? 0) > 0 ||
+          (overallDiscount ?? 0) > 0);
+
+  bool get hasVisibleDiscounts =>
+      (itemDiscountsTotal ?? 0) > 0 || (overallDiscount ?? 0) > 0;
+
+  bool get hasVisiblePricingAdjustments =>
+      (seasonalIncrementTotal ?? 0) > 0 || hasVisibleDiscounts;
+
+  /// Base + seasonal (pre-discount merchandise total).
+  double get preDiscountTotal =>
+      (grossSubtotal ?? 0) + (seasonalIncrementTotal ?? 0);
 
   double get netPayable => total;
 
@@ -175,6 +194,13 @@ class LedgerEntry {
         .join(', ');
   }
 
+  /// User-entered invoice remarks / notes (sales, advances, purchases).
+  String get invoiceDescriptionText {
+    final d = description?.trim();
+    if (d != null && d.isNotEmpty) return d;
+    return '—';
+  }
+
   /// Prefers invoice description when set; otherwise line-item summary.
   String get ledgerSummary {
     final d = description?.trim();
@@ -188,7 +214,9 @@ class LineItem {
   final double quantity;
   final String unit;
   final double unitPrice;
+  /// Per-unit seasonal increment.
   final double seasonalIncrement;
+  /// Per-unit discount.
   final double discount;
 
   LineItem({
@@ -200,42 +228,69 @@ class LineItem {
     this.discount = 0,
   });
 
-  double get effectiveUnitPrice => unitPrice + seasonalIncrement;
+  double get effectiveUnitPrice => unitPrice + seasonalIncrement - discount;
   double get subtotal => effectiveUnitPrice * quantity;
-  double get total => subtotal - discount;
+  double get totalItemDiscount => discount * quantity;
+  double get totalItemSeasonalInc => seasonalIncrement * quantity;
+  /// Net line total (discount already applied in [subtotal]).
+  double get total => subtotal;
 }
 
 class LedgerSummary {
   final double totalVolume;
   final double totalCashReceived;
   final double outstandingCredit;
+  /// Σ base sales (`sum(qty * unit_price)`).
+  final double grossSales;
+  /// Σ seasonal increments applied.
+  final double totalSeasonalIncrements;
+  /// Σ item discounts + overall discounts.
+  final double totalDiscountsGiven;
 
   LedgerSummary({
     required this.totalVolume,
     required this.totalCashReceived,
     required this.outstandingCredit,
+    this.grossSales = 0,
+    this.totalSeasonalIncrements = 0,
+    this.totalDiscountsGiven = 0,
   });
 
   factory LedgerSummary.fromEntries(List<LedgerEntry> entries) {
     double totalVolume = 0;
     double totalCashReceived = 0;
     double outstandingCredit = 0;
+    double grossSales = 0;
+    double totalSeasonalIncrements = 0;
+    double totalDiscountsGiven = 0;
 
     for (final entry in entries) {
       totalVolume += entry.total;
       totalCashReceived += entry.paid;
       outstandingCredit += entry.outstanding;
+      if (entry.isProductSale) {
+        grossSales += entry.grossSubtotal ?? 0;
+        totalSeasonalIncrements += entry.seasonalIncrementTotal ?? 0;
+        totalDiscountsGiven +=
+            (entry.itemDiscountsTotal ?? 0) + (entry.overallDiscount ?? 0);
+      }
     }
 
     return LedgerSummary(
       totalVolume: totalVolume,
       totalCashReceived: totalCashReceived,
       outstandingCredit: outstandingCredit,
+      grossSales: grossSales,
+      totalSeasonalIncrements: totalSeasonalIncrements,
+      totalDiscountsGiven: totalDiscountsGiven,
     );
   }
 
-  static LedgerSummary empty() =>
-      LedgerSummary(totalVolume: 0, totalCashReceived: 0, outstandingCredit: 0);
+  static LedgerSummary empty() => LedgerSummary(
+        totalVolume: 0,
+        totalCashReceived: 0,
+        outstandingCredit: 0,
+      );
 }
 
 class PaymentLedgerEntry {

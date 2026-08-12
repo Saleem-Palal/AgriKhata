@@ -203,6 +203,19 @@ class PrintService {
                   bold: true,
                 ),
                 _receiptRow('Status:', entry.status.displayName),
+                if (entry.description?.trim().isNotEmpty == true) ...[
+                  pw.SizedBox(height: 6),
+                  pw.Container(
+                    width: double.infinity,
+                    height: 0.5,
+                    color: PdfColors.grey500,
+                  ),
+                  pw.SizedBox(height: 4),
+                  pw.Text(
+                    'Note: ${_safe(entry.description!.trim())}',
+                    style: const pw.TextStyle(fontSize: 8),
+                  ),
+                ],
                 if (showThumb) ...[
                   pw.SizedBox(height: 10),
                   buildThermalAcknowledgmentBlock(),

@@ -54,9 +54,12 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
   final TextEditingController _productSearchController =
       TextEditingController();
 
-  /// Autocomplete's internal field controller — used to clear the visible input.
-  TextEditingController? _productFieldController;
-  FocusNode? _productAutocompleteFocusNode;
+  /// Autocomplete's internal field controller / focus — used to clear & unfocus.
+  TextEditingController? _zamindarFieldController;
+  FocusNode? _zamindarAutocompleteFocusNode;
+
+  /// Owned by this screen so search text clear ≠ product selection clear.
+  final FocusNode _productFocusNode = FocusNode(debugLabel: 'productSearch');
   final FocusNode _screenFocusNode = FocusNode(debugLabel: 'newSaleScreen');
   final TextEditingController _qtyController = TextEditingController(text: '1');
   final TextEditingController _priceController = TextEditingController(
@@ -76,6 +79,8 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
   final TextEditingController _advanceLitersController =
       TextEditingController();
   final TextEditingController _advanceRemarksController =
+      TextEditingController();
+  final TextEditingController _descriptionController =
       TextEditingController();
 
   // State
@@ -101,6 +106,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
 
   // Database data
   List<Zamindar> _zamindars = [];
+  List<Zamindar> _frequentZamindars = [];
   List<Product> _products = [];
   bool _isLoading = true;
   bool _isSaving = false;
@@ -208,14 +214,18 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           _selectedZamindar = null;
           _selectedKisaan = null;
           _zamindarSearchController.clear();
+          _zamindarFieldController?.clear();
           _smartRecommendations = [];
           _recommendationStageLabel = null;
         } else if (refreshedZamindar != null) {
           _selectedZamindar = refreshedZamindar;
           _selectedKisaan = refreshedKisaan;
-          _zamindarSearchController.text = refreshedZamindar.name;
+          // Search field is hidden while selected — keep it empty.
+          _zamindarSearchController.clear();
+          _zamindarFieldController?.clear();
         }
       });
+      await _refreshFrequentZamindars();
       if (_selectedKisaan != null) {
         await _loadSmartRecommendations();
       }
@@ -277,7 +287,9 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         // Pre-select zamindar if provided
         if (preSelectedZamindar != null) {
           _selectedZamindar = preSelectedZamindar;
-          _zamindarSearchController.text = preSelectedZamindar.name;
+          // Search field is hidden while selected — keep it empty.
+          _zamindarSearchController.clear();
+          _zamindarFieldController?.clear();
 
           // Auto-select Kisaan (either pre-selected or 'Self')
           if (preSelectedZamindar.kisaans.isNotEmpty) {
@@ -329,6 +341,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       if (_selectedZamindar != null) {
         await _refreshPartnerSelfUseFlag(_selectedZamindar);
       }
+      await _refreshFrequentZamindars();
       if (_selectedKisaan != null) {
         await _loadSmartRecommendations();
       }
@@ -364,7 +377,9 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           (z) => z.name == zamindarName,
           orElse: () => _zamindars.first,
         );
-        _zamindarSearchController.text = _selectedZamindar?.name ?? '';
+        // Search field is hidden while selected — keep it empty.
+        _zamindarSearchController.clear();
+        _zamindarFieldController?.clear();
 
         // Set kisaan by name if exists
         final kisaanName = invoiceData['kisaanName'] as String?;
@@ -391,6 +406,10 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         _cashReceivedController.text = saleOriginCash > 0
             ? saleOriginCash.toStringAsFixed(0)
             : '0';
+
+        // Optional transaction notes (sales.description).
+        _descriptionController.text =
+            (invoiceData['description'] as String?)?.trim() ?? '';
 
         // Set date time
         _selectedDateTime = DateTime.parse(invoiceData['dateTime'] as String);
@@ -695,13 +714,17 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     if (product == null) return;
 
     setState(() {
+      // Keep selection + visible name until "+ Add to cart" (or explicit X cancel).
       _selectedProduct = product;
       _productSearchController.text = product.name;
-      _priceController.text = _resolveUnitPrice(product).toStringAsFixed(0);
-      // Autofill seasonal increment from product; leave empty for hint if unset
-      _seasonalIncrementController.text = product.hasSeasonalIncrement
-          ? product.seasonalIncrement.toStringAsFixed(0)
-          : '';
+      _syncSelectedProductPriceFields();
+    });
+  }
+
+  void _cancelProductSelection() {
+    _productSearchController.clear();
+    setState(() {
+      _selectedProduct = null;
     });
   }
 
@@ -716,6 +739,83 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         return product.basePrice +
             (product.hasSeasonalIncrement ? product.seasonalIncrement : 0);
     }
+  }
+
+  Product? _catalogProductById(String id) {
+    for (final product in _products) {
+      if (product.id == id) return product;
+    }
+    return null;
+  }
+
+  /// Partner Seasonal tier already bakes increment into unit price.
+  bool get _partnerSeasonalBakesIncrement =>
+      _isPartnerSelfUse && _partnerPricePreset == _PartnerPricePreset.seasonal;
+
+  void _syncSelectedProductPriceFields() {
+    final product = _selectedProduct;
+    if (product == null) return;
+
+    _priceController.text = _resolveUnitPrice(product).toStringAsFixed(0);
+    if (!_showSeasonalIncrement || _partnerSeasonalBakesIncrement) {
+      _seasonalIncrementController.text = _partnerSeasonalBakesIncrement
+          ? '0'
+          : '';
+      return;
+    }
+    _seasonalIncrementController.text = product.hasSeasonalIncrement
+        ? product.seasonalIncrement.toStringAsFixed(0)
+        : '';
+  }
+
+  /// Reprices every cart line from catalog rates for the active partner tier.
+  void _repriceCartForPartnerPreset() {
+    if (!_isPartnerSelfUse || _cartItems.isEmpty) return;
+
+    for (var i = 0; i < _cartItems.length; i++) {
+      final item = _cartItems[i];
+      final source = _catalogProductById(item.product.id) ?? item.product;
+      final unitPrice = moneyRound(_resolveUnitPrice(source));
+
+      final double lineSeasonal;
+      if (!_showSeasonalIncrement || _partnerSeasonalBakesIncrement) {
+        lineSeasonal = 0;
+      } else if (item.seasonalIncrement > 0 &&
+          _partnerPricePreset != _PartnerPricePreset.seasonal) {
+        // Keep a user-edited seasonal amount when switching Cost ↔ Retail.
+        lineSeasonal = item.seasonalIncrement;
+      } else {
+        lineSeasonal = source.hasSeasonalIncrement
+            ? source.seasonalIncrement
+            : 0;
+      }
+
+      _cartItems[i] = CartItem(
+        id: item.id,
+        product: Product(
+          id: source.id,
+          name: source.name,
+          type: source.type,
+          basePrice: unitPrice,
+          unit: source.unit,
+          brand: source.brand,
+          costPrice: source.costPrice,
+          availableStock: source.availableStock,
+          seasonalIncrement: source.seasonalIncrement,
+        ),
+        quantity: item.quantity,
+        seasonalIncrement: moneyRound(lineSeasonal),
+        discount: item.discount,
+      );
+    }
+  }
+
+  void _applyPartnerPricePreset(_PartnerPricePreset preset) {
+    setState(() {
+      _partnerPricePreset = preset;
+      _syncSelectedProductPriceFields();
+      _repriceCartForPartnerPreset();
+    });
   }
 
   Future<void> _refreshPartnerSelfUseFlag(Zamindar? zamindar) async {
@@ -735,11 +835,8 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       _isPartnerSelfUse = linked;
       if (linked) {
         _partnerPricePreset = _PartnerPricePreset.cost;
-        if (_selectedProduct != null) {
-          _priceController.text = _resolveUnitPrice(
-            _selectedProduct!,
-          ).toStringAsFixed(0);
-        }
+        _syncSelectedProductPriceFields();
+        _repriceCartForPartnerPreset();
       }
     });
   }
@@ -840,7 +937,8 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
 
     final qty = int.tryParse(_qtyController.text) ?? 1;
     final price = SaleController.parseMoney(_priceController.text);
-    final seasonalInc = _showSeasonalIncrement
+    final seasonalInc =
+        _showSeasonalIncrement && !_partnerSeasonalBakesIncrement
         ? SaleController.parseMoney(_seasonalIncrementController.text)
         : 0.0;
 
@@ -871,13 +969,18 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       );
       _selectedCartItemId = lineId;
 
-      // Reset form (including Autocomplete's visible field)
+      // AFTER cart append: clear search + selection, reset qty for next entry.
       _selectedProduct = null;
-      _productFieldController?.clear();
       _productSearchController.clear();
       _qtyController.text = '1';
       _priceController.text = '0';
       _seasonalIncrementController.clear();
+    });
+
+    // Ready for the next product entry.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _productFocusNode.requestFocus();
     });
   }
 
@@ -975,28 +1078,103 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       _selectedZamindar = null;
       _selectedKisaan = null;
       _selectedSalePaymentTerm = null;
+      _isPartnerSelfUse = false;
       _cashReceivedController.text = '0';
       _zamindarSearchController.clear();
+      _zamindarFieldController?.clear();
       _kisaanSearchController.clear();
       _clearSmartRecommendations();
+    });
+    // Autocomplete is remounted when selection is cleared — focus after rebuild.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _zamindarAutocompleteFocusNode?.requestFocus();
     });
   }
 
   List<Kisaan> _filteredKisaans() {
-    final kisaans = _selectedZamindar?.kisaans ?? const <Kisaan>[];
+    final kisaans = List<Kisaan>.from(
+      _selectedZamindar?.kisaans ?? const <Kisaan>[],
+    );
     final query = _kisaanSearchController.text.trim().toLowerCase();
-    if (query.isEmpty) return kisaans;
+    final filtered = query.isEmpty
+        ? kisaans
+        : kisaans.where((kisaan) {
+            return kisaan.name.toLowerCase().contains(query) ||
+                kisaan.village.toLowerCase().contains(query) ||
+                kisaan.crop.toLowerCase().contains(query);
+          }).toList();
 
-    return kisaans.where((kisaan) {
-      return kisaan.name.toLowerCase().contains(query) ||
-          kisaan.village.toLowerCase().contains(query) ||
-          kisaan.crop.toLowerCase().contains(query);
-    }).toList();
+    // Pin the selected Kisaan to the top of the list.
+    final selectedId = _selectedKisaan?.id;
+    if (selectedId != null) {
+      filtered.sort((a, b) {
+        if (a.id == selectedId) return -1;
+        if (b.id == selectedId) return 1;
+        return 0;
+      });
+    }
+    return filtered;
+  }
+
+  Future<void> _refreshFrequentZamindars() async {
+    try {
+      final ids = await db.DatabaseHelper.instance.getTopFrequentZamindarIds();
+      if (!mounted) return;
+      final matched = <Zamindar>[];
+      for (final id in ids) {
+        final idStr = id.toString();
+        for (final zamindar in _zamindars) {
+          if (zamindar.id == idStr) {
+            matched.add(zamindar);
+            break;
+          }
+        }
+      }
+      if (!mounted) return;
+      setState(() => _frequentZamindars = matched);
+    } catch (e) {
+      debugPrint('Error loading frequent zamindars: $e');
+    }
+  }
+
+  void _applyZamindarSelection(Zamindar selection) {
+    _zamindarFieldController?.clear();
+    _zamindarSearchController.clear();
+    _zamindarAutocompleteFocusNode?.unfocus();
+
+    setState(() {
+      _selectedZamindar = selection;
+      _kisaanSearchController.clear();
+      _selectedSalePaymentTerm = selection.paymentTerms.length == 1
+          ? selection.paymentTerms.first
+          : null;
+      if (selection.kisaans.isNotEmpty) {
+        _selectedKisaan = selection.kisaans.firstWhere(
+          (k) => k.name == 'Self',
+          orElse: () => selection.kisaans.first,
+        );
+      } else {
+        _selectedKisaan = null;
+        _clearSmartRecommendations();
+      }
+    });
+    _checkZamindarCreditLimit(selection);
+    _refreshPartnerSelfUseFlag(selection);
+    if (_selectedKisaan != null) {
+      _loadSmartRecommendations();
+    }
   }
 
   /// Clears edit/preselect state in the parent Shell, fetches the next invoice
-  /// number, and resets every form field so the screen is ready for a new sale.
-  Future<void> _resetFormForNewSale({bool notifyParent = true}) async {
+  /// number, and resets form fields so the screen is ready for a new sale.
+  ///
+  /// When [retainPartySelection] is true (post-checkout), Zamindar + Kisaan
+  /// stay selected so the next cart can be started immediately for the same party.
+  Future<void> _resetFormForNewSale({
+    bool notifyParent = true,
+    bool retainPartySelection = false,
+  }) async {
     try {
       if (notifyParent) {
         // Clears Shell's editInvoiceNumber / preselects. Key change may dispose
@@ -1011,6 +1189,25 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
 
       if (!mounted) return;
 
+      final retainedZamindar =
+          retainPartySelection && !_isWalkInCustomer ? _selectedZamindar : null;
+      final retainedKisaan =
+          retainPartySelection && !_isWalkInCustomer ? _selectedKisaan : null;
+      final retainedPaymentTerm =
+          retainPartySelection && !_isWalkInCustomer
+          ? _selectedSalePaymentTerm
+          : null;
+      final retainedPaymentMethod =
+          retainPartySelection && !_isWalkInCustomer
+          ? _paymentMethod
+          : PaymentMethod.credit;
+      final retainedPartnerSelfUse =
+          retainPartySelection && !_isWalkInCustomer ? _isPartnerSelfUse : false;
+      final retainedPartnerPreset =
+          retainPartySelection && !_isWalkInCustomer
+          ? _partnerPricePreset
+          : _PartnerPricePreset.cost;
+
       setState(() {
         _isEditMode = false;
         _editingInvoiceNumber = null;
@@ -1018,16 +1215,11 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
 
         SaleController.flushCartSession(cartItems: _cartItems);
         _selectedCartItemId = null;
-        _selectedZamindar = null;
-        _selectedKisaan = null;
         _selectedProduct = null;
         _clearSmartRecommendations();
         _overallDiscount = 0;
         _overallDiscountController.text = '0';
-        _zamindarSearchController.clear();
-        _kisaanSearchController.clear();
         _productSearchController.clear();
-        _productFieldController?.clear();
         _qtyController.text = '1';
         _priceController.text = '0';
         _seasonalIncrementController.clear();
@@ -1038,15 +1230,37 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
         _isWalkInCustomer = false;
         _walkInCustomerNameController.clear();
 
-        _paymentMethod = PaymentMethod.credit;
-        _selectedSalePaymentTerm = null;
-        _cashReceivedController.text = '0';
         _checkoutMode = _CheckoutMode.productSale;
         _advanceKind = _AdvanceKind.cash;
         _advanceAmountController.clear();
         _advanceLitersController.clear();
         _advanceRemarksController.clear();
+        _descriptionController.clear();
+        _cashReceivedController.text = '0';
+
+        if (retainedZamindar != null) {
+          _selectedZamindar = retainedZamindar;
+          _selectedKisaan = retainedKisaan;
+          _selectedSalePaymentTerm = retainedPaymentTerm;
+          _paymentMethod = retainedPaymentMethod;
+          _isPartnerSelfUse = retainedPartnerSelfUse;
+          _partnerPricePreset = retainedPartnerPreset;
+        } else {
+          _selectedZamindar = null;
+          _selectedKisaan = null;
+          _selectedSalePaymentTerm = null;
+          _paymentMethod = PaymentMethod.credit;
+          _isPartnerSelfUse = false;
+          _partnerPricePreset = _PartnerPricePreset.cost;
+          _zamindarSearchController.clear();
+          _zamindarFieldController?.clear();
+          _kisaanSearchController.clear();
+        }
       });
+
+      if (retainedKisaan != null) {
+        await _loadSmartRecommendations();
+      }
     } catch (e) {
       debugPrint('Error resetting sale form: $e');
       if (mounted) {
@@ -1110,7 +1324,6 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       _cartItems.clear();
       _selectedProduct = null;
       _productSearchController.clear();
-      _productFieldController?.clear();
       _clearSmartRecommendations();
     });
   }
@@ -1166,6 +1379,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     required double paidAmount,
     required String seasonString,
     required bool isWalkIn,
+    String? description,
   }) {
     final items = _cartItems.map((cartItem) {
       final seasonalInc = _showSeasonalIncrement
@@ -1190,6 +1404,8 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       status = PaymentStatus.partial;
     }
 
+    final note = description?.trim();
+    final summary = _getSummary();
     return LedgerEntry(
       id: 0,
       invoiceNumber: invoiceNumber,
@@ -1202,6 +1418,13 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       status: status,
       season: seasonString,
       isWalkInCustomer: isWalkIn,
+      description: (note != null && note.isNotEmpty) ? note : null,
+      transactionType: 'PRODUCT_SALE',
+      grossSubtotal: summary.subtotal - summary.totalSeasonalIncrements,
+      seasonalIncrementTotal:
+          _showSeasonalIncrement ? summary.totalSeasonalIncrements : 0,
+      itemDiscountsTotal: summary.itemDiscounts,
+      overallDiscount: _overallDiscount,
       createdByUserId: SessionContext.userId,
       createdByUserName: SessionContext.footprintLabel,
       createdAt: DateTime.now(),
@@ -1465,6 +1688,9 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
             productType: productType,
             season: seasonString,
             paymentTerm: paymentTerm,
+            description: _descriptionController.text.trim().isEmpty
+                ? null
+                : _descriptionController.text.trim(),
           );
 
           debugPrint('SALE DEBUG: Successfully updated sale in new schema');
@@ -1486,6 +1712,9 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
             productType: productType,
             season: seasonString,
             paymentTerm: paymentTerm,
+            description: _descriptionController.text.trim().isEmpty
+                ? null
+                : _descriptionController.text.trim(),
           );
 
           debugPrint('SALE DEBUG: Successfully inserted sale into new schema');
@@ -1526,6 +1755,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           paidAmount: paidAmount,
           seasonString: seasonString,
           isWalkIn: _isWalkInCustomer,
+          description: _descriptionController.text.trim(),
         );
 
         if (shareWhatsAppPdf) {
@@ -1568,7 +1798,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
 
         // Must clear Shell editInvoiceNumber — otherwise reload re-enters edit
         // mode and the old invoice number sticks on screen.
-        await _resetFormForNewSale();
+        await _resetFormForNewSale(retainPartySelection: true);
 
         // If parent key-recreated this screen, we're done (fresh init loads data).
         if (!mounted) return;
@@ -1730,7 +1960,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
       );
 
       setState(() => _isSaving = false);
-      await _resetFormForNewSale();
+      await _resetFormForNewSale(retainPartySelection: true);
       if (!mounted) return;
 
       try {
@@ -1809,6 +2039,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     _zamindarSearchController.dispose();
     _kisaanSearchController.dispose();
     _productSearchController.dispose();
+    _productFocusNode.dispose();
     _screenFocusNode.dispose();
     _qtyController.dispose();
     _priceController.dispose();
@@ -1819,6 +2050,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     _advanceAmountController.dispose();
     _advanceLitersController.dispose();
     _advanceRemarksController.dispose();
+    _descriptionController.dispose();
     // Remove database listener to prevent memory leaks
     db.DatabaseHelper.instance.removeListener(_onDatabaseChanged);
     super.dispose();
@@ -1833,7 +2065,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
   }
 
   void _focusProductSearch() {
-    _productAutocompleteFocusNode?.requestFocus();
+    _productFocusNode.requestFocus();
   }
 
   void _onShortcutCheckout() {
@@ -2178,6 +2410,8 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           _buildAddProductCard(),
           const SizedBox(height: 10),
           _buildCartCard(),
+          const SizedBox(height: 10),
+          _buildDescriptionNotesCard(),
           const SizedBox(height: 10),
           _buildSummaryCard(),
         ],
@@ -2598,16 +2832,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           color: selected ? SaleColors.darkGreen : Colors.white,
           borderRadius: BorderRadius.circular(8),
           child: InkWell(
-            onTap: () {
-              setState(() {
-                _partnerPricePreset = preset;
-                if (_selectedProduct != null) {
-                  _priceController.text = _resolveUnitPrice(
-                    _selectedProduct!,
-                  ).toStringAsFixed(0);
-                }
-              });
-            },
+            onTap: () => _applyPartnerPricePreset(preset),
             borderRadius: BorderRadius.circular(8),
             child: Container(
               padding: const EdgeInsets.symmetric(vertical: 8),
@@ -2752,6 +2977,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                     _selectedKisaan = null;
                     _isPartnerSelfUse = false;
                     _zamindarSearchController.clear();
+                    _zamindarFieldController?.clear();
                     _kisaanSearchController.clear();
                     _clearSmartRecommendations();
                     _advanceAmountController.clear();
@@ -2906,8 +3132,14 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                _buildZamindarAutocomplete(),
-                if (_selectedZamindar != null) _buildZamindarPillWithClear(),
+                if (_selectedZamindar == null) ...[
+                  _buildZamindarAutocomplete(),
+                  if (_frequentZamindars.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    _buildFrequentZamindarChips(),
+                  ],
+                ] else
+                  _buildZamindarPillWithClear(),
               ],
             ),
           ),
@@ -2952,13 +3184,14 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           },
           displayStringForOption: (Zamindar option) => option.name,
           fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
-            _zamindarSearchController.text = controller.text;
+            _zamindarFieldController = controller;
+            _zamindarAutocompleteFocusNode = focusNode;
             return TextFormField(
               controller: controller,
               focusNode: focusNode,
               style: const TextStyle(fontSize: 13, color: SaleColors.textDark),
               decoration: InputDecoration(
-                hintText: 'Type to search Zamindar (e.g. Asif, Zafar)...',
+                hintText: 'Type to search Zamindar...',
                 hintStyle: const TextStyle(
                   fontSize: 13,
                   color: SaleColors.textLight,
@@ -2994,31 +3227,7 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
               ),
             );
           },
-          onSelected: (Zamindar selection) {
-            setState(() {
-              _selectedZamindar = selection;
-              _kisaanSearchController.clear();
-              _selectedSalePaymentTerm = selection.paymentTerms.length == 1
-                  ? selection.paymentTerms.first
-                  : null;
-              // Auto-select 'Self' Kisaan
-              if (selection.kisaans.isNotEmpty) {
-                _selectedKisaan = selection.kisaans.firstWhere(
-                  (k) => k.name == 'Self',
-                  orElse: () => selection.kisaans.first,
-                );
-              } else {
-                _selectedKisaan = null;
-                _clearSmartRecommendations();
-              }
-            });
-            // Check credit limit after selection
-            _checkZamindarCreditLimit(selection);
-            _refreshPartnerSelfUseFlag(selection);
-            if (_selectedKisaan != null) {
-              _loadSmartRecommendations();
-            }
-          },
+          onSelected: _applyZamindarSelection,
           optionsViewBuilder: (context, onSelected, options) {
             return Align(
               alignment: Alignment.topLeft,
@@ -3071,9 +3280,79 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     );
   }
 
+  Widget _buildFrequentZamindarChips() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const Text(
+          'Frequently used',
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w500,
+            color: SaleColors.textMuted,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            for (final zamindar in _frequentZamindars)
+              Material(
+                color: SaleColors.paleGreen,
+                borderRadius: BorderRadius.circular(20),
+                child: InkWell(
+                  onTap: () => _applyZamindarSelection(zamindar),
+                  borderRadius: BorderRadius.circular(20),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 6,
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 20,
+                          height: 20,
+                          decoration: const BoxDecoration(
+                            color: SaleColors.midGreen,
+                            shape: BoxShape.circle,
+                          ),
+                          child: Center(
+                            child: Text(
+                              zamindar.initials,
+                              style: const TextStyle(
+                                fontSize: 9,
+                                fontWeight: FontWeight.w600,
+                                color: SaleColors.lightGreen,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          zamindar.name,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: SaleColors.darkGreen,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+
   Widget _buildZamindarPillWithClear() {
     return Container(
-      margin: const EdgeInsets.only(top: 8),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
       decoration: BoxDecoration(
         color: SaleColors.lightGreenBg,
@@ -3190,6 +3469,17 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                     color: SaleColors.textMuted,
                   ),
                 ),
+                if (_selectedKisaan != null) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    'Selected Kisaan: ${_selectedKisaan!.name}',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: SaleColors.darkGreen,
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 8),
                 TextFormField(
                   controller: _kisaanSearchController,
@@ -3293,9 +3583,10 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                       itemCount: filteredKisaans.length,
                       itemBuilder: (context, index) {
                         final kisaan = filteredKisaans[index];
+                        final selected = _selectedKisaan?.id == kisaan.id;
                         return KisaanCard(
                           kisaan: kisaan,
-                          isSelected: _selectedKisaan?.id == kisaan.id,
+                          isSelected: selected,
                           onTap: () {
                             setState(() {
                               _selectedKisaan = kisaan;
@@ -3397,24 +3688,35 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
               children: [
                 Expanded(flex: 4, child: _buildProductAutocomplete()),
                 const SizedBox(width: 8),
-                SizedBox(width: 118, child: _buildQtyStepperField()),
+                SizedBox(
+                  width: 96,
+                  child: CustomStepperTextField(
+                    label: 'Qty',
+                    controller: _qtyController,
+                    stepValue: 1,
+                    minValue: 1,
+                    integerOnly: true,
+                  ),
+                ),
                 const SizedBox(width: 8),
                 SizedBox(
-                  width: 84,
-                  child: _buildCompactField(
-                    'Price',
-                    _priceController,
-                    TextInputType.number,
+                  width: 100,
+                  child: CustomStepperTextField(
+                    label: 'Price',
+                    controller: _priceController,
+                    stepValue: 20,
+                    minValue: 0,
                   ),
                 ),
                 if (showSeasonal) ...[
                   const SizedBox(width: 8),
                   SizedBox(
-                    width: 96,
-                    child: _buildCompactField(
-                      'Seasonal Inc',
-                      _seasonalIncrementController,
-                      TextInputType.number,
+                    width: 110,
+                    child: CustomStepperTextField(
+                      label: 'Seasonal Inc',
+                      controller: _seasonalIncrementController,
+                      stepValue: 20,
+                      minValue: 0,
                       hintText:
                           _selectedProduct != null &&
                               !_selectedProduct!.hasSeasonalIncrement
@@ -3474,7 +3776,10 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
           ),
         ),
         const SizedBox(height: 4),
-        Autocomplete<Product>(
+        RawAutocomplete<Product>(
+          textEditingController: _productSearchController,
+          focusNode: _productFocusNode,
+          displayStringForOption: (Product option) => option.name,
           optionsBuilder: (TextEditingValue textEditingValue) {
             if (textEditingValue.text.isEmpty) {
               return const Iterable<Product>.empty();
@@ -3485,52 +3790,81 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
                   product.brand.toLowerCase().contains(query);
             });
           },
-          displayStringForOption: (Product option) => option.name,
-          fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
-            _productFieldController = controller;
-            _productAutocompleteFocusNode = focusNode;
-            return TextFormField(
-              controller: controller,
-              focusNode: focusNode,
-              style: const TextStyle(fontSize: 13, color: SaleColors.textDark),
-              decoration: InputDecoration(
-                hintText: 'Search or select product... (F2)',
-                hintStyle: const TextStyle(
-                  fontSize: 13,
-                  color: SaleColors.textLight,
-                ),
-                contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 8,
-                ),
-                isDense: true,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(9),
-                  borderSide: const BorderSide(
-                    color: SaleColors.borderMid,
-                    width: 0.5,
-                  ),
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(9),
-                  borderSide: const BorderSide(
-                    color: SaleColors.borderMid,
-                    width: 0.5,
-                  ),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(9),
-                  borderSide: const BorderSide(
-                    color: SaleColors.darkGreen,
-                    width: 1,
-                  ),
-                ),
-                filled: true,
-                fillColor: const Color(0xFFF7F8F7),
-              ),
-            );
-          },
           onSelected: _onProductSelected,
+          fieldViewBuilder:
+              (context, textEditingController, focusNode, onFieldSubmitted) {
+                return ListenableBuilder(
+                  listenable: textEditingController,
+                  builder: (context, _) {
+                    return TextField(
+                      controller: textEditingController,
+                      focusNode: focusNode,
+                      onSubmitted: (_) => onFieldSubmitted(),
+                      style: const TextStyle(
+                        fontSize: 13,
+                        color: SaleColors.textDark,
+                      ),
+                      decoration: InputDecoration(
+                        hintText: 'Search or select product... (F2)',
+                        hintStyle: const TextStyle(
+                          fontSize: 13,
+                          color: SaleColors.textLight,
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 8,
+                        ),
+                        isDense: true,
+                        // Keep clear button inside the field without growing row height.
+                        suffixIconConstraints: const BoxConstraints(
+                          minWidth: 32,
+                          minHeight: 32,
+                        ),
+                        suffixIcon: textEditingController.text.isNotEmpty
+                            ? IconButton(
+                                tooltip: 'Clear',
+                                padding: EdgeInsets.zero,
+                                visualDensity: VisualDensity.compact,
+                                constraints: const BoxConstraints(
+                                  minWidth: 32,
+                                  minHeight: 32,
+                                ),
+                                icon: const Icon(
+                                  Icons.close,
+                                  size: 16,
+                                  color: SaleColors.textMuted,
+                                ),
+                                onPressed: _cancelProductSelection,
+                              )
+                            : null,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(9),
+                          borderSide: const BorderSide(
+                            color: SaleColors.borderMid,
+                            width: 0.5,
+                          ),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(9),
+                          borderSide: const BorderSide(
+                            color: SaleColors.borderMid,
+                            width: 0.5,
+                          ),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(9),
+                          borderSide: const BorderSide(
+                            color: SaleColors.darkGreen,
+                            width: 1,
+                          ),
+                        ),
+                        filled: true,
+                        fillColor: const Color(0xFFF7F8F7),
+                      ),
+                    );
+                  },
+                );
+              },
           optionsViewBuilder: (context, onSelected, options) {
             return Align(
               alignment: Alignment.topLeft,
@@ -3623,147 +3957,65 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
     );
   }
 
-  Widget _buildCompactField(
-    String label,
-    TextEditingController controller,
-    TextInputType keyboardType, {
-    String? hintText,
-  }) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(
-          label,
-          style: const TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.w500,
-            color: SaleColors.textMuted,
-          ),
-        ),
-        const SizedBox(height: 4),
-        TextFormField(
-          controller: controller,
-          keyboardType: keyboardType,
-          style: const TextStyle(fontSize: 13, color: SaleColors.textDark),
-          decoration: InputDecoration(
-            hintText: hintText,
-            hintStyle: const TextStyle(
-              fontSize: 11,
-              color: SaleColors.textLight,
-              fontWeight: FontWeight.w500,
-            ),
-            contentPadding: const EdgeInsets.symmetric(
-              horizontal: 6,
-              vertical: 8,
-            ),
-            isDense: true,
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(9),
-              borderSide: const BorderSide(
-                color: SaleColors.borderMid,
-                width: 0.5,
-              ),
-            ),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(9),
-              borderSide: const BorderSide(
-                color: SaleColors.borderMid,
-                width: 0.5,
-              ),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(9),
-              borderSide: const BorderSide(
-                color: SaleColors.accentGreen,
-                width: 1,
-              ),
-            ),
-            filled: true,
-            fillColor: SaleColors.cardBg,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildQtyStepperField() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const Text(
-          'Qty',
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.w500,
-            color: SaleColors.textMuted,
-          ),
-        ),
-        const SizedBox(height: 4),
-        Container(
-          height: 36,
-          decoration: BoxDecoration(
-            color: SaleColors.cardBg,
-            borderRadius: BorderRadius.circular(9),
-            border: Border.all(color: SaleColors.borderMid, width: 0.5),
-          ),
-          child: Row(
-            children: [
-              _buildQtyStepButton(icon: Icons.remove, onTap: _decrementQty),
-              Expanded(
-                child: TextFormField(
-                  controller: _qtyController,
-                  textAlign: TextAlign.center,
-                  keyboardType: TextInputType.number,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: SaleColors.textDark,
-                  ),
-                  decoration: const InputDecoration(
-                    isDense: true,
-                    border: InputBorder.none,
-                    contentPadding: EdgeInsets.symmetric(vertical: 8),
+  Widget _buildDescriptionNotesCard() {
+    return Container(
+      decoration: BoxDecoration(
+        color: SaleColors.cardBg,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: SaleColors.borderLight, width: 0.5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const StepHeader(stepNumber: 4, title: 'Description / Notes'),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: TextField(
+              controller: _descriptionController,
+              minLines: 1,
+              maxLines: 3,
+              style: const TextStyle(fontSize: 13, color: SaleColors.textDark),
+              decoration: InputDecoration(
+                hintText: 'Add transaction description or notes (optional)...',
+                hintStyle: const TextStyle(
+                  fontSize: 13,
+                  color: SaleColors.textLight,
+                ),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 10,
+                ),
+                isDense: true,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(9),
+                  borderSide: const BorderSide(
+                    color: SaleColors.borderMid,
+                    width: 0.5,
                   ),
                 ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(9),
+                  borderSide: const BorderSide(
+                    color: SaleColors.borderMid,
+                    width: 0.5,
+                  ),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(9),
+                  borderSide: const BorderSide(
+                    color: SaleColors.darkGreen,
+                    width: 1,
+                  ),
+                ),
+                filled: true,
+                fillColor: const Color(0xFFF7F8F7),
               ),
-              _buildQtyStepButton(icon: Icons.add, onTap: _incrementQty),
-            ],
+            ),
           ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildQtyStepButton({
-    required IconData icon,
-    required VoidCallback onTap,
-  }) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(8),
-        child: SizedBox(
-          width: 30,
-          height: double.infinity,
-          child: Icon(icon, size: 15, color: SaleColors.darkGreen),
-        ),
+        ],
       ),
     );
-  }
-
-  void _incrementQty() {
-    final qty = int.tryParse(_qtyController.text) ?? 1;
-    _qtyController.text = '${qty + 1}';
-  }
-
-  void _decrementQty() {
-    final qty = int.tryParse(_qtyController.text) ?? 1;
-    if (qty > 1) {
-      _qtyController.text = '${qty - 1}';
-    }
   }
 
   Widget _buildCartCard() {
@@ -3874,12 +4126,14 @@ class _NewSaleScreenState extends State<NewSaleScreen> {
               ),
               if (showSeasonalIncrement)
                 InlineEditableField(
+                  key: ValueKey('seasonal_${item.id}'),
                   value: item.seasonalIncrement,
                   onChanged: (val) =>
                       _updateCartItemSeasonalIncrement(item.id, val),
                   width: 80,
                 ),
               InlineEditableField(
+                key: ValueKey('discount_${item.id}'),
                 value: item.discount,
                 onChanged: (val) => _updateCartItemDiscount(item.id, val),
               ),

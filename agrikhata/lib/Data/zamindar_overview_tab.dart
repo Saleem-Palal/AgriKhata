@@ -37,6 +37,9 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
   String _outstandingBalanceDisplay = "Rs. 0";
   bool _isLoading = true;
   int _advanceBalance = 0;
+  double _grossSales = 0;
+  double _seasonalIncrements = 0;
+  double _discountsGiven = 0;
   List<ZamindarProductLedgerEntry> _productLedgerEntries = const [];
   Set<String> _selectedProducts = {};
 
@@ -81,11 +84,16 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
       );
       final productLedger = await DatabaseHelper.instance
           .getZamindarProductWiseLedgerEntries(widget.zamindar.id!);
+      final adjustments = await DatabaseHelper.instance
+          .getProductSaleAdjustmentTotals(zamindarId: widget.zamindar.id);
 
       if (!mounted) return;
       setState(() {
         _outstandingBalanceDisplay = outstandingBalance;
         _advanceBalance = advBalance;
+        _grossSales = adjustments['grossSales'] ?? 0;
+        _seasonalIncrements = adjustments['seasonalIncrements'] ?? 0;
+        _discountsGiven = adjustments['totalDiscounts'] ?? 0;
         _productLedgerEntries = productLedger;
         // Drop selections for products that no longer appear in the ledger.
         final available = productLedger.map((e) => e.productName).toSet();
@@ -107,6 +115,8 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
     final mainColumn = Column(
       children: [
         _buildLandCreditCard(),
+        const SizedBox(height: 14),
+        _buildSalesAdjustmentsCard(),
         const SizedBox(height: 14),
         _buildProductWiseLedgerCard(),
         const SizedBox(height: 14),
@@ -211,6 +221,52 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
             Padding(padding: const EdgeInsets.all(14), child: child)
           else
             child,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSalesAdjustmentsCard() {
+    return _card(
+      title: 'Sales pricing adjustments',
+      child: Row(
+        children: [
+          Expanded(
+            child: _infoItem(
+              'Gross sales (base)',
+              'Rs ${_fmt(_grossSales)}',
+              'Before seasonal / discounts',
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: _infoItem(
+              'Seasonal increments',
+              'Rs ${_fmt(_seasonalIncrements)}',
+              'Revenue add-on collected',
+              valueColor: const Color(0xFF0C447C),
+              subColor: const Color(0xFF0C447C),
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: _infoItem(
+              'Discounts given',
+              'Rs ${_fmt(_discountsGiven)}',
+              'Item + overall discounts',
+              valueColor: const Color(0xFF28A745),
+              subColor: const Color(0xFF28A745),
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: _infoItem(
+              'Current balance',
+              _outstandingBalanceDisplay,
+              'Udhaar / net receivable',
+              valueColor: const Color(0xFF27500A),
+            ),
+          ),
         ],
       ),
     );
@@ -441,6 +497,16 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
   int get _filteredProductTotalValue =>
       _filteredProductLedger.fold<int>(0, (sum, item) => sum + item.lineTotal);
 
+  int get _filteredProductItemDiscounts => _filteredProductLedger.fold<int>(
+        0,
+        (sum, item) => sum + item.totalItemDiscount,
+      );
+
+  int get _filteredProductOverallDiscounts => _filteredProductLedger.fold<int>(
+        0,
+        (sum, item) => sum + item.allocatedOverallDiscount,
+      );
+
   String get _filteredProductTotalUom {
     final uoms = _filteredProductLedger.map((e) => e.uom).toSet();
     if (uoms.length == 1) return uoms.first;
@@ -469,6 +535,9 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
               'quantity': e.quantity,
               'uom': e.uom,
               'unit_price': e.unitPrice,
+              'seasonal_increment': e.seasonalIncrement,
+              'item_discount': e.itemDiscount,
+              'allocated_overall_discount': e.allocatedOverallDiscount,
               'line_total': e.lineTotal,
             },
           )
@@ -497,6 +566,8 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
     final totalQty = _filteredProductTotalQty;
     final totalUom = _filteredProductTotalUom;
     final totalValue = _filteredProductTotalValue;
+    final totalItemDisc = _filteredProductItemDiscounts;
+    final totalOverallDisc = _filteredProductOverallDiscounts;
     final hasSelection = _selectedProducts.isNotEmpty;
 
     return _card(
@@ -650,6 +721,22 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
                               letterSpacing: -0.3,
                             ),
                           ),
+                          if (totalItemDisc > 0 || totalOverallDisc > 0) ...[
+                            const SizedBox(height: 2),
+                            Text(
+                              [
+                                if (totalItemDisc > 0)
+                                  'Item disc -Rs ${_fmt(totalItemDisc.toDouble())}',
+                                if (totalOverallDisc > 0)
+                                  'Overall -Rs ${_fmt(totalOverallDisc.toDouble())}',
+                              ].join(' · '),
+                              style: const TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w500,
+                                color: Color(0xFF28A745),
+                              ),
+                            ),
+                          ],
                         ],
                       ),
                     ),
@@ -691,8 +778,8 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
           else
             LayoutBuilder(
               builder: (context, constraints) {
-                final width = constraints.maxWidth < 920
-                    ? 920.0
+                final width = constraints.maxWidth < 1200
+                    ? 1200.0
                     : constraints.maxWidth;
                 return SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
@@ -767,7 +854,7 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
             ),
           ),
           SizedBox(
-            width: 90,
+            width: 80,
             child: Text(
               'QUANTITY',
               textAlign: TextAlign.right,
@@ -777,9 +864,39 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
             ),
           ),
           SizedBox(
-            width: 100,
+            width: 90,
             child: Text(
-              'PRODUCT PRICE',
+              'BASE PRICE',
+              textAlign: TextAlign.right,
+              style: _productLedgerHeaderStyle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          SizedBox(
+            width: 90,
+            child: Text(
+              'SEASONAL INC',
+              textAlign: TextAlign.right,
+              style: _productLedgerHeaderStyle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          SizedBox(
+            width: 80,
+            child: Text(
+              'ITEM DISC',
+              textAlign: TextAlign.right,
+              style: _productLedgerHeaderStyle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          SizedBox(
+            width: 80,
+            child: Text(
+              'OVERALL',
               textAlign: TextAlign.right,
               style: _productLedgerHeaderStyle,
               maxLines: 1,
@@ -870,7 +987,7 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
             ),
           ),
           SizedBox(
-            width: 90,
+            width: 80,
             child: Text(
               '${entry.quantity} ${entry.uom}',
               textAlign: TextAlign.right,
@@ -884,7 +1001,7 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
             ),
           ),
           SizedBox(
-            width: 100,
+            width: 90,
             child: Text(
               'Rs ${_fmt(entry.unitPrice.toDouble())}',
               textAlign: TextAlign.right,
@@ -892,6 +1009,60 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
                 fontSize: 12,
                 fontWeight: FontWeight.w500,
                 color: AppColors.darkGreen,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          SizedBox(
+            width: 90,
+            child: Text(
+              entry.seasonalIncrement > 0
+                  ? '+Rs ${_fmt(entry.seasonalIncrement.toDouble())}'
+                  : '—',
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: entry.seasonalIncrement > 0
+                    ? const Color(0xFF0C447C)
+                    : AppColors.textMuted,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          SizedBox(
+            width: 80,
+            child: Text(
+              entry.itemDiscount > 0
+                  ? '-Rs ${_fmt(entry.itemDiscount.toDouble())}'
+                  : '—',
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: entry.itemDiscount > 0
+                    ? const Color(0xFF28A745)
+                    : AppColors.textMuted,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          SizedBox(
+            width: 80,
+            child: Text(
+              entry.allocatedOverallDiscount > 0
+                  ? '-Rs ${_fmt(entry.allocatedOverallDiscount.toDouble())}'
+                  : '—',
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: entry.allocatedOverallDiscount > 0
+                    ? const Color(0xFF28A745)
+                    : AppColors.textMuted,
               ),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
@@ -1060,11 +1231,17 @@ class _ZamindarOverviewTabState extends State<ZamindarOverviewTab> {
         .getSaleItemsSummariesForInvoices(invoiceNumbers);
     final collections = await DatabaseHelper.instance
         .getInvoiceCollectionSummaries(invoiceNumbers);
+    final saleDiscounts = await DatabaseHelper.instance
+        .getSaleDiscountSummariesForInvoices(invoiceNumbers);
+    final saleRemarks = await DatabaseHelper.instance
+        .getSaleRemarksForInvoices(invoiceNumbers);
 
     return ZamindarLedgerRow.fromTransactions(
       transactions: transactions,
       itemSummaries: itemSummaries,
       collections: collections,
+      saleDiscounts: saleDiscounts,
+      saleRemarks: saleRemarks,
     );
   }
 

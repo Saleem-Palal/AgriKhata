@@ -34,7 +34,7 @@ class DatabaseHelper with ChangeNotifier {
   static final DatabaseHelper instance = DatabaseHelper._internal();
 
   /// Current on-disk schema version. Bump only when adding a new `_migrateToV*`.
-  static const int schemaVersion = 37;
+  static const int schemaVersion = 38;
 
   static final NumberFormat _indianCurrencyFormat = NumberFormat('#,##,##0');
 
@@ -383,6 +383,12 @@ class DatabaseHelper with ChangeNotifier {
           toVersion: 37,
           description: 'manual seasons table + season_id on transactions',
           run: _migrateToV37,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 38,
+          description: 'sales.description optional transaction notes',
+          run: _migrateToV38,
           verifyIntegrity: false,
         ),
       ],
@@ -819,6 +825,21 @@ class DatabaseHelper with ChangeNotifier {
     await ensureSeededActiveSeasonOn(db);
 
     log.step('recreate ledger sync triggers with season_id');
+    await _createLedgerSyncTriggers(db);
+  }
+
+  /// v38: optional free-text notes on sales (separate from walk-in name in remarks).
+  Future<void> _migrateToV38(Database db, MigrationLog log) async {
+    log.step('add sales.description');
+    await addColumnIfMissing(
+      db,
+      table: SalesTable.name,
+      column: SalesTable.description,
+      columnDefSql: '${SalesTable.description} TEXT',
+      log: log,
+    );
+
+    log.step('recreate sale ledger triggers to include description notes');
     await _createLedgerSyncTriggers(db);
   }
 
@@ -2719,7 +2740,34 @@ END
               THEN ': ' || TRIM(NEW.${SalesTable.remarks})
               ELSE ''
             END
-        ELSE 'Product Sale Invoice'
+        ELSE
+          'Product Sale Invoice ' || NEW.${SalesTable.invoiceNumber} ||
+          ': Base Rs ' || CAST(NEW.${SalesTable.subtotal} AS TEXT) ||
+          CASE
+            WHEN COALESCE(NEW.${SalesTable.seasonalIncrementTotal}, 0) > 0
+              THEN ' + Seasonal Inc Rs ' ||
+                CAST(NEW.${SalesTable.seasonalIncrementTotal} AS TEXT)
+            ELSE ''
+          END ||
+          CASE
+            WHEN COALESCE(NEW.${SalesTable.itemDiscountsTotal}, 0) > 0
+              THEN ' - Item Disc Rs ' ||
+                CAST(NEW.${SalesTable.itemDiscountsTotal} AS TEXT)
+            ELSE ''
+          END ||
+          CASE
+            WHEN COALESCE(NEW.${SalesTable.overallDiscount}, 0) > 0
+              THEN ' - Overall Disc Rs ' ||
+                CAST(NEW.${SalesTable.overallDiscount} AS TEXT)
+            ELSE ''
+          END ||
+          ' = Net Debit Rs ' || CAST(NEW.${SalesTable.totalPayable} AS TEXT) ||
+          CASE
+            WHEN NULLIF(TRIM(COALESCE(NEW.${SalesTable.description}, '')), '')
+              IS NOT NULL
+            THEN ' | Note: ' || TRIM(NEW.${SalesTable.description})
+            ELSE ''
+          END
       END
     ''';
 
@@ -3240,6 +3288,7 @@ END
       ${SalesTable.creditAmount} INTEGER NOT NULL DEFAULT 0,
       ${SalesTable.fuelQuantity} REAL,
       ${SalesTable.remarks} TEXT,
+      ${SalesTable.description} TEXT,
       ${SalesTable.zamindarId} INTEGER,
       ${SalesTable.kisaanId} INTEGER,
       ${ActorColumns.createdByUserId} TEXT,
@@ -4320,6 +4369,7 @@ END
       SELECT
         s.${SalesTable.invoiceNumber} AS invoice_number,
         s.${SalesTable.dateTime} AS date_time,
+        COALESCE(s.${SalesTable.overallDiscount}, 0) AS overall_discount,
         COALESCE(
           NULLIF(TRIM(k.${KisaanTable.nameColumn}), ''),
           'Self'
@@ -4327,7 +4377,18 @@ END
         si.${SaleItemsTable.productName} AS product_name,
         si.${SaleItemsTable.quantity} AS quantity,
         si.${SaleItemsTable.unitPrice} AS unit_price,
-        si.${SaleItemsTable.subtotal} AS line_total,
+        COALESCE(si.${SaleItemsTable.seasonalIncrement}, 0)
+          AS seasonal_increment,
+        COALESCE(si.${SaleItemsTable.itemDiscount}, 0) AS item_discount,
+        -- Line net before invoice-level overall discount:
+        -- qty × (base + seasonal_inc − per-unit discount)
+        (
+          si.${SaleItemsTable.quantity} * (
+            si.${SaleItemsTable.unitPrice}
+            + COALESCE(si.${SaleItemsTable.seasonalIncrement}, 0)
+            - COALESCE(si.${SaleItemsTable.itemDiscount}, 0)
+          )
+        ) AS line_subtotal,
         COALESCE(NULLIF(TRIM(p.${ProductTable.uom}), ''), 'Bags') AS uom
       FROM ${SaleItemsTable.name} si
       INNER JOIN ${SalesTable.name} s
@@ -4348,27 +4409,92 @@ END
       [zamindarId, SaleTransactionType.productSale],
     );
 
-    return rows
-        .map((row) {
-          final productName =
-              (row['product_name'] as String?)?.trim() ?? '';
-          if (productName.isEmpty) return null;
-          final kisaanRaw = (row['kisaan_name'] as String?)?.trim() ?? '';
-          final uomRaw = (row['uom'] as String?)?.trim() ?? '';
-          return ZamindarProductLedgerEntry(
-            invoiceNumber:
-                (row['invoice_number'] as String?)?.trim() ?? '',
-            dateTime: _parseDateTime(row['date_time'] as String? ?? ''),
-            kisaanName: kisaanRaw.isNotEmpty ? kisaanRaw : 'Self',
-            productName: productName,
-            quantity: (row['quantity'] as num?)?.round() ?? 0,
-            unitPrice: (row['unit_price'] as num?)?.round() ?? 0,
-            lineTotal: (row['line_total'] as num?)?.round() ?? 0,
-            uom: uomRaw.isNotEmpty ? uomRaw : 'Bags',
-          );
-        })
-        .whereType<ZamindarProductLedgerEntry>()
-        .toList();
+    // Build rows, then allocate each invoice's overall discount across its
+    // lines by line-subtotal weight so product totals match net payable.
+    final pending = <_ProductLedgerDraft>[];
+    for (final row in rows) {
+      final productName = (row['product_name'] as String?)?.trim() ?? '';
+      if (productName.isEmpty) continue;
+      final kisaanRaw = (row['kisaan_name'] as String?)?.trim() ?? '';
+      final uomRaw = (row['uom'] as String?)?.trim() ?? '';
+      final qty = (row['quantity'] as num?)?.round() ?? 0;
+      final unitPrice = (row['unit_price'] as num?)?.round() ?? 0;
+      final seasonalInc = (row['seasonal_increment'] as num?)?.round() ?? 0;
+      final itemDiscount = (row['item_discount'] as num?)?.round() ?? 0;
+      final lineSubtotal = (row['line_subtotal'] as num?)?.round() ??
+          (qty * (unitPrice + seasonalInc - itemDiscount));
+      pending.add(
+        _ProductLedgerDraft(
+          invoiceNumber: (row['invoice_number'] as String?)?.trim() ?? '',
+          dateTime: _parseDateTime(row['date_time'] as String? ?? ''),
+          kisaanName: kisaanRaw.isNotEmpty ? kisaanRaw : 'Self',
+          productName: productName,
+          quantity: qty,
+          unitPrice: unitPrice,
+          seasonalIncrement: seasonalInc,
+          itemDiscount: itemDiscount,
+          lineSubtotal: lineSubtotal,
+          invoiceOverallDiscount:
+              (row['overall_discount'] as num?)?.round() ?? 0,
+          uom: uomRaw.isNotEmpty ? uomRaw : 'Bags',
+        ),
+      );
+    }
+
+    final byInvoice = <String, List<_ProductLedgerDraft>>{};
+    for (final draft in pending) {
+      byInvoice.putIfAbsent(draft.invoiceNumber, () => []).add(draft);
+    }
+
+    final result = <ZamindarProductLedgerEntry>[];
+    for (final drafts in byInvoice.values) {
+      final invoiceOverall = drafts.first.invoiceOverallDiscount;
+      final invoiceSubtotal = drafts.fold<int>(
+        0,
+        (sum, d) => sum + d.lineSubtotal,
+      );
+      var allocatedRunning = 0;
+      for (var i = 0; i < drafts.length; i++) {
+        final d = drafts[i];
+        int allocated;
+        if (invoiceOverall <= 0 || invoiceSubtotal <= 0) {
+          allocated = 0;
+        } else if (i == drafts.length - 1) {
+          // Last line absorbs rounding remainder.
+          allocated = invoiceOverall - allocatedRunning;
+        } else {
+          allocated =
+              ((invoiceOverall * d.lineSubtotal) / invoiceSubtotal).round();
+          allocatedRunning += allocated;
+        }
+        if (allocated < 0) allocated = 0;
+        if (allocated > d.lineSubtotal) allocated = d.lineSubtotal;
+        result.add(
+          ZamindarProductLedgerEntry(
+            invoiceNumber: d.invoiceNumber,
+            dateTime: d.dateTime,
+            kisaanName: d.kisaanName,
+            productName: d.productName,
+            quantity: d.quantity,
+            unitPrice: d.unitPrice,
+            seasonalIncrement: d.seasonalIncrement,
+            itemDiscount: d.itemDiscount,
+            allocatedOverallDiscount: allocated,
+            lineSubtotal: d.lineSubtotal,
+            lineTotal: d.lineSubtotal - allocated,
+            uom: d.uom,
+          ),
+        );
+      }
+    }
+
+    // Preserve original date/invoice sort (group order may shuffle).
+    result.sort((a, b) {
+      final byDate = b.dateTime.compareTo(a.dateTime);
+      if (byDate != 0) return byDate;
+      return a.invoiceNumber.compareTo(b.invoiceNumber);
+    });
+    return result;
   }
 
   Future<int> updateProduct(ProductItem product) async {
@@ -4586,9 +4712,12 @@ END
         p.${PaymentsTable.originalAmount} AS payment_original_amount,
         p.${PaymentsTable.notes} AS payment_notes,
         s.${SalesTable.subtotal} AS ${SaleJoinColumns.subtotal},
+        s.${SalesTable.seasonalIncrementTotal} AS ${SaleJoinColumns.seasonalIncrementTotal},
         s.${SalesTable.itemDiscountsTotal} AS ${SaleJoinColumns.itemDiscountsTotal},
         s.${SalesTable.overallDiscount} AS ${SaleJoinColumns.overallDiscount},
-        s.${SalesTable.totalPayable} AS ${SaleJoinColumns.totalPayable}
+        s.${SalesTable.totalPayable} AS ${SaleJoinColumns.totalPayable},
+        s.${SalesTable.remarks} AS ${SaleJoinColumns.remarks},
+        s.${SalesTable.description} AS ${SaleJoinColumns.description}
       FROM ${LedgerTransactionTable.name} lt
       LEFT JOIN ${KisaanTable.name} k
         ON lt.${LedgerTransactionTable.kisaanId} = k.${KisaanTable.id}
@@ -4710,6 +4839,147 @@ END
           'total': (row['total'] as num?)?.toDouble() ?? 0.0,
           'paid': (row['paid'] as num?)?.toDouble() ?? 0.0,
         },
+    };
+  }
+
+  /// Batch sale pricing breakdown keyed by invoice number.
+  ///
+  /// Keys: `subtotal` (base), `seasonal_increment_total`,
+  /// `item_discounts_total`, `overall_discount`, `total_payable`.
+  Future<Map<String, Map<String, double>>> getSaleDiscountSummariesForInvoices(
+    Iterable<String> invoiceNumbers,
+  ) async {
+    final unique = invoiceNumbers
+        .map((n) => n.trim())
+        .where((n) => n.isNotEmpty)
+        .toSet()
+        .toList();
+    if (unique.isEmpty) return {};
+
+    final db = await database;
+    final placeholders = List.filled(unique.length, '?').join(',');
+    final rows = await db.rawQuery(
+      '''
+      SELECT
+        s.${SalesTable.invoiceNumber} AS invoice_number,
+        s.${SalesTable.subtotal} AS subtotal,
+        s.${SalesTable.seasonalIncrementTotal} AS seasonal_increment_total,
+        s.${SalesTable.itemDiscountsTotal} AS item_discounts_total,
+        s.${SalesTable.overallDiscount} AS overall_discount,
+        s.${SalesTable.totalPayable} AS total_payable
+      FROM ${SalesTable.name} s
+      WHERE s.${SalesTable.invoiceNumber} IN ($placeholders)
+      ''',
+      unique,
+    );
+
+    return {
+      for (final row in rows)
+        (row['invoice_number'] as String): {
+          'subtotal': (row['subtotal'] as num?)?.toDouble() ?? 0.0,
+          'seasonal_increment_total':
+              (row['seasonal_increment_total'] as num?)?.toDouble() ?? 0.0,
+          'item_discounts_total':
+              (row['item_discounts_total'] as num?)?.toDouble() ?? 0.0,
+          'overall_discount':
+              (row['overall_discount'] as num?)?.toDouble() ?? 0.0,
+          'total_payable':
+              (row['total_payable'] as num?)?.toDouble() ?? 0.0,
+        },
+    };
+  }
+
+  /// Batch invoice notes keyed by invoice number (description, else advance remarks).
+  Future<Map<String, String>> getSaleRemarksForInvoices(
+    Iterable<String> invoiceNumbers,
+  ) async {
+    final unique = invoiceNumbers
+        .map((n) => n.trim())
+        .where((n) => n.isNotEmpty)
+        .toSet()
+        .toList();
+    if (unique.isEmpty) return {};
+
+    final db = await database;
+    final placeholders = List.filled(unique.length, '?').join(',');
+    final rows = await db.rawQuery(
+      '''
+      SELECT
+        s.${SalesTable.invoiceNumber} AS invoice_number,
+        COALESCE(
+          NULLIF(TRIM(s.${SalesTable.description}), ''),
+          CASE
+            WHEN s.${SalesTable.transactionType} != '${SaleTransactionType.productSale}'
+              THEN NULLIF(TRIM(s.${SalesTable.remarks}), '')
+            ELSE NULL
+          END
+        ) AS remarks
+      FROM ${SalesTable.name} s
+      WHERE s.${SalesTable.invoiceNumber} IN ($placeholders)
+      ''',
+      unique,
+    );
+
+    final result = <String, String>{};
+    for (final row in rows) {
+      final invoice = (row['invoice_number'] as String?)?.trim() ?? '';
+      if (invoice.isEmpty) continue;
+      final remarks = (row['remarks'] as String?)?.trim() ?? '';
+      if (remarks.isNotEmpty) result[invoice] = remarks;
+    }
+    return result;
+  }
+
+  /// Aggregated product-sale pricing adjustments for KPIs / partner equity.
+  ///
+  /// Returns: `grossSales`, `seasonalIncrements`, `itemDiscounts`,
+  /// `overallDiscounts`, `totalDiscounts`, `netPayable`.
+  Future<Map<String, double>> getProductSaleAdjustmentTotals({
+    int? zamindarId,
+    String? season,
+  }) async {
+    final db = await database;
+    final where = <String>[
+      '(${SalesTable.transactionType} IS NULL OR '
+          '${SalesTable.transactionType} = ?)',
+    ];
+    final args = <Object?>[SaleTransactionType.productSale];
+
+    if (zamindarId != null) {
+      where.add('${SalesTable.zamindarId} = ?');
+      args.add(zamindarId);
+    }
+    if (season != null && season.trim().isNotEmpty) {
+      where.add('${SalesTable.season} = ?');
+      args.add(season.trim());
+    }
+
+    final rows = await db.rawQuery(
+      '''
+      SELECT
+        COALESCE(SUM(${SalesTable.subtotal}), 0) AS gross_sales,
+        COALESCE(SUM(${SalesTable.seasonalIncrementTotal}), 0)
+          AS seasonal_increments,
+        COALESCE(SUM(${SalesTable.itemDiscountsTotal}), 0) AS item_discounts,
+        COALESCE(SUM(${SalesTable.overallDiscount}), 0) AS overall_discounts,
+        COALESCE(SUM(${SalesTable.totalPayable}), 0) AS net_payable
+      FROM ${SalesTable.name}
+      WHERE ${where.join(' AND ')}
+      ''',
+      args,
+    );
+
+    final row = rows.isEmpty ? <String, Object?>{} : rows.first;
+    final itemDisc = (row['item_discounts'] as num?)?.toDouble() ?? 0.0;
+    final overallDisc = (row['overall_discounts'] as num?)?.toDouble() ?? 0.0;
+    return {
+      'grossSales': (row['gross_sales'] as num?)?.toDouble() ?? 0.0,
+      'seasonalIncrements':
+          (row['seasonal_increments'] as num?)?.toDouble() ?? 0.0,
+      'itemDiscounts': itemDisc,
+      'overallDiscounts': overallDisc,
+      'totalDiscounts': itemDisc + overallDisc,
+      'netPayable': (row['net_payable'] as num?)?.toDouble() ?? 0.0,
     };
   }
 
@@ -5242,6 +5512,28 @@ END
     return enriched;
   }
 
+  /// Top [limit] zamindar IDs by product/advance sale frequency.
+  Future<List<int>> getTopFrequentZamindarIds({int limit = 3}) async {
+    final db = await database;
+    final rows = await db.rawQuery(
+      '''
+      SELECT
+        ${SalesTable.zamindarId} AS zamindar_id,
+        COUNT(*) AS usage_count
+      FROM ${SalesTable.name}
+      WHERE ${SalesTable.zamindarId} IS NOT NULL
+      GROUP BY ${SalesTable.zamindarId}
+      ORDER BY usage_count DESC
+      LIMIT ?
+      ''',
+      [limit],
+    );
+    return [
+      for (final row in rows)
+        if (row['zamindar_id'] is int) row['zamindar_id'] as int,
+    ];
+  }
+
   /// Persists a sale: ledger entries and stock decrements in one transaction.
   Future<void> processSale({
     required int zamindarId,
@@ -5262,7 +5554,7 @@ END
       );
       final itemDiscounts = items.fold<int>(
         0,
-        (sum, item) => sum + item.discount.round(),
+        (sum, item) => sum + item.totalItemDiscount.round(),
       );
       final netAmount = (gross - itemDiscounts - globalDiscount).clamp(
         0,
@@ -7827,6 +8119,7 @@ END
           sale[SalesTable.transactionType] as String? ??
           SaleTransactionType.productSale,
       'remarks': sale[SalesTable.remarks] as String?,
+      'description': sale[SalesTable.description] as String?,
       'fuelQuantity':
           (sale[SalesTable.fuelQuantity] as num?)?.toDouble(),
       'zamindarId': sale[SalesTable.zamindarId] as int?,
@@ -7918,79 +8211,8 @@ END
     final totalReceivables = await _sumTotalReceivables(db);
     final totalPayables = await _sumTotalPayables(db);
 
-    // Spot cash sales: sales.paid_amount on Cash product invoices (no advance).
-    final cashSalesRows = await db.rawQuery(
-      '''
-      SELECT COALESCE(SUM(${SalesTable.paidAmount}), 0) AS total
-      FROM ${SalesTable.name}
-      WHERE ${SalesTable.paymentMethod} = 'Cash'
-        AND (
-          ${SalesTable.transactionType} IS NULL
-          OR ${SalesTable.transactionType} = ?
-          OR ${SalesTable.transactionType} NOT IN (?, ?, ?)
-        )
-      ''',
-      [
-        SaleTransactionType.productSale,
-        SaleTransactionType.cashAdvance,
-        SaleTransactionType.dieselAdvance,
-        SaleTransactionType.petrolAdvance,
-      ],
-    );
-    final allTimeCashSales =
-        (cashSalesRows.first['total'] as num?)?.toDouble() ?? 0.0;
-
-    // Cash payments: credit upfront leftover, recoveries, cash-sale leftovers.
-    final ledgerPaymentRows = await db.rawQuery(
-      '''
-      SELECT COALESCE(SUM(${PaymentsTable.amountPaid}), 0) AS total
-      FROM ${PaymentsTable.name}
-      WHERE ${PaymentsTable.paymentMethod} = 'Cash'
-      ''',
-    );
-    final allTimeLedgerCash =
-        (ledgerPaymentRows.first['total'] as num?)?.toDouble() ?? 0.0;
-
-    final supplierPaymentRows = await db.rawQuery(
-      '''
-      SELECT COALESCE(SUM(${WholesalerPaymentsTable.amount}), 0) AS total
-      FROM ${WholesalerPaymentsTable.name}
-      WHERE ${WholesalerPaymentsTable.paymentMethod} = 'Cash'
-      ''',
-    );
-    final allTimeSupplierCash =
-        (supplierPaymentRows.first['total'] as num?)?.toDouble() ?? 0.0;
-
-    final expenseRows = await db.rawQuery('''
-      SELECT COALESCE(SUM(${ExpenseTable.amount}), 0) AS total
-      FROM ${ExpenseTable.name}
-    ''');
-    final allTimeExpenses =
-        (expenseRows.first['total'] as num?)?.toDouble() ?? 0.0;
-
-    final drawingRows = await db.rawQuery('''
-      SELECT
-        COALESCE(SUM(CASE WHEN ${PartnerDrawingTable.type} = ?
-          THEN ${PartnerDrawingTable.amount} ELSE 0 END), 0) AS taken,
-        COALESCE(SUM(CASE WHEN ${PartnerDrawingTable.type} = ?
-          THEN ${PartnerDrawingTable.amount} ELSE 0 END), 0) AS returned
-      FROM ${PartnerDrawingTable.name}
-    ''', [PartnerDrawingType.taken, PartnerDrawingType.returned]);
-    final drawingsTaken =
-        (drawingRows.first['taken'] as num?)?.toDouble() ?? 0.0;
-    final drawingsReturned =
-        (drawingRows.first['returned'] as num?)?.toDouble() ?? 0.0;
-
-    final openingBalance = await ShopSettings.getCashOpeningBalance();
-
-    // Cash / fuel advances are khaata loan records — zero cash-drawer impact.
-    final cashInHand = openingBalance +
-        allTimeCashSales +
-        allTimeLedgerCash -
-        allTimeSupplierCash -
-        allTimeExpenses -
-        drawingsTaken +
-        drawingsReturned;
+    final cashBreakdown = await getCashInHandBreakdown();
+    final cashInHand = cashBreakdown.netCashInHand;
 
     // Today volumes for the snapshot cards (product sales only).
     // Scoped to the active manual season when one exists.
@@ -8264,6 +8486,131 @@ END
              OR ${WholesalerTable.isActive} = 1)
     ''');
     return (rows.first['total'] as num?)?.toDouble() ?? 0.0;
+  }
+
+  /// Party-wise receivables for the dashboard "You Will Get" drill-down.
+  /// Sorted highest outstanding first (same invoice-remaining formula as KPI).
+  Future<List<DashboardReceivableRow>> getReceivablesBreakdown() async {
+    final directory = await getOutstandingCreditDirectory();
+    return directory
+        .map(
+          (row) => DashboardReceivableRow(
+            zamindarId: row['zamindarId'] as int?,
+            name: row['name'] as String? ?? '',
+            phone: (row['whatsappNumber'] as String?)?.trim(),
+            lastTransactionAt: row['lastActiveAt'] as DateTime?,
+            outstandingBalance:
+                (row['outstandingBalance'] as num?)?.toDouble() ?? 0.0,
+          ),
+        )
+        .where((row) => row.name.isNotEmpty && row.outstandingBalance > 0.005)
+        .toList();
+  }
+
+  /// Active wholesalers with positive balances for "You Will Give" drill-down.
+  Future<List<DashboardPayableRow>> getPayablesBreakdown() async {
+    final wholesalers = await getAllWholesalers();
+    final rows = wholesalers
+        .where((w) => w.balance > 0.005)
+        .map(
+          (w) => DashboardPayableRow(
+            wholesalerId: w.id,
+            name: w.name,
+            contact: w.phone.trim().isEmpty ? null : w.phone.trim(),
+            pendingAmount: w.balance,
+          ),
+        )
+        .toList();
+    rows.sort((a, b) => b.pendingAmount.compareTo(a.pendingAmount));
+    return rows;
+  }
+
+  /// Explicit cash-drawer math used by the Cash in Hand KPI.
+  ///
+  /// Cash / fuel advances are khaata loan records and have zero drawer impact.
+  Future<CashInHandBreakdown> getCashInHandBreakdown() async {
+    final db = await database;
+
+    final cashSalesRows = await db.rawQuery(
+      '''
+      SELECT COALESCE(SUM(${SalesTable.paidAmount}), 0) AS total
+      FROM ${SalesTable.name}
+      WHERE ${SalesTable.paymentMethod} = 'Cash'
+        AND (
+          ${SalesTable.transactionType} IS NULL
+          OR ${SalesTable.transactionType} = ?
+          OR ${SalesTable.transactionType} NOT IN (?, ?, ?)
+        )
+      ''',
+      [
+        SaleTransactionType.productSale,
+        SaleTransactionType.cashAdvance,
+        SaleTransactionType.dieselAdvance,
+        SaleTransactionType.petrolAdvance,
+      ],
+    );
+    final cashSalesReceived =
+        (cashSalesRows.first['total'] as num?)?.toDouble() ?? 0.0;
+
+    final ledgerPaymentRows = await db.rawQuery(
+      '''
+      SELECT COALESCE(SUM(${PaymentsTable.amountPaid}), 0) AS total
+      FROM ${PaymentsTable.name}
+      WHERE ${PaymentsTable.paymentMethod} = 'Cash'
+      ''',
+    );
+    final zamindarCashRecoveries =
+        (ledgerPaymentRows.first['total'] as num?)?.toDouble() ?? 0.0;
+
+    final supplierPaymentRows = await db.rawQuery(
+      '''
+      SELECT COALESCE(SUM(${WholesalerPaymentsTable.amount}), 0) AS total
+      FROM ${WholesalerPaymentsTable.name}
+      WHERE ${WholesalerPaymentsTable.paymentMethod} = 'Cash'
+      ''',
+    );
+    final wholesalerCashPayments =
+        (supplierPaymentRows.first['total'] as num?)?.toDouble() ?? 0.0;
+
+    final expenseRows = await db.rawQuery('''
+      SELECT COALESCE(SUM(${ExpenseTable.amount}), 0) AS total
+      FROM ${ExpenseTable.name}
+    ''');
+    final expensesPaid =
+        (expenseRows.first['total'] as num?)?.toDouble() ?? 0.0;
+
+    final drawingRows = await db.rawQuery('''
+      SELECT
+        COALESCE(SUM(CASE WHEN ${PartnerDrawingTable.type} = ?
+          THEN ${PartnerDrawingTable.amount} ELSE 0 END), 0) AS taken,
+        COALESCE(SUM(CASE WHEN ${PartnerDrawingTable.type} = ?
+          THEN ${PartnerDrawingTable.amount} ELSE 0 END), 0) AS returned
+      FROM ${PartnerDrawingTable.name}
+    ''', [PartnerDrawingType.taken, PartnerDrawingType.returned]);
+    final partnerDrawingsTaken =
+        (drawingRows.first['taken'] as num?)?.toDouble() ?? 0.0;
+    final partnerDrawingsReturned =
+        (drawingRows.first['returned'] as num?)?.toDouble() ?? 0.0;
+
+    final openingBalance = await ShopSettings.getCashOpeningBalance();
+    final netCashInHand = openingBalance +
+        cashSalesReceived +
+        zamindarCashRecoveries -
+        wholesalerCashPayments -
+        expensesPaid -
+        partnerDrawingsTaken +
+        partnerDrawingsReturned;
+
+    return CashInHandBreakdown(
+      openingBalance: openingBalance,
+      cashSalesReceived: cashSalesReceived,
+      zamindarCashRecoveries: zamindarCashRecoveries,
+      expensesPaid: expensesPaid,
+      wholesalerCashPayments: wholesalerCashPayments,
+      partnerDrawingsTaken: partnerDrawingsTaken,
+      partnerDrawingsReturned: partnerDrawingsReturned,
+      netCashInHand: netCashInHand,
+    );
   }
 
   /// Products at or below their reorder / low-stock threshold.
@@ -8724,6 +9071,7 @@ END
     required String productType,
     required String season,
     String? paymentTerm,
+    String? description,
   }) async {
     final isCashSale = paymentMethod == 'Cash';
     final isCreditSale = paymentMethod == 'Credit';
@@ -8735,18 +9083,18 @@ END
 
     final db = await database;
     await db.transaction((txn) async {
-      // Calculate totals — unitPrice is base; seasonal is per-unit add-on.
+      // Calculate totals — unitPrice is base; seasonal & discount are per-unit.
       final subtotal = items.fold<double>(
         0.0,
         (sum, item) => sum + (item.qty * item.unitPrice),
       );
       final itemDiscountsTotal = items.fold<double>(
         0.0,
-        (sum, item) => sum + item.discount,
+        (sum, item) => sum + item.totalItemDiscount,
       );
       final seasonalIncrementTotal = items.fold<double>(
         0.0,
-        (sum, item) => sum + (item.qty * item.seasonalIncrement),
+        (sum, item) => sum + item.totalItemSeasonalInc,
       );
       final totalPayable =
           subtotal +
@@ -8825,6 +9173,7 @@ END
 
       // Walk-in / cash customers have no zamindar row. Ledger triggers skip
       // when zamindar_id is null; store the typed name in remarks for display.
+      // Free-text transaction notes always go in [SalesTable.description].
       final isWalkInSale = resolvedZamindarId == null;
       if (isWalkInSale && isCreditSale) {
         throw StateError(
@@ -8837,6 +9186,12 @@ END
           'Cannot insert walk-in sale: customer name is empty.',
         );
       }
+
+      final trimmedDescription = description?.trim();
+      final storedDescription =
+          (trimmedDescription != null && trimmedDescription.isNotEmpty)
+          ? trimmedDescription
+          : null;
 
       // Step 1: Insert sale (after_sale_insert trigger writes ledger DEBIT).
       final resolvedSeasonId = await _lookupSeasonIdForLabel(txn, season);
@@ -8857,6 +9212,7 @@ END
         SalesTable.creditAmount: creditAmount.round(),
         SalesTable.fuelQuantity: null,
         SalesTable.remarks: isWalkInSale ? zamindarName.trim() : null,
+        SalesTable.description: storedDescription,
         SalesTable.zamindarId: resolvedZamindarId,
         SalesTable.kisaanId: resolvedKisaanId,
       };
@@ -8865,8 +9221,6 @@ END
 
       // Insert line items into sale_items table
       for (final item in items) {
-        final itemSubtotal =
-            (item.qty * item.effectiveUnitPrice) - item.discount;
         await txn.insert(SaleItemsTable.name, {
           SaleItemsTable.invoiceNumber: invoiceNumber,
           SaleItemsTable.productName: item.productName,
@@ -8874,8 +9228,9 @@ END
           SaleItemsTable.quantity: item.qty.round(),
           SaleItemsTable.unitPrice: item.unitPrice.round(),
           SaleItemsTable.seasonalIncrement: item.seasonalIncrement.round(),
+          // Stored per-unit (same convention as seasonalIncrement).
           SaleItemsTable.itemDiscount: item.discount.round(),
-          SaleItemsTable.subtotal: itemSubtotal.round(),
+          SaleItemsTable.subtotal: item.lineSubtotal.round(),
         });
       }
 
@@ -9063,6 +9418,10 @@ END
             (trimmedRemarks != null && trimmedRemarks.isNotEmpty)
             ? trimmedRemarks
             : null,
+        SalesTable.description:
+            (trimmedRemarks != null && trimmedRemarks.isNotEmpty)
+            ? trimmedRemarks
+            : null,
         SalesTable.zamindarId: zamindarId,
         SalesTable.kisaanId: kisaanId,
       };
@@ -9199,6 +9558,10 @@ END
           SalesTable.creditAmount: amount.round(),
           SalesTable.fuelQuantity: liters,
           SalesTable.remarks:
+              (trimmedRemarks != null && trimmedRemarks.isNotEmpty)
+              ? trimmedRemarks
+              : null,
+          SalesTable.description:
               (trimmedRemarks != null && trimmedRemarks.isNotEmpty)
               ? trimmedRemarks
               : null,
@@ -9353,22 +9716,24 @@ END
     final creditSales =
         (revenueRows.first['credit_sales'] as num?)?.toDouble() ?? 0.0;
 
-    // Gross margin from sold inventory (actual sold unit price − catalog cost).
+    // Gross margin = net invoice (after seasonal + discounts) − catalog COGS.
     // Advance loans are zero-margin and excluded.
     final profitRows = await db.rawQuery(
       '''
       SELECT COALESCE(SUM(
-        si.${SaleItemsTable.quantity} * (
-          (si.${SaleItemsTable.unitPrice}
-            + COALESCE(si.${SaleItemsTable.seasonalIncrement}, 0))
-          - COALESCE(p.${ProductTable.costPrice}, 0)
-        )
+        s.${SalesTable.totalPayable} - COALESCE((
+          SELECT SUM(
+            si.${SaleItemsTable.quantity} *
+              COALESCE(p.${ProductTable.costPrice}, 0)
+          )
+          FROM ${SaleItemsTable.name} si
+          LEFT JOIN ${ProductTable.name} p
+            ON p.${ProductTable.nameColumn} = si.${SaleItemsTable.productName}
+          WHERE si.${SaleItemsTable.invoiceNumber}
+              = s.${SalesTable.invoiceNumber}
+        ), 0)
       ), 0) AS gross_margin
-      FROM ${SaleItemsTable.name} si
-      INNER JOIN ${SalesTable.name} s
-        ON s.${SalesTable.invoiceNumber} = si.${SaleItemsTable.invoiceNumber}
-      LEFT JOIN ${ProductTable.name} p
-        ON p.${ProductTable.nameColumn} = si.${SaleItemsTable.productName}
+      FROM ${SalesTable.name} s
       WHERE s.${SalesTable.season} = ?
         AND (
           s.${SalesTable.transactionType} IS NULL
@@ -9386,6 +9751,40 @@ END
     );
     final grossMargin =
         (profitRows.first['gross_margin'] as num?)?.toDouble() ?? 0.0;
+
+    final adjustmentRows = await db.rawQuery(
+      '''
+      SELECT
+        COALESCE(SUM(${SalesTable.subtotal}), 0) AS gross_sales,
+        COALESCE(SUM(${SalesTable.seasonalIncrementTotal}), 0)
+          AS seasonal_increments,
+        COALESCE(SUM(${SalesTable.itemDiscountsTotal}), 0) AS item_discounts,
+        COALESCE(SUM(${SalesTable.overallDiscount}), 0) AS overall_discounts
+      FROM ${SalesTable.name}
+      WHERE ${SalesTable.season} = ?
+        AND (
+          ${SalesTable.transactionType} IS NULL
+          OR ${SalesTable.transactionType} = ?
+          OR ${SalesTable.transactionType} NOT IN (?, ?, ?)
+        )
+      ''',
+      [
+        seasonName,
+        SaleTransactionType.productSale,
+        SaleTransactionType.cashAdvance,
+        SaleTransactionType.dieselAdvance,
+        SaleTransactionType.petrolAdvance,
+      ],
+    );
+    final seasonalIncrements =
+        (adjustmentRows.first['seasonal_increments'] as num?)?.toDouble() ??
+            0.0;
+    final itemDiscounts =
+        (adjustmentRows.first['item_discounts'] as num?)?.toDouble() ?? 0.0;
+    final overallDiscounts =
+        (adjustmentRows.first['overall_discounts'] as num?)?.toDouble() ?? 0.0;
+    final grossSalesBase =
+        (adjustmentRows.first['gross_sales'] as num?)?.toDouble() ?? 0.0;
 
     final seasonStartIso = _formatDateTime(seasonObj.startDate);
     final seasonEndIso = _formatDateTime(seasonObj.endDate);
@@ -9491,8 +9890,14 @@ END
       'totalRevenue': totalRevenue,
       'cashSales': cashSales,
       'creditSales': creditSales,
+      'grossSalesBase': grossSalesBase,
+      'seasonalIncrements': seasonalIncrements,
+      'itemDiscounts': itemDiscounts,
+      'overallDiscounts': overallDiscounts,
+      'totalDiscounts': itemDiscounts + overallDiscounts,
       'netProfit': netProfit,
       'grossMargin': grossMargin,
+      'cogs': totalRevenue - grossMargin,
       'overheads': overheads,
       'totalMarketDebt': totalMarketDebt,
       'highRiskDues': highRiskDues,
@@ -9500,6 +9905,161 @@ END
       'dailyTarget': dailyTarget,
       'collectionEfficiency': collectionEfficiency,
     };
+  }
+
+  /// Full P&L audit payload for Reports KPI drill-downs (current season by default).
+  Future<ProfitAndLossBreakdown> getProfitAndLossBreakdown({
+    String? season,
+  }) async {
+    final metrics = await getSeasonalMetrics(season: season);
+    final seasonName = metrics['season'] as String? ?? '';
+    final topProducts = await getTopProfitableProducts(
+      season: seasonName,
+      limit: 5,
+    );
+
+    return ProfitAndLossBreakdown(
+      season: seasonName,
+      grossSalesRevenue:
+          (metrics['grossSalesBase'] as num?)?.toDouble() ?? 0.0,
+      seasonalIncrements:
+          (metrics['seasonalIncrements'] as num?)?.toDouble() ?? 0.0,
+      totalDiscounts: (metrics['totalDiscounts'] as num?)?.toDouble() ?? 0.0,
+      cogs: (metrics['cogs'] as num?)?.toDouble() ?? 0.0,
+      shopExpenses: (metrics['overheads'] as num?)?.toDouble() ?? 0.0,
+      netProfit: (metrics['netProfit'] as num?)?.toDouble() ?? 0.0,
+      totalRevenue: (metrics['totalRevenue'] as num?)?.toDouble() ?? 0.0,
+      cashSales: (metrics['cashSales'] as num?)?.toDouble() ?? 0.0,
+      creditSales: (metrics['creditSales'] as num?)?.toDouble() ?? 0.0,
+      topProducts: topProducts,
+    );
+  }
+
+  /// Top products by contribution margin for the season P&L audit.
+  Future<List<ProductProfitRow>> getTopProfitableProducts({
+    required String season,
+    int limit = 5,
+  }) async {
+    final db = await database;
+    final capped = limit < 1 ? 5 : limit;
+    final rows = await db.rawQuery(
+      '''
+      SELECT
+        si.${SaleItemsTable.productName} AS product_name,
+        COALESCE(SUM(
+          si.${SaleItemsTable.quantity} * (
+            COALESCE(si.${SaleItemsTable.unitPrice}, 0)
+            + COALESCE(si.${SaleItemsTable.seasonalIncrement}, 0)
+            - COALESCE(si.${SaleItemsTable.itemDiscount}, 0)
+          )
+        ), 0) AS revenue,
+        COALESCE(SUM(
+          si.${SaleItemsTable.quantity} *
+            COALESCE(p.${ProductTable.costPrice}, 0)
+        ), 0) AS cogs,
+        COALESCE(SUM(
+          si.${SaleItemsTable.quantity} * (
+            COALESCE(si.${SaleItemsTable.unitPrice}, 0)
+            + COALESCE(si.${SaleItemsTable.seasonalIncrement}, 0)
+            - COALESCE(si.${SaleItemsTable.itemDiscount}, 0)
+            - COALESCE(p.${ProductTable.costPrice}, 0)
+          )
+        ), 0) AS margin
+      FROM ${SaleItemsTable.name} si
+      INNER JOIN ${SalesTable.name} s
+        ON s.${SalesTable.invoiceNumber} = si.${SaleItemsTable.invoiceNumber}
+      LEFT JOIN ${ProductTable.name} p
+        ON p.${ProductTable.nameColumn} = si.${SaleItemsTable.productName}
+      WHERE s.${SalesTable.season} = ?
+        AND LOWER(TRIM(COALESCE(si.${SaleItemsTable.productType}, ''))) != 'advance'
+        AND (
+          s.${SalesTable.transactionType} IS NULL
+          OR s.${SalesTable.transactionType} = ?
+          OR s.${SalesTable.transactionType} NOT IN (?, ?, ?)
+        )
+      GROUP BY si.${SaleItemsTable.productName}
+      ORDER BY margin DESC
+      LIMIT ?
+      ''',
+      [
+        season,
+        SaleTransactionType.productSale,
+        SaleTransactionType.cashAdvance,
+        SaleTransactionType.dieselAdvance,
+        SaleTransactionType.petrolAdvance,
+        capped,
+      ],
+    );
+
+    return rows
+        .map(
+          (row) => ProductProfitRow(
+            productName: row['product_name'] as String? ?? '',
+            revenue: (row['revenue'] as num?)?.toDouble() ?? 0.0,
+            cogs: (row['cogs'] as num?)?.toDouble() ?? 0.0,
+            margin: (row['margin'] as num?)?.toDouble() ?? 0.0,
+          ),
+        )
+        .where((r) => r.productName.isNotEmpty)
+        .toList();
+  }
+
+  /// Cash / credit purchase split + stock additions by product category.
+  Future<PurchasesBreakdown> getPurchasesBreakdown({String? season}) async {
+    final metrics = await getSeasonalMetrics(season: season);
+    final seasonName = metrics['season'] as String? ??
+        SeasonUtils.getCurrentSeason().displayName;
+    final seasonObj = SeasonUtils.parseSeasonDisplayName(seasonName) ??
+        SeasonUtils.getCurrentSeason();
+    final seasonStartIso = _formatDateTime(seasonObj.startDate);
+    final seasonEndIso = _formatDateTime(seasonObj.endDate);
+
+    final db = await database;
+    final categoryRows = await db.rawQuery(
+      '''
+      SELECT
+        COALESCE(p.${ProductTable.productType}, 'Fertilizer') AS product_type,
+        COALESCE(SUM(pi.${PurchaseItemsTable.lineTotal}), 0) AS total
+      FROM ${PurchaseItemsTable.name} pi
+      INNER JOIN ${PurchaseInvoicesTable.name} inv
+        ON inv.${PurchaseInvoicesTable.invoiceNumber}
+          = pi.${PurchaseItemsTable.invoiceNumber}
+      LEFT JOIN ${ProductTable.name} p
+        ON p.${ProductTable.id} = pi.${PurchaseItemsTable.productId}
+      WHERE inv.${PurchaseInvoicesTable.dateTime} >= ?
+        AND inv.${PurchaseInvoicesTable.dateTime} <= ?
+      GROUP BY COALESCE(p.${ProductTable.productType}, 'Fertilizer')
+      ORDER BY total DESC
+      ''',
+      [seasonStartIso, seasonEndIso],
+    );
+
+    final byCategory = <String, double>{
+      'Fertilizers': 0.0,
+      'Seeds': 0.0,
+      'Pesticides': 0.0,
+    };
+    for (final row in categoryRows) {
+      final raw = row['product_type'] as String? ?? 'Fertilizer';
+      final key = _normalizeProductCategory(raw);
+      final amount = (row['total'] as num?)?.toDouble() ?? 0.0;
+      byCategory[key] = (byCategory[key] ?? 0.0) + amount;
+    }
+
+    final categoryList = byCategory.entries
+        .map(
+          (e) => PurchaseCategoryAmount(category: e.key, amount: e.value),
+        )
+        .toList()
+      ..sort((a, b) => b.amount.compareTo(a.amount));
+
+    return PurchasesBreakdown(
+      season: seasonName,
+      totalPurchases: (metrics['totalPurchases'] as num?)?.toDouble() ?? 0.0,
+      cashPurchases: (metrics['cashPurchases'] as num?)?.toDouble() ?? 0.0,
+      creditPurchases: (metrics['creditPurchases'] as num?)?.toDouble() ?? 0.0,
+      byCategory: categoryList,
+    );
   }
 
   /// Credit aging buckets and capital trapped by product category.
@@ -10083,6 +10643,15 @@ END
         s.${SalesTable.subtotal} AS subtotal,
         s.${SalesTable.itemDiscountsTotal} AS item_discounts_total,
         s.${SalesTable.overallDiscount} AS overall_discount,
+        s.${SalesTable.seasonalIncrementTotal} AS seasonal_increment_total,
+        COALESCE(
+          NULLIF(TRIM(s.${SalesTable.description}), ''),
+          CASE
+            WHEN s.${SalesTable.transactionType} != '${SaleTransactionType.productSale}'
+              THEN NULLIF(TRIM(s.${SalesTable.remarks}), '')
+            ELSE NULL
+          END
+        ) AS invoice_description,
         s.${SalesTable.totalPayable} AS total,
         ($_sqlSaleCollectedExpr) AS paid,
         ($_sqlSaleRemainingExpr) AS remaining,
@@ -10183,10 +10752,14 @@ END
             costParts.isEmpty ? '-' : costParts.join(', '),
         'payment_type': paymentType,
         'subtotal': (sale['subtotal'] as num?)?.toDouble() ?? 0.0,
+        'seasonal_increment_total':
+            (sale['seasonal_increment_total'] as num?)?.toDouble() ?? 0.0,
         'item_discounts_total':
             (sale['item_discounts_total'] as num?)?.toDouble() ?? 0.0,
         'overall_discount':
             (sale['overall_discount'] as num?)?.toDouble() ?? 0.0,
+        'invoice_description':
+            (sale['invoice_description'] as String?)?.trim() ?? '',
         'total': (sale['total'] as num?)?.toDouble() ?? 0.0,
         'paid': (sale['paid'] as num?)?.toDouble() ?? 0.0,
         'remaining': (sale['remaining'] as num?)?.toDouble() ?? 0.0,
@@ -10940,6 +11513,7 @@ END
     required String productType,
     required String season,
     String? paymentTerm,
+    String? description,
   }) async {
     final isCashSale = paymentMethod == 'Cash';
     final isCreditSale = paymentMethod == 'Credit';
@@ -11009,11 +11583,11 @@ END
       );
       final itemDiscountsTotal = items.fold<double>(
         0.0,
-        (sum, item) => sum + item.discount,
+        (sum, item) => sum + item.totalItemDiscount,
       );
       final seasonalIncrementTotal = items.fold<double>(
         0.0,
-        (sum, item) => sum + (item.qty * item.seasonalIncrement),
+        (sum, item) => sum + item.totalItemSeasonalInc,
       );
       final totalPayable =
           subtotal +
@@ -11101,6 +11675,12 @@ END
         );
       }
 
+      final trimmedDescription = description?.trim();
+      final storedDescription =
+          (trimmedDescription != null && trimmedDescription.isNotEmpty)
+          ? trimmedDescription
+          : null;
+
       await txn.update(
         SalesTable.name,
         {
@@ -11118,6 +11698,7 @@ END
           SalesTable.transactionType: SaleTransactionType.productSale,
           SalesTable.creditAmount: creditAmount.round(),
           SalesTable.remarks: isWalkInSale ? zamindarName.trim() : null,
+          SalesTable.description: storedDescription,
           SalesTable.zamindarId: resolvedZamindarId,
           SalesTable.kisaanId: resolvedKisaanId,
         },
@@ -11127,8 +11708,6 @@ END
       // after_sale_update trigger refreshes the sale DEBIT ledger row.
 
       for (final item in items) {
-        final itemSubtotal =
-            (item.qty * item.effectiveUnitPrice) - item.discount;
         await txn.insert(SaleItemsTable.name, {
           SaleItemsTable.invoiceNumber: invoiceNumber,
           SaleItemsTable.productName: item.productName,
@@ -11136,8 +11715,9 @@ END
           SaleItemsTable.quantity: item.qty.round(),
           SaleItemsTable.unitPrice: item.unitPrice.round(),
           SaleItemsTable.seasonalIncrement: item.seasonalIncrement.round(),
+          // Stored per-unit (same convention as seasonalIncrement).
           SaleItemsTable.itemDiscount: item.discount.round(),
-          SaleItemsTable.subtotal: itemSubtotal.round(),
+          SaleItemsTable.subtotal: item.lineSubtotal.round(),
         });
       }
 
@@ -11427,9 +12007,12 @@ class LedgerTransactionType {
 /// Aliases for [SalesTable] columns joined onto ledger transaction queries.
 class SaleJoinColumns {
   static const String subtotal = 'sale_subtotal';
+  static const String seasonalIncrementTotal = 'sale_seasonal_increment_total';
   static const String itemDiscountsTotal = 'sale_item_discounts_total';
   static const String overallDiscount = 'sale_overall_discount';
   static const String totalPayable = 'sale_total_payable';
+  static const String remarks = 'sale_remarks';
+  static const String description = 'sale_description';
 }
 
 class SalesTable {
@@ -11453,7 +12036,10 @@ class SalesTable {
   static const String transactionType = 'transaction_type';
   static const String creditAmount = 'credit_amount';
   static const String fuelQuantity = 'fuel_quantity';
+  /// Walk-in customer display name (when zamindar_id is null) or advance notes.
   static const String remarks = 'remarks';
+  /// Optional free-text transaction / invoice notes.
+  static const String description = 'description';
   static const String zamindarId = 'zamindar_id';
   static const String kisaanId = 'kisaan_id';
 }
@@ -12145,6 +12731,35 @@ class LedgerTransaction {
   }
 }
 
+/// Scratch row used while allocating invoice-level overall discount.
+class _ProductLedgerDraft {
+  final String invoiceNumber;
+  final DateTime dateTime;
+  final String kisaanName;
+  final String productName;
+  final int quantity;
+  final int unitPrice;
+  final int seasonalIncrement;
+  final int itemDiscount;
+  final int lineSubtotal;
+  final int invoiceOverallDiscount;
+  final String uom;
+
+  const _ProductLedgerDraft({
+    required this.invoiceNumber,
+    required this.dateTime,
+    required this.kisaanName,
+    required this.productName,
+    required this.quantity,
+    required this.unitPrice,
+    required this.seasonalIncrement,
+    required this.itemDiscount,
+    required this.lineSubtotal,
+    required this.invoiceOverallDiscount,
+    required this.uom,
+  });
+}
+
 /// One sale line-item row for the Zamindar product-wise ledger panel.
 class ZamindarProductLedgerEntry {
   final String invoiceNumber;
@@ -12152,7 +12767,18 @@ class ZamindarProductLedgerEntry {
   final String kisaanName;
   final String productName;
   final int quantity;
+  /// Base unit price (excludes seasonal increment).
   final int unitPrice;
+  /// Per-unit seasonal increment.
+  final int seasonalIncrement;
+  /// Per-unit item discount.
+  final int itemDiscount;
+  /// This line's share of the invoice overall discount.
+  final int allocatedOverallDiscount;
+  /// Line net before overall discount:
+  /// qty × (unitPrice + seasonalIncrement − itemDiscount).
+  final int lineSubtotal;
+  /// Final line total after allocated overall discount.
   final int lineTotal;
   final String uom;
 
@@ -12163,9 +12789,17 @@ class ZamindarProductLedgerEntry {
     required this.productName,
     required this.quantity,
     required this.unitPrice,
+    this.seasonalIncrement = 0,
+    this.itemDiscount = 0,
+    this.allocatedOverallDiscount = 0,
+    int? lineSubtotal,
     required this.lineTotal,
     required this.uom,
-  });
+  }) : lineSubtotal = lineSubtotal ?? lineTotal;
+
+  int get effectiveUnitPrice => unitPrice + seasonalIncrement - itemDiscount;
+  int get totalSeasonalIncrement => seasonalIncrement * quantity;
+  int get totalItemDiscount => itemDiscount * quantity;
 }
 
 class ProductInventoryStatus {
@@ -12276,6 +12910,166 @@ class DashboardRecoveryRow {
     this.whatsappNumber,
     required this.paymentTerm,
   });
+}
+
+class DashboardReceivableRow {
+  final int? zamindarId;
+  final String name;
+  final String? phone;
+  final DateTime? lastTransactionAt;
+  final double outstandingBalance;
+
+  const DashboardReceivableRow({
+    this.zamindarId,
+    required this.name,
+    this.phone,
+    this.lastTransactionAt,
+    required this.outstandingBalance,
+  });
+}
+
+class DashboardPayableRow {
+  final int? wholesalerId;
+  final String name;
+  final String? contact;
+  final double pendingAmount;
+
+  const DashboardPayableRow({
+    this.wholesalerId,
+    required this.name,
+    this.contact,
+    required this.pendingAmount,
+  });
+}
+
+class CashInHandBreakdown {
+  final double openingBalance;
+  final double cashSalesReceived;
+  final double zamindarCashRecoveries;
+  final double expensesPaid;
+  final double wholesalerCashPayments;
+  final double partnerDrawingsTaken;
+  final double partnerDrawingsReturned;
+  final double netCashInHand;
+
+  const CashInHandBreakdown({
+    required this.openingBalance,
+    required this.cashSalesReceived,
+    required this.zamindarCashRecoveries,
+    required this.expensesPaid,
+    required this.wholesalerCashPayments,
+    required this.partnerDrawingsTaken,
+    required this.partnerDrawingsReturned,
+    required this.netCashInHand,
+  });
+
+  /// Net partner cash leaving the drawer (taken − returned).
+  double get partnerDrawingsNet =>
+      partnerDrawingsTaken - partnerDrawingsReturned;
+
+  factory CashInHandBreakdown.empty() => const CashInHandBreakdown(
+        openingBalance: 0,
+        cashSalesReceived: 0,
+        zamindarCashRecoveries: 0,
+        expensesPaid: 0,
+        wholesalerCashPayments: 0,
+        partnerDrawingsTaken: 0,
+        partnerDrawingsReturned: 0,
+        netCashInHand: 0,
+      );
+}
+
+class ProductProfitRow {
+  final String productName;
+  final double revenue;
+  final double cogs;
+  final double margin;
+
+  const ProductProfitRow({
+    required this.productName,
+    required this.revenue,
+    required this.cogs,
+    required this.margin,
+  });
+}
+
+class ProfitAndLossBreakdown {
+  final String season;
+  final double grossSalesRevenue;
+  final double seasonalIncrements;
+  final double totalDiscounts;
+  final double cogs;
+  final double shopExpenses;
+  final double netProfit;
+  final double totalRevenue;
+  final double cashSales;
+  final double creditSales;
+  final List<ProductProfitRow> topProducts;
+
+  const ProfitAndLossBreakdown({
+    required this.season,
+    required this.grossSalesRevenue,
+    required this.seasonalIncrements,
+    required this.totalDiscounts,
+    required this.cogs,
+    required this.shopExpenses,
+    required this.netProfit,
+    required this.totalRevenue,
+    required this.cashSales,
+    required this.creditSales,
+    required this.topProducts,
+  });
+
+  double get profitMargin =>
+      totalRevenue > 0 ? (netProfit / totalRevenue) * 100.0 : 0.0;
+
+  factory ProfitAndLossBreakdown.empty() => const ProfitAndLossBreakdown(
+        season: '',
+        grossSalesRevenue: 0,
+        seasonalIncrements: 0,
+        totalDiscounts: 0,
+        cogs: 0,
+        shopExpenses: 0,
+        netProfit: 0,
+        totalRevenue: 0,
+        cashSales: 0,
+        creditSales: 0,
+        topProducts: <ProductProfitRow>[],
+      );
+}
+
+class PurchaseCategoryAmount {
+  final String category;
+  final double amount;
+
+  const PurchaseCategoryAmount({
+    required this.category,
+    required this.amount,
+  });
+}
+
+class PurchasesBreakdown {
+  final String season;
+  final double totalPurchases;
+  final double cashPurchases;
+  final double creditPurchases;
+  final List<PurchaseCategoryAmount> byCategory;
+
+  const PurchasesBreakdown({
+    required this.season,
+    required this.totalPurchases,
+    required this.cashPurchases,
+    required this.creditPurchases,
+    required this.byCategory,
+  });
+
+  factory PurchasesBreakdown.empty() => const PurchasesBreakdown(
+        season: '',
+        totalPurchases: 0,
+        cashPurchases: 0,
+        creditPurchases: 0,
+        byCategory: <PurchaseCategoryAmount>[],
+      );
 }
 
 class PendingAdvanceRow {
@@ -12389,6 +13183,7 @@ class SaleLineItem {
   final double unitPrice;
   /// Per-unit seasonal increment (After Harvest credit sales).
   final double seasonalIncrement;
+  /// Per-unit discount.
   final double discount;
 
   const SaleLineItem({
@@ -12400,7 +13195,10 @@ class SaleLineItem {
     this.discount = 0,
   });
 
-  double get effectiveUnitPrice => unitPrice + seasonalIncrement;
+  double get effectiveUnitPrice => unitPrice + seasonalIncrement - discount;
+  double get lineSubtotal => qty * effectiveUnitPrice;
+  double get totalItemDiscount => qty * discount;
+  double get totalItemSeasonalInc => qty * seasonalIncrement;
 }
 
 class PurchaseLineItem {
