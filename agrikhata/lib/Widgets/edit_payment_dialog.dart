@@ -73,6 +73,10 @@ class _EditPaymentDialogState extends State<_EditPaymentDialog> {
   String get _paymentId =>
       widget.payment[PaymentsTable.paymentId] as String? ?? '';
 
+  bool get _isWallet =>
+      (widget.payment[PaymentsTable.paymentMethod] as String?)?.trim() ==
+      'Advance Wallet Deduction';
+
   @override
   void initState() {
     super.initState();
@@ -92,10 +96,15 @@ class _EditPaymentDialogState extends State<_EditPaymentDialog> {
 
     var method =
         widget.payment[PaymentsTable.paymentMethod] as String? ?? 'Cash';
-    if (method != 'Cash' && method != 'Bank Transfer') {
-      method = method.toLowerCase().contains('bank') ? 'Bank Transfer' : 'Cash';
+    if (method == 'Advance Wallet Deduction') {
+      _paymentMethod = method;
+    } else if (method != 'Cash' && method != 'Bank Transfer') {
+      _paymentMethod = method.toLowerCase().contains('bank')
+          ? 'Bank Transfer'
+          : 'Cash';
+    } else {
+      _paymentMethod = method;
     }
-    _paymentMethod = method;
     _masterAuthorized = !widget.editability.requiresMasterAdmin;
   }
 
@@ -212,7 +221,7 @@ class _EditPaymentDialogState extends State<_EditPaymentDialog> {
 
     return AlertDialog(
       title: const Text(
-        '✏️ Edit Payment',
+        'Edit Transaction',
         style: TextStyle(
           fontSize: 16,
           fontWeight: FontWeight.w600,
@@ -233,10 +242,13 @@ class _EditPaymentDialogState extends State<_EditPaymentDialog> {
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(color: const Color(0xFFFFCC80)),
                 ),
-                child: const Text(
-                  '⚠️ Editing this payment will adjust the Zamindar\'s '
-                  'outstanding balance and cash drawer history.',
-                  style: TextStyle(
+                child: Text(
+                  _isWallet
+                      ? '⚠️ Editing this wallet deduction will adjust the '
+                          'Zamindar\'s outstanding balance and advance wallet.'
+                      : '⚠️ Editing this payment will adjust the Zamindar\'s '
+                          'outstanding balance and cash drawer history.',
+                  style: const TextStyle(
                     fontSize: 11.5,
                     color: Color(0xFF633806),
                     height: 1.35,
@@ -327,14 +339,21 @@ class _EditPaymentDialogState extends State<_EditPaymentDialog> {
               DropdownButtonFormField<String>(
                 initialValue: _paymentMethod,
                 decoration: _fieldDecoration(),
-                items: const [
-                  DropdownMenuItem(value: 'Cash', child: Text('Cash')),
-                  DropdownMenuItem(
-                    value: 'Bank Transfer',
-                    child: Text('Bank Transfer'),
-                  ),
+                items: [
+                  if (_isWallet)
+                    const DropdownMenuItem(
+                      value: 'Advance Wallet Deduction',
+                      child: Text('Advance Wallet Deduction'),
+                    )
+                  else ...const [
+                    DropdownMenuItem(value: 'Cash', child: Text('Cash')),
+                    DropdownMenuItem(
+                      value: 'Bank Transfer',
+                      child: Text('Bank Transfer'),
+                    ),
+                  ],
                 ],
-                onChanged: (!_isSaving && _masterAuthorized)
+                onChanged: (!_isSaving && _masterAuthorized && !_isWallet)
                     ? (v) {
                         if (v == null) return;
                         setState(() => _paymentMethod = v);

@@ -1,5 +1,6 @@
 import 'package:agrikhata/Database/database_helper.dart';
 import 'package:agrikhata/Widgets/app_auto_suggest_field.dart';
+import 'package:agrikhata/Widgets/settlement_split_fields.dart';
 import 'package:agrikhata/services/whatsapp_urdu_service.dart';
 import 'package:agrikhata/theme/theme.dart';
 import 'package:agrikhata/utils/pdf_generator.dart';
@@ -838,23 +839,33 @@ class _ZamindarKisaansTabState extends State<ZamindarKisaansTab> {
         zamindarName: widget.zamindarName,
         zamindarWhatsapp: _zamindarWhatsapp,
         kisaans: _kisaans,
-        onSettlementApplied: (selectedKisaanId, kisaanName, amount) async {
-          final result = await DatabaseHelper.instance.settleKisaanBulkPayment(
-            zamindarId: widget.zamindarId,
-            kisaanName: kisaanName,
-            amountPaid: amount,
-            paymentMethod: 'Cash',
-            season: '',
-          );
-          await _loadKisaans();
-          if (mounted) {
-            AppToast.showSuccess(
-              context,
-              'Payment of Rs ${amount.toStringAsFixed(0)} recorded successfully',
-            );
-          }
-          return result;
-        },
+        onSettlementApplied:
+            ({
+              required selectedKisaanId,
+              required kisaanName,
+              required amount,
+              required walletDeductionAmount,
+              remarks,
+            }) async {
+              final result = await DatabaseHelper.instance
+                  .settleKisaanBulkPayment(
+                    zamindarId: widget.zamindarId,
+                    kisaanName: kisaanName,
+                    amountPaid: amount,
+                    paymentMethod: 'Cash',
+                    season: '',
+                    walletDeductionAmount: walletDeductionAmount,
+                    remarks: remarks,
+                  );
+              await _loadKisaans();
+              if (mounted) {
+                AppToast.showSuccess(
+                  context,
+                  'Payment of Rs ${amount.toStringAsFixed(0)} recorded successfully',
+                );
+              }
+              return result;
+            },
       ),
     );
   }
@@ -1683,10 +1694,13 @@ class _AddKisaanPanelState extends State<_AddKisaanPanel> {
                     Row(
                       children: [
                         Expanded(
-                          child: _buildFormField(
-                            label: "Village",
+                          child: AppAutoSuggestField(
                             controller: _villageController,
-                            required: true,
+                            labelText: 'Village',
+                            isRequired: true,
+                            suggestionIcon: Icons.location_on_outlined,
+                            fetchSuggestions: (text) => DatabaseHelper.instance
+                                .fetchVillageSuggestions(text),
                             validator: (val) {
                               if (val == null || val.trim().isEmpty) {
                                 return 'Village is required';
@@ -1983,11 +1997,13 @@ class _BillSettlementDialog extends StatefulWidget {
   final String zamindarName;
   final String zamindarWhatsapp;
   final List<Kisaan> kisaans;
-  final Future<BillSettlementResult?> Function(
-    int selectedKisaanId,
-    String kisaanName,
-    double amount,
-  )
+  final Future<BillSettlementResult?> Function({
+    required int selectedKisaanId,
+    required String kisaanName,
+    required double amount,
+    required double walletDeductionAmount,
+    String? remarks,
+  })
   onSettlementApplied;
 
   const _BillSettlementDialog({
@@ -2006,12 +2022,16 @@ class _BillSettlementDialogState extends State<_BillSettlementDialog> {
   final _formKey = GlobalKey<FormState>();
   int? _selectedKisaanId;
   final _amountController = TextEditingController();
+  final _walletAmountController = TextEditingController();
+  final _remarksController = TextEditingController();
   bool _showReceiptActions = false;
   bool _isSubmitting = false;
   String _lastSettledKisaanName = "";
   BillSettlementResult? _settlementResult;
   double _kisaanDebt = 0;
+  double _availableAdvance = 0;
   bool _isLoadingDebt = false;
+  bool _deductFromWallet = false;
 
   @override
   void initState() {
@@ -2020,13 +2040,30 @@ class _BillSettlementDialogState extends State<_BillSettlementDialog> {
       _selectedKisaanId = widget.kisaans.first.id;
       _loadKisaanDebt(_selectedKisaanId!);
     }
+    _loadAdvanceBalance();
     _amountController.addListener(() => setState(() {}));
+    _walletAmountController.addListener(() => setState(() {}));
   }
 
   @override
   void dispose() {
     _amountController.dispose();
+    _walletAmountController.dispose();
+    _remarksController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadAdvanceBalance() async {
+    try {
+      final balance = await DatabaseHelper.instance.getAdvanceBalance(
+        widget.zamindarId,
+      );
+      if (!mounted) return;
+      setState(() => _availableAdvance = balance.toDouble());
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _availableAdvance = 0);
+    }
   }
 
   Future<void> _loadKisaanDebt(int kisaanId) async {
@@ -2055,6 +2092,8 @@ class _BillSettlementDialogState extends State<_BillSettlementDialog> {
     setState(() {
       _selectedKisaanId = kisaanId;
       _amountController.clear();
+      _walletAmountController.clear();
+      _deductFromWallet = false;
     });
     if (kisaanId != null) {
       _loadKisaanDebt(kisaanId);
@@ -2072,7 +2111,13 @@ class _BillSettlementDialogState extends State<_BillSettlementDialog> {
     final amt = _enteredAmount;
     if (amt == null || amt <= 0) return false;
     if (amt > _kisaanDebt) return false;
-    return true;
+    return SettlementSplitFields.isWalletDeductionValid(
+      deductFromWallet: _deductFromWallet,
+      rawText: _walletAmountController.text,
+      availableAdvance: _availableAdvance,
+      outstandingDues: _kisaanDebt,
+      settlementAmount: amt,
+    );
   }
 
   Future<void> _printReceipt() async {
@@ -2115,10 +2160,7 @@ class _BillSettlementDialogState extends State<_BillSettlementDialog> {
         shopName: shopName,
         amount: result.amountPaid,
         pdfPath: file.path,
-        detailLines: [
-          'کسان: ${result.kisaanName}',
-          result.description,
-        ],
+        detailLines: ['کسان: ${result.kisaanName}', result.description],
         subject: 'Bill Settlement — ${result.zamindarName}',
       );
     } catch (e) {
@@ -2201,205 +2243,226 @@ class _BillSettlementDialogState extends State<_BillSettlementDialog> {
 
               if (!_showReceiptActions) ...[
                 // Input Workflow View
-                Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Form(
-                    key: _formKey,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(10),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFF4F7F1),
-                            borderRadius: BorderRadius.circular(6),
-                            border: Border.all(
-                              color: AppColors.border,
-                              width: 0.5,
-                            ),
-                          ),
-                          child: Row(
-                            children: [
-                              const Icon(
-                                Icons.business_outlined,
-                                size: 16,
-                                color: AppColors.darkGreen,
-                              ),
-                              const SizedBox(width: 8),
-                              Text(
-                                "Payer Zamindar: ${widget.zamindarName}",
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
-                                  color: AppColors.darkGreen,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        const Text(
-                          "Select Kisaan Account",
-                          style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                            color: AppColors.textMuted,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        DropdownButtonFormField<int>(
-                          initialValue: _selectedKisaanId,
-                          isExpanded: true,
-                          decoration: InputDecoration(
-                            isDense: true,
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 10,
-                            ),
-                            enabledBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(7),
-                              borderSide: const BorderSide(
-                                color: AppColors.sidebarBg,
+                ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxHeight: MediaQuery.of(context).size.height * 0.7,
+                  ),
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(20),
+                    child: Form(
+                      key: _formKey,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFF4F7F1),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(
+                                color: AppColors.border,
                                 width: 0.5,
                               ),
                             ),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(7),
-                            ),
-                          ),
-                          items: widget.kisaans
-                              .where((k) => k.id != null)
-                              .map(
-                                (k) => DropdownMenuItem(
-                                  value: k.id,
-                                  child: Text(
-                                    k.name,
-                                    style: const TextStyle(fontSize: 12),
-                                  ),
+                            child: Row(
+                              children: [
+                                const Icon(
+                                  Icons.business_outlined,
+                                  size: 16,
+                                  color: AppColors.darkGreen,
                                 ),
-                              )
-                              .toList(),
-                          onChanged: _onKisaanChanged,
-                        ),
-                        const SizedBox(height: 12),
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 10,
-                          ),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFFCEBEB),
-                            borderRadius: BorderRadius.circular(6),
-                            border: Border.all(
-                              color: const Color(0xFFE8B4B4),
-                              width: 0.5,
-                            ),
-                          ),
-                          child: _isLoadingDebt
-                              ? const Row(
-                                  children: [
-                                    SizedBox(
-                                      width: 14,
-                                      height: 14,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                      ),
-                                    ),
-                                    SizedBox(width: 8),
-                                    Text(
-                                      'Calculating outstanding debt...',
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        color: AppColors.textMuted,
-                                      ),
-                                    ),
-                                  ],
-                                )
-                              : Text(
-                                  'Kisaan Remaining Debt: Rs. ${_fmt(_kisaanDebt)}',
+                                const SizedBox(width: 8),
+                                Text(
+                                  "Payer Zamindar: ${widget.zamindarName}",
                                   style: const TextStyle(
                                     fontSize: 12,
                                     fontWeight: FontWeight.w600,
-                                    color: Color(0xFFA32D2D),
+                                    color: AppColors.darkGreen,
                                   ),
                                 ),
-                        ),
-                        const SizedBox(height: 16),
-                        const Text(
-                          "Collected Amount Payment (Rs)",
-                          style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                            color: AppColors.textMuted,
+                              ],
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 6),
-                        TextFormField(
-                          controller: _amountController,
-                          keyboardType: TextInputType.number,
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                            color: AppColors.darkGreen,
-                          ),
-                          decoration: InputDecoration(
-                            isDense: true,
-                            prefixText: "Rs ",
-                            prefixStyle: const TextStyle(
+                          const SizedBox(height: 16),
+                          const Text(
+                            "Select Kisaan Account",
+                            style: TextStyle(
+                              fontSize: 10,
                               fontWeight: FontWeight.bold,
-                              color: AppColors.darkGreen,
+                              color: AppColors.textMuted,
                             ),
-                            contentPadding: const EdgeInsets.symmetric(
+                          ),
+                          const SizedBox(height: 6),
+                          DropdownButtonFormField<int>(
+                            initialValue: _selectedKisaanId,
+                            isExpanded: true,
+                            decoration: InputDecoration(
+                              isDense: true,
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 10,
+                              ),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(7),
+                                borderSide: const BorderSide(
+                                  color: AppColors.sidebarBg,
+                                  width: 0.5,
+                                ),
+                              ),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(7),
+                              ),
+                            ),
+                            items: widget.kisaans
+                                .where((k) => k.id != null)
+                                .map(
+                                  (k) => DropdownMenuItem(
+                                    value: k.id,
+                                    child: Text(
+                                      k.name,
+                                      style: const TextStyle(fontSize: 12),
+                                    ),
+                                  ),
+                                )
+                                .toList(),
+                            onChanged: _onKisaanChanged,
+                          ),
+                          const SizedBox(height: 12),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.symmetric(
                               horizontal: 12,
-                              vertical: 12,
+                              vertical: 10,
                             ),
-                            hintText: "0",
-                            enabledBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(7),
-                              borderSide: const BorderSide(
-                                color: AppColors.sidebarBg,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFCEBEB),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(
+                                color: const Color(0xFFE8B4B4),
                                 width: 0.5,
                               ),
                             ),
-                            focusedBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(7),
-                              borderSide: const BorderSide(
-                                color: AppColors.darkGreen,
-                                width: 1,
-                              ),
-                            ),
-                            errorBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(7),
-                              borderSide: const BorderSide(
-                                color: Colors.red,
-                                width: 1,
-                              ),
-                            ),
-                            focusedErrorBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(7),
-                              borderSide: const BorderSide(
-                                color: Colors.red,
-                                width: 1,
-                              ),
-                            ),
-                            errorStyle: const TextStyle(fontSize: 9),
+                            child: _isLoadingDebt
+                                ? const Row(
+                                    children: [
+                                      SizedBox(
+                                        width: 14,
+                                        height: 14,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      ),
+                                      SizedBox(width: 8),
+                                      Text(
+                                        'Calculating outstanding debt...',
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          color: AppColors.textMuted,
+                                        ),
+                                      ),
+                                    ],
+                                  )
+                                : Text(
+                                    'Kisaan Remaining Debt: Rs. ${_fmt(_kisaanDebt)}',
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                      color: Color(0xFFA32D2D),
+                                    ),
+                                  ),
                           ),
-                          validator: (value) {
-                            if (value == null || value.trim().isEmpty) {
-                              return 'Enter payment amount';
-                            }
-                            final amt = double.tryParse(value.trim());
-                            if (amt == null || amt <= 0) {
-                              return 'Enter a valid amount';
-                            }
-                            if (amt > _kisaanDebt) {
-                              return 'Cannot exceed Kisaan debt (Rs ${_fmt(_kisaanDebt)})';
-                            }
-                            return null;
-                          },
-                        ),
-                      ],
+                          const SizedBox(height: 16),
+                          const Text(
+                            "Total Settlement Amount (Rs)",
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                              color: AppColors.textMuted,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          TextFormField(
+                            controller: _amountController,
+                            keyboardType: TextInputType.number,
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: AppColors.darkGreen,
+                            ),
+                            decoration: InputDecoration(
+                              isDense: true,
+                              prefixText: "Rs ",
+                              prefixStyle: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: AppColors.darkGreen,
+                              ),
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 12,
+                              ),
+                              hintText: "0",
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(7),
+                                borderSide: const BorderSide(
+                                  color: AppColors.sidebarBg,
+                                  width: 0.5,
+                                ),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(7),
+                                borderSide: const BorderSide(
+                                  color: AppColors.darkGreen,
+                                  width: 1,
+                                ),
+                              ),
+                              errorBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(7),
+                                borderSide: const BorderSide(
+                                  color: Colors.red,
+                                  width: 1,
+                                ),
+                              ),
+                              focusedErrorBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(7),
+                                borderSide: const BorderSide(
+                                  color: Colors.red,
+                                  width: 1,
+                                ),
+                              ),
+                              errorStyle: const TextStyle(fontSize: 9),
+                            ),
+                            validator: (value) {
+                              if (value == null || value.trim().isEmpty) {
+                                return 'Enter payment amount';
+                              }
+                              final amt = double.tryParse(value.trim());
+                              if (amt == null || amt <= 0) {
+                                return 'Enter a valid amount';
+                              }
+                              if (amt > _kisaanDebt) {
+                                return 'Cannot exceed Kisaan debt (Rs ${_fmt(_kisaanDebt)})';
+                              }
+                              return null;
+                            },
+                          ),
+                          const SizedBox(height: 16),
+                          SettlementSplitFields(
+                            availableAdvance: _availableAdvance,
+                            outstandingDues: _kisaanDebt,
+                            settlementAmount: _enteredAmount ?? 0,
+                            deductFromWallet: _deductFromWallet,
+                            onDeductFromWalletChanged: (value) {
+                              setState(() {
+                                _deductFromWallet = value;
+                                if (!value) _walletAmountController.clear();
+                              });
+                            },
+                            walletAmountController: _walletAmountController,
+                            remarksController: _remarksController,
+                            formatAmount: _fmt,
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
@@ -2443,15 +2506,25 @@ class _BillSettlementDialogState extends State<_BillSettlementDialog> {
                                 setState(() => _isSubmitting = true);
                                 try {
                                   final result = await widget.onSettlementApplied(
-                                    _selectedKisaanId!,
-                                    targetKisaan.name,
-                                    amt,
+                                    selectedKisaanId: _selectedKisaanId!,
+                                    kisaanName: targetKisaan.name,
+                                    amount: amt,
+                                    walletDeductionAmount:
+                                        SettlementSplitFields.walletDeductionAmount(
+                                          deductFromWallet: _deductFromWallet,
+                                          rawText: _walletAmountController.text,
+                                        ),
+                                    remarks:
+                                        _remarksController.text.trim().isEmpty
+                                        ? null
+                                        : _remarksController.text.trim(),
                                   );
                                   if (!mounted) return;
                                   if (result != null) {
                                     setState(() {
                                       _settlementResult = result;
-                                      _lastSettledKisaanName = targetKisaan.name;
+                                      _lastSettledKisaanName =
+                                          targetKisaan.name;
                                       _showReceiptActions = true;
                                       _isSubmitting = false;
                                     });
@@ -2478,7 +2551,7 @@ class _BillSettlementDialogState extends State<_BillSettlementDialog> {
                                 ),
                               )
                             : const Text(
-                                "Post Voucher Entry",
+                                "Confirm Settlement",
                                 style: TextStyle(fontSize: 12),
                               ),
                       ),
@@ -2531,24 +2604,76 @@ class _BillSettlementDialogState extends State<_BillSettlementDialog> {
                             width: 0.5,
                           ),
                         ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        child: Column(
                           children: [
-                            const Text(
-                              "Amount Settled:",
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w500,
-                              ),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text(
+                                  "Amount Settled:",
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                                Text(
+                                  "Rs ${_fmt(_settlementResult?.amountPaid ?? 0)}",
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF27500A),
+                                  ),
+                                ),
+                              ],
                             ),
-                            Text(
-                              "Rs ${_amountController.text}",
-                              style: const TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.bold,
-                                color: Color(0xFF27500A),
+                            if ((_settlementResult?.walletDeductionAmount ??
+                                    0) >
+                                0) ...[
+                              const SizedBox(height: 6),
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  const Text(
+                                    "Wallet Deducted:",
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                  Text(
+                                    "Rs ${_fmt(_settlementResult!.walletDeductionAmount)}",
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                      color: Color(0xFF0C447C),
+                                    ),
+                                  ),
+                                ],
                               ),
-                            ),
+                              const SizedBox(height: 4),
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  const Text(
+                                    "Cash Received:",
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                  Text(
+                                    "Rs ${_fmt(_settlementResult!.cashReceivedAmount)}",
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                      color: AppColors.darkGreen,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
                           ],
                         ),
                       ),

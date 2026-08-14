@@ -18,6 +18,7 @@ class AppAutoSuggestField extends StatefulWidget {
     this.autofocus = false,
     this.textInputAction,
     this.prefixIcon,
+    this.suggestionIcon = Icons.person_outline_rounded,
   });
 
   final TextEditingController controller;
@@ -30,6 +31,8 @@ class AppAutoSuggestField extends StatefulWidget {
   final bool autofocus;
   final TextInputAction? textInputAction;
   final IconData? prefixIcon;
+  /// Icon shown beside each suggestion row (name → person, village → location).
+  final IconData suggestionIcon;
 
   @override
   State<AppAutoSuggestField> createState() => _AppAutoSuggestFieldState();
@@ -208,8 +211,8 @@ class _AppAutoSuggestFieldState extends State<AppAutoSuggestField> {
                           ),
                           child: Row(
                             children: [
-                              const Icon(
-                                Icons.person_outline_rounded,
+                              Icon(
+                                widget.suggestionIcon,
                                 size: 15,
                                 color: AppColors.textMuted,
                               ),

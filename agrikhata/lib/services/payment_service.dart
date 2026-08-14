@@ -21,16 +21,6 @@ class PaymentService {
     required String season,
     String? paymentMethod,
   }) async {
-    final method = (paymentMethod ?? '').trim();
-    if (method == 'Advance Wallet Deduction') {
-      return const PaymentEditability(
-        isEditable: false,
-        requiresMasterAdmin: false,
-        reason:
-            'Wallet deduction entries are system-generated and cannot be edited.',
-      );
-    }
-
     final seasonLabel = season.trim();
     if (seasonLabel.isNotEmpty) {
       final past = await _db.isPastSeasonRecord(seasonLabel: seasonLabel);
@@ -182,6 +172,23 @@ class PaymentService {
       notes: notes,
       editedBy: editedBy,
     );
+  }
+
+  /// Deletes a cash settlement or wallet deduction and reverts balances.
+  Future<void> deletePayment({required String paymentId}) async {
+    final existing = await _db.getPaymentById(paymentId);
+    if (existing == null) {
+      throw StateError('Payment $paymentId not found');
+    }
+
+    final editability = await evaluatePaymentRow(existing);
+    if (!editability.isEditable) {
+      throw StateError(
+        editability.reason ?? 'This payment cannot be modified.',
+      );
+    }
+
+    await _db.deletePaymentEntry(paymentId: paymentId);
   }
 }
 

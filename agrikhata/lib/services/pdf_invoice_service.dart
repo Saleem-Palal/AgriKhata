@@ -4,6 +4,7 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 
 import '../Database/database_helper.dart';
+import '../utils/pdf_generator.dart';
 import '../utils/shop_settings.dart';
 
 /// Wholesaler profile snapshot used when generating printable statements.
@@ -86,18 +87,15 @@ class PdfInvoiceService {
   }) async {
     final shopName = await ShopSettings.getShopName();
     final shopPhone = await ShopSettings.getShopPhone();
-    final shopAddress = await ShopSettings.getShopAddress();
 
     // Chronological (oldest first) for opening → running balance narrative.
     final ordered = [...transactions]
       ..sort((a, b) {
-        final da = DateTime.tryParse(
-              a[WholesalerLedgerTable.date] as String? ?? '',
-            ) ??
+        final da =
+            DateTime.tryParse(a[WholesalerLedgerTable.date] as String? ?? '') ??
             DateTime(1970);
-        final db = DateTime.tryParse(
-              b[WholesalerLedgerTable.date] as String? ?? '',
-            ) ??
+        final db =
+            DateTime.tryParse(b[WholesalerLedgerTable.date] as String? ?? '') ??
             DateTime(1970);
         final byDate = da.compareTo(db);
         if (byDate != 0) return byDate;
@@ -111,7 +109,7 @@ class PdfInvoiceService {
       final first = ordered.first;
       final run =
           (first[WholesalerLedgerTable.runningBalance] as num?)?.toDouble() ??
-              0;
+          0;
       final debit =
           (first[WholesalerLedgerTable.debit] as num?)?.toDouble() ?? 0;
       final credit =
@@ -128,7 +126,8 @@ class PdfInvoiceService {
     final totalPayments = payments.fold<double>(
       0,
       (sum, row) =>
-          sum + ((row[WholesalerPaymentsTable.amount] as num?)?.toDouble() ?? 0),
+          sum +
+          ((row[WholesalerPaymentsTable.amount] as num?)?.toDouble() ?? 0),
     );
 
     final pdf = pw.Document();
@@ -148,7 +147,7 @@ class PdfInvoiceService {
           _header(
             shopName: shopName,
             shopPhone: shopPhone,
-            shopAddress: shopAddress,
+            wholesalerName: wholesaler.name,
           ),
           pw.SizedBox(height: 16),
           _wholesalerBlock(wholesaler),
@@ -191,67 +190,14 @@ class PdfInvoiceService {
   static pw.Widget _header({
     required String shopName,
     required String shopPhone,
-    required String shopAddress,
+    required String wholesalerName,
   }) {
-    return pw.Container(
-      padding: const pw.EdgeInsets.all(14),
-      decoration: pw.BoxDecoration(
-        color: PdfColor.fromHex('#1B4332'),
-        borderRadius: const pw.BorderRadius.all(pw.Radius.circular(6)),
-      ),
-      child: pw.Row(
-        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-        crossAxisAlignment: pw.CrossAxisAlignment.start,
-        children: [
-          pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.start,
-            children: [
-              pw.Text(
-                'WHOLESALER ACCOUNT STATEMENT',
-                style: pw.TextStyle(
-                  color: PdfColors.white,
-                  fontSize: 14,
-                  fontWeight: pw.FontWeight.bold,
-                ),
-              ),
-              pw.SizedBox(height: 4),
-              pw.Text(
-                'Generated ${_date.format(DateTime.now())}',
-                style: const pw.TextStyle(color: PdfColors.white, fontSize: 9),
-              ),
-            ],
-          ),
-          pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.end,
-            children: [
-              pw.Text(
-                _safe(shopName),
-                style: pw.TextStyle(
-                  color: PdfColors.white,
-                  fontSize: 12,
-                  fontWeight: pw.FontWeight.bold,
-                ),
-              ),
-              if (shopPhone.trim().isNotEmpty)
-                pw.Text(
-                  _safe(shopPhone),
-                  style: const pw.TextStyle(
-                    color: PdfColors.white,
-                    fontSize: 9,
-                  ),
-                ),
-              if (shopAddress.trim().isNotEmpty)
-                pw.Text(
-                  _safe(shopAddress),
-                  style: const pw.TextStyle(
-                    color: PdfColors.white,
-                    fontSize: 9,
-                  ),
-                ),
-            ],
-          ),
-        ],
-      ),
+    return PdfGenerator.buildStandardBannerHeader(
+      primaryTitle: wholesalerName,
+      secondaryTitle: 'Account Statement',
+      companyName: shopName,
+      companyPhone: shopPhone,
+      metaLine: 'Generated ${_date.format(DateTime.now())}',
     );
   }
 
@@ -266,15 +212,6 @@ class PdfInvoiceService {
       child: pw.Column(
         crossAxisAlignment: pw.CrossAxisAlignment.start,
         children: [
-          pw.Text(
-            _safe(w.name),
-            style: pw.TextStyle(
-              fontSize: 13,
-              fontWeight: pw.FontWeight.bold,
-              color: PdfColor.fromHex('#1B4332'),
-            ),
-          ),
-          pw.SizedBox(height: 4),
           pw.Text(
             'Phone: ${_safe(w.phone)}   |   City: ${_safe(w.city)}',
             style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey700),
@@ -388,13 +325,7 @@ class PdfInvoiceService {
         3: const pw.FlexColumnWidth(1.1),
         4: const pw.FlexColumnWidth(1.1),
       },
-      headers: const [
-        'Date',
-        'Invoice',
-        'Transport',
-        'Total',
-        'Type',
-      ],
+      headers: const ['Date', 'Invoice', 'Transport', 'Total', 'Type'],
       data: [
         for (final row in rows)
           [
@@ -433,9 +364,7 @@ class PdfInvoiceService {
           [
             _formatDate(row[WholesalerPaymentsTable.date] as String?),
             _safe(row[WholesalerPaymentsTable.referenceNo] as String? ?? '-'),
-            _rs(
-              (row[WholesalerPaymentsTable.amount] as num?)?.toDouble() ?? 0,
-            ),
+            _rs((row[WholesalerPaymentsTable.amount] as num?)?.toDouble() ?? 0),
             _safe(row[WholesalerPaymentsTable.paymentMethod] as String? ?? '-'),
             _safe(row[WholesalerPaymentsTable.notes] as String? ?? '-'),
           ],

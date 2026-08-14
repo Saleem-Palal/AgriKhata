@@ -12,6 +12,7 @@ import '../Widgets/ledger_widgets.dart';
 import '../Widgets/past_season_guard.dart';
 import '../Widgets/season_management_widgets.dart';
 import '../Database/database_helper.dart' as db;
+import '../services/payment_service.dart';
 import '../theme/theme.dart';
 import '../Data/agri_header.dart';
 
@@ -1015,6 +1016,7 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
       return PaymentsLedgerTable(
         entries: _filteredPaymentsEntries,
         onEditPayment: _handleEditPayment,
+        onDeletePayment: _handleDeletePayment,
       );
     }
   }
@@ -1033,6 +1035,36 @@ class _MainLedgerScreenState extends State<MainLedgerScreen>
     if (updated && mounted) {
       AppToast.showSuccess(context, 'Payment updated');
       await _loadLedgerData(showLoading: false);
+    }
+  }
+
+  Future<void> _handleDeletePayment(PaymentLedgerEntry entry) async {
+    final allowed = await ensurePastSeasonWriteAccess(
+      context,
+      seasonLabel: entry.season,
+    );
+    if (!allowed || !mounted) return;
+
+    final confirmed = await AppDialog.confirm(
+      context: context,
+      title: 'Delete Payment?',
+      message:
+          'Are you sure you want to delete this payment record? This will revert the balance changes.',
+      confirmLabel: 'Delete',
+      danger: true,
+    );
+    if (confirmed != true) return;
+
+    try {
+      await PaymentService.instance.deletePayment(paymentId: entry.paymentId);
+      if (mounted) {
+        AppToast.showSuccess(context, 'Payment deleted');
+        await _loadLedgerData(showLoading: false);
+      }
+    } catch (e) {
+      if (mounted) {
+        AppToast.showError(context, 'Failed to delete payment: $e');
+      }
     }
   }
 

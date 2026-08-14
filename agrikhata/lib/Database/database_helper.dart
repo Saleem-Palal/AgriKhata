@@ -34,7 +34,7 @@ class DatabaseHelper with ChangeNotifier {
   static final DatabaseHelper instance = DatabaseHelper._internal();
 
   /// Current on-disk schema version. Bump only when adding a new `_migrateToV*`.
-  static const int schemaVersion = 38;
+  static const int schemaVersion = 39;
 
   static final NumberFormat _indianCurrencyFormat = NumberFormat('#,##,##0');
 
@@ -389,6 +389,12 @@ class DatabaseHelper with ChangeNotifier {
           toVersion: 38,
           description: 'sales.description optional transaction notes',
           run: _migrateToV38,
+          verifyIntegrity: false,
+        ),
+        MigrationStep(
+          toVersion: 39,
+          description: 'ledger_transactions.notes + payment notes on khaata',
+          run: _migrateToV39,
           verifyIntegrity: false,
         ),
       ],
@@ -840,6 +846,21 @@ class DatabaseHelper with ChangeNotifier {
     );
 
     log.step('recreate sale ledger triggers to include description notes');
+    await _createLedgerSyncTriggers(db);
+  }
+
+  /// v39: optional notes on ledger_transactions, copied from payment remarks.
+  Future<void> _migrateToV39(Database db, MigrationLog log) async {
+    log.step('add ledger_transactions.notes');
+    await addColumnIfMissing(
+      db,
+      table: LedgerTransactionTable.name,
+      column: LedgerTransactionTable.notes,
+      columnDefSql: '${LedgerTransactionTable.notes} TEXT',
+      log: log,
+    );
+
+    log.step('recreate ledger sync triggers to attach payment notes');
     await _createLedgerSyncTriggers(db);
   }
 
@@ -2702,6 +2723,16 @@ END
         ELSE 'Bill Payment for ' || NEW.${PaymentsTable.invoiceNumber}
       END
     ''';
+    const paymentNotesSuffix = '''
+      CASE
+        WHEN NULLIF(TRIM(COALESCE(NEW.${PaymentsTable.notes}, '')), '')
+          IS NOT NULL
+        THEN ' | Note: ' || TRIM(NEW.${PaymentsTable.notes})
+        ELSE ''
+      END
+    ''';
+    const paymentDescriptionWithNotes =
+        '($paymentDescriptionCase) || ($paymentNotesSuffix)';
     const saleCategoryCase = '''
       CASE
         WHEN NEW.${SalesTable.transactionType} IN (
@@ -2863,7 +2894,8 @@ END
           ${LedgerTransactionTable.amount},
           ${LedgerTransactionTable.dateTime},
           ${LedgerTransactionTable.season},
-          ${LedgerTransactionTable.seasonId}
+          ${LedgerTransactionTable.seasonId},
+          ${LedgerTransactionTable.notes}
         )
         SELECT
           COALESCE(
@@ -2897,11 +2929,17 @@ END
                     = p.${PaymentsTable.invoiceNumber}
               ), '—') || ')'
             ELSE 'Bill Payment for ' || p.${PaymentsTable.invoiceNumber}
+          END || CASE
+            WHEN NULLIF(TRIM(COALESCE(p.${PaymentsTable.notes}, '')), '')
+              IS NOT NULL
+            THEN ' | Note: ' || TRIM(p.${PaymentsTable.notes})
+            ELSE ''
           END,
           p.${PaymentsTable.amountPaid},
           p.${PaymentsTable.dateTime},
           p.${PaymentsTable.season},
-          p.${PaymentsTable.seasonId}
+          p.${PaymentsTable.seasonId},
+          p.${PaymentsTable.notes}
         FROM ${PaymentsTable.name} p
         WHERE p.${PaymentsTable.invoiceNumber} = NEW.${SalesTable.invoiceNumber};
       END;
@@ -2927,7 +2965,8 @@ END
           ${LedgerTransactionTable.amount},
           ${LedgerTransactionTable.dateTime},
           ${LedgerTransactionTable.season},
-          ${LedgerTransactionTable.seasonId}
+          ${LedgerTransactionTable.seasonId},
+          ${LedgerTransactionTable.notes}
         ) VALUES (
           COALESCE(
             NEW.${PaymentsTable.zamindarId},
@@ -2945,11 +2984,12 @@ END
           NEW.${PaymentsTable.paymentId},
           '${LedgerTransactionType.credit}',
           $paymentCategoryCase,
-          $paymentDescriptionCase,
+          $paymentDescriptionWithNotes,
           NEW.${PaymentsTable.amountPaid},
           NEW.${PaymentsTable.dateTime},
           NEW.${PaymentsTable.season},
-          NEW.${PaymentsTable.seasonId}
+          NEW.${PaymentsTable.seasonId},
+          NEW.${PaymentsTable.notes}
         );
       END;
     ''');
@@ -2988,7 +3028,8 @@ END
           ${LedgerTransactionTable.amount},
           ${LedgerTransactionTable.dateTime},
           ${LedgerTransactionTable.season},
-          ${LedgerTransactionTable.seasonId}
+          ${LedgerTransactionTable.seasonId},
+          ${LedgerTransactionTable.notes}
         ) VALUES (
           COALESCE(
             NEW.${PaymentsTable.zamindarId},
@@ -3006,11 +3047,12 @@ END
           NEW.${PaymentsTable.paymentId},
           '${LedgerTransactionType.credit}',
           $paymentCategoryCase,
-          $paymentDescriptionCase,
+          $paymentDescriptionWithNotes,
           NEW.${PaymentsTable.amountPaid},
           NEW.${PaymentsTable.dateTime},
           NEW.${PaymentsTable.season},
-          NEW.${PaymentsTable.seasonId}
+          NEW.${PaymentsTable.seasonId},
+          NEW.${PaymentsTable.notes}
         );
       END;
     ''');
@@ -3257,6 +3299,7 @@ END
       ${LedgerTransactionTable.dateTime} TEXT NOT NULL,
       ${LedgerTransactionTable.season} TEXT NOT NULL,
       ${LedgerTransactionTable.seasonId} INTEGER,
+      ${LedgerTransactionTable.notes} TEXT,
       FOREIGN KEY (${LedgerTransactionTable.zamindarId}) REFERENCES ${ZamindarTable.name}(${ZamindarTable.id})
         ON DELETE CASCADE,
       FOREIGN KEY (${LedgerTransactionTable.kisaanId}) REFERENCES ${KisaanTable.name}(${KisaanTable.id})
@@ -10484,6 +10527,37 @@ END
         .toList();
   }
 
+  /// Village auto-suggest for Zamindar / Kisaan forms.
+  ///
+  /// Returns up to 5 distinct matching villages from both [ZamindarTable] and
+  /// [KisaanTable] using `WHERE village LIKE '%query%'`.
+  Future<List<String>> fetchVillageSuggestions(String query) async {
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) return const [];
+
+    final db = await database;
+    final rows = await db.rawQuery(
+      '''
+      SELECT DISTINCT TRIM(village) AS village
+      FROM (
+        SELECT village FROM ${ZamindarTable.name}
+        WHERE village IS NOT NULL AND TRIM(village) != '' AND village LIKE ?
+        UNION
+        SELECT village FROM ${KisaanTable.name}
+        WHERE village IS NOT NULL AND TRIM(village) != '' AND village LIKE ?
+      )
+      ORDER BY village COLLATE NOCASE ASC
+      LIMIT 5
+      ''',
+      ['%$trimmed%', '%$trimmed%'],
+    );
+
+    return rows
+        .map((r) => (r['village'] as String?)?.trim() ?? '')
+        .where((v) => v.isNotEmpty)
+        .toList();
+  }
+
   static String _normalizeProductCategory(String raw) {
     final lower = raw.trim().toLowerCase();
     if (lower.contains('fert')) return 'Fertilizers';
@@ -10801,6 +10875,183 @@ END
     return 'Bill Payment for ${unique.join(', ')}';
   }
 
+  static String formatWalletDeductionDescription(List<String> invoiceNumbers) {
+    final unique = invoiceNumbers
+        .map((invoice) => invoice.trim())
+        .where((invoice) => invoice.isNotEmpty)
+        .toList();
+    if (unique.isEmpty) return 'Advance wallet deducted';
+    return 'Advance wallet deducted for ${unique.join(', ')}';
+  }
+
+  static String _withSettlementNotes(String description, String? remarks) {
+    final trimmed = remarks?.trim() ?? '';
+    if (trimmed.isEmpty) return description;
+    return '$description | Note: $trimmed';
+  }
+
+  static String _normalizedRemarks(String? remarks) {
+    final trimmed = remarks?.trim() ?? '';
+    return trimmed;
+  }
+
+  static String _splitSettlementPaymentMethod({
+    required double walletDeductionAmount,
+    required double cashReceivedAmount,
+  }) {
+    if (walletDeductionAmount > 0 && cashReceivedAmount > 0) {
+      return 'Cash + Advance Wallet';
+    }
+    if (walletDeductionAmount > 0) return 'Advance Wallet Deduction';
+    return 'Cash';
+  }
+
+  static String _ledgerCategoryForPaymentMethod(String paymentMethod) {
+    if (paymentMethod == 'Advance Wallet Deduction') return 'WALLET_DEDUCTION';
+    if (paymentMethod == 'Cash') return 'CASH_PAYMENT';
+    return 'PAYMENT';
+  }
+
+  Future<void> _decrementAdvanceWalletOn(
+    DatabaseExecutor txn, {
+    required int zamindarId,
+    required double amount,
+  }) async {
+    if (amount <= 0) return;
+    final rows = await txn.query(
+      ZamindarTable.name,
+      columns: [ZamindarTable.advanceBalance],
+      where: '${ZamindarTable.id} = ?',
+      whereArgs: [zamindarId],
+      limit: 1,
+    );
+    if (rows.isEmpty) {
+      throw StateError('Zamindar $zamindarId not found');
+    }
+    final current = _readIntValue(rows.first[ZamindarTable.advanceBalance]);
+    final deduct = amount.round();
+    if (deduct > current) {
+      throw StateError(
+        'Deduction amount cannot exceed available wallet balance or outstanding dues.',
+      );
+    }
+    await txn.update(
+      ZamindarTable.name,
+      {ZamindarTable.advanceBalance: current - deduct},
+      where: '${ZamindarTable.id} = ?',
+      whereArgs: [zamindarId],
+    );
+  }
+
+  /// Positive [delta] credits the wallet; negative [delta] draws it down.
+  Future<void> _adjustAdvanceWalletOn(
+    DatabaseExecutor txn, {
+    required int zamindarId,
+    required int delta,
+  }) async {
+    if (delta == 0) return;
+    final rows = await txn.query(
+      ZamindarTable.name,
+      columns: [ZamindarTable.advanceBalance],
+      where: '${ZamindarTable.id} = ?',
+      whereArgs: [zamindarId],
+      limit: 1,
+    );
+    if (rows.isEmpty) {
+      throw StateError('Zamindar $zamindarId not found');
+    }
+    final current = _readIntValue(rows.first[ZamindarTable.advanceBalance]);
+    final next = current + delta;
+    if (next < 0) {
+      throw StateError(
+        delta < 0
+            ? 'Deduction amount cannot exceed available wallet balance '
+                '(Rs $current).'
+            : 'Cannot reduce advance below zero (current wallet Rs $current).',
+      );
+    }
+    await txn.update(
+      ZamindarTable.name,
+      {ZamindarTable.advanceBalance: next},
+      where: '${ZamindarTable.id} = ?',
+      whereArgs: [zamindarId],
+    );
+  }
+
+  /// Keeps [SalesTable.paidAmount] aligned with remaining payment rows so
+  /// outstanding falls back correctly when the last payment is removed.
+  Future<void> _syncInvoicePaidAmountOn(
+    DatabaseExecutor txn,
+    String invoiceNumber,
+  ) async {
+    final invoice = invoiceNumber.trim();
+    if (invoice.isEmpty) return;
+    final sumRows = await txn.rawQuery(
+      '''
+      SELECT COALESCE(SUM(${PaymentsTable.amountPaid}), 0) AS paid
+      FROM ${PaymentsTable.name}
+      WHERE ${PaymentsTable.invoiceNumber} = ?
+      ''',
+      [invoice],
+    );
+    final paid = (sumRows.first['paid'] as num?)?.round() ?? 0;
+    await txn.update(
+      SalesTable.name,
+      {SalesTable.paidAmount: paid},
+      where: '${SalesTable.invoiceNumber} = ?',
+      whereArgs: [invoice],
+    );
+  }
+
+  Future<int?> _resolvePaymentZamindarIdOn(
+    DatabaseExecutor txn,
+    Map<String, Object?> row,
+  ) async {
+    int? zamindarId = row[PaymentsTable.zamindarId] as int?;
+    if (zamindarId != null) return zamindarId;
+    final invoiceNumber =
+        (row[PaymentsTable.invoiceNumber] as String?)?.trim();
+    if (invoiceNumber == null || invoiceNumber.isEmpty) return null;
+    final saleRows = await txn.query(
+      SalesTable.name,
+      columns: [SalesTable.zamindarId],
+      where: '${SalesTable.invoiceNumber} = ?',
+      whereArgs: [invoiceNumber],
+      limit: 1,
+    );
+    if (saleRows.isEmpty) return null;
+    return saleRows.first[SalesTable.zamindarId] as int?;
+  }
+
+  Future<String> _insertInvoicePaymentRow(
+    DatabaseExecutor txn, {
+    required String invoiceNumber,
+    required DateTime dateTime,
+    required int zamindarId,
+    int? kisaanId,
+    required double amount,
+    required String paymentMethod,
+    required String season,
+    int? seasonId,
+    String? notes,
+  }) async {
+    final paymentId = await generateNextPaymentId(txn, isAdvance: false);
+    final trimmedNotes = _normalizedRemarks(notes);
+    await txn.insert(PaymentsTable.name, {
+      PaymentsTable.paymentId: paymentId,
+      PaymentsTable.invoiceNumber: invoiceNumber,
+      PaymentsTable.dateTime: _formatDateTime(dateTime),
+      PaymentsTable.zamindarId: zamindarId,
+      PaymentsTable.kisaanId: kisaanId,
+      PaymentsTable.amountPaid: amount.round(),
+      PaymentsTable.paymentMethod: paymentMethod,
+      PaymentsTable.season: season,
+      PaymentsTable.seasonId: seasonId,
+      if (trimmedNotes.isNotEmpty) PaymentsTable.notes: trimmedNotes,
+    });
+    return paymentId;
+  }
+
   Future<void> _upsertBillPaymentLedgerEntry(
     DatabaseExecutor txn, {
     required String paymentId,
@@ -10813,6 +11064,7 @@ END
     required String season,
     int? seasonId,
     required String description,
+    String? notes,
   }) async {
     await txn.delete(
       LedgerTransactionTable.name,
@@ -10820,26 +11072,33 @@ END
       whereArgs: [paymentId],
     );
 
-    final category = paymentMethod == 'Cash'
-        ? 'CASH_PAYMENT'
-        : 'PAYMENT';
+    final trimmedNotes = _normalizedRemarks(notes);
     await txn.insert(LedgerTransactionTable.name, {
       LedgerTransactionTable.zamindarId: zamindarId,
       LedgerTransactionTable.kisaanId: kisaanId,
       LedgerTransactionTable.invoiceNumber: invoiceNumber,
       LedgerTransactionTable.paymentId: paymentId,
       LedgerTransactionTable.type: LedgerTransactionType.credit,
-      LedgerTransactionTable.category: category,
-      LedgerTransactionTable.description: description,
+      LedgerTransactionTable.category: _ledgerCategoryForPaymentMethod(
+        paymentMethod,
+      ),
+      LedgerTransactionTable.description: _withSettlementNotes(
+        description,
+        trimmedNotes,
+      ),
       LedgerTransactionTable.amount: amount,
       LedgerTransactionTable.dateTime: _formatDateTime(dateTime),
       LedgerTransactionTable.season: season,
       if (seasonId != null) LedgerTransactionTable.seasonId: seasonId,
+      if (trimmedNotes.isNotEmpty) LedgerTransactionTable.notes: trimmedNotes,
     });
   }
 
   /// Inserts a payment settlement for a specific invoice.
   /// [invoiceNumber] must reference an existing sale — never pass synthetic values.
+  ///
+  /// When [walletDeductionAmount] > 0, the settlement is split:
+  /// wallet drawdown + remaining cash. [amountPaid] is the total settlement.
   Future<String> insertPayment({
     String? paymentId,
     required String invoiceNumber,
@@ -10851,10 +11110,23 @@ END
     required double amountPaid,
     required String paymentMethod,
     required String season,
+    double walletDeductionAmount = 0,
+    String? remarks,
   }) async {
     if (invoiceNumber.trim().isEmpty) {
       throw ArgumentError(
         'invoiceNumber is required for invoice-scoped settlements.',
+      );
+    }
+    if (amountPaid <= 0) {
+      throw ArgumentError('amountPaid must be greater than zero.');
+    }
+
+    final wallet = walletDeductionAmount < 0 ? 0.0 : walletDeductionAmount;
+    final cash = amountPaid - wallet;
+    if (wallet > amountPaid + 0.01 || cash < -0.01) {
+      throw StateError(
+        'Deduction amount cannot exceed available wallet balance or outstanding dues.',
       );
     }
 
@@ -10865,40 +11137,110 @@ END
         '(Rs ${remainingBalance.toStringAsFixed(0)}).',
       );
     }
+    if (wallet > remainingBalance + 0.01) {
+      throw StateError(
+        'Deduction amount cannot exceed available wallet balance or outstanding dues.',
+      );
+    }
+    if (wallet > 0) {
+      final advance = await getAdvanceBalance(zamindarId);
+      if (wallet > advance + 0.01) {
+        throw StateError(
+          'Deduction amount cannot exceed available wallet balance or outstanding dues.',
+        );
+      }
+    }
 
     final db = await database;
     late final String resolvedPaymentId;
+    final notes = _normalizedRemarks(remarks);
     await db.transaction((txn) async {
-      resolvedPaymentId =
-          paymentId ?? await generateNextPaymentId(txn, isAdvance: false);
-
       final seasonId = await _lookupSeasonIdForLabel(txn, season);
+      String? lastPaymentId = paymentId;
 
-      await txn.insert(PaymentsTable.name, {
-        PaymentsTable.paymentId: resolvedPaymentId,
-        PaymentsTable.invoiceNumber: invoiceNumber,
-        PaymentsTable.dateTime: _formatDateTime(dateTime),
-        PaymentsTable.zamindarId: zamindarId,
-        PaymentsTable.kisaanId: kisaanId,
-        PaymentsTable.amountPaid: amountPaid.round(),
-        PaymentsTable.paymentMethod: paymentMethod,
-        PaymentsTable.season: season,
-        PaymentsTable.seasonId: seasonId,
-      });
+      if (wallet > 0) {
+        lastPaymentId = await _insertInvoicePaymentRow(
+          txn,
+          invoiceNumber: invoiceNumber,
+          dateTime: dateTime,
+          zamindarId: zamindarId,
+          kisaanId: kisaanId,
+          amount: wallet,
+          paymentMethod: 'Advance Wallet Deduction',
+          season: season,
+          seasonId: seasonId,
+          notes: notes,
+        );
+        await _upsertBillPaymentLedgerEntry(
+          txn,
+          paymentId: lastPaymentId,
+          zamindarId: zamindarId,
+          kisaanId: kisaanId,
+          invoiceNumber: invoiceNumber,
+          paymentMethod: 'Advance Wallet Deduction',
+          amount: wallet.round(),
+          dateTime: dateTime,
+          season: season,
+          seasonId: seasonId,
+          description: formatWalletDeductionDescription([invoiceNumber]),
+          notes: notes,
+        );
+        await _decrementAdvanceWalletOn(
+          txn,
+          zamindarId: zamindarId,
+          amount: wallet,
+        );
+      }
 
-      await _upsertBillPaymentLedgerEntry(
-        txn,
-        paymentId: resolvedPaymentId,
-        zamindarId: zamindarId,
-        kisaanId: kisaanId,
-        invoiceNumber: invoiceNumber,
-        paymentMethod: paymentMethod,
-        amount: amountPaid.round(),
-        dateTime: dateTime,
-        season: season,
-        seasonId: seasonId,
-        description: formatBillPaymentDescription(invoiceNumber),
-      );
+      if (cash > 0.01) {
+        if (wallet <= 0 && paymentId != null) {
+          lastPaymentId = paymentId;
+          await txn.insert(PaymentsTable.name, {
+            PaymentsTable.paymentId: lastPaymentId,
+            PaymentsTable.invoiceNumber: invoiceNumber,
+            PaymentsTable.dateTime: _formatDateTime(dateTime),
+            PaymentsTable.zamindarId: zamindarId,
+            PaymentsTable.kisaanId: kisaanId,
+            PaymentsTable.amountPaid: cash.round(),
+            PaymentsTable.paymentMethod: paymentMethod,
+            PaymentsTable.season: season,
+            PaymentsTable.seasonId: seasonId,
+            if (notes.isNotEmpty) PaymentsTable.notes: notes,
+          });
+        } else {
+          lastPaymentId = await _insertInvoicePaymentRow(
+            txn,
+            invoiceNumber: invoiceNumber,
+            dateTime: dateTime,
+            zamindarId: zamindarId,
+            kisaanId: kisaanId,
+            amount: cash,
+            paymentMethod: paymentMethod,
+            season: season,
+            seasonId: seasonId,
+            notes: notes,
+          );
+        }
+        await _upsertBillPaymentLedgerEntry(
+          txn,
+          paymentId: lastPaymentId,
+          zamindarId: zamindarId,
+          kisaanId: kisaanId,
+          invoiceNumber: invoiceNumber,
+          paymentMethod: paymentMethod,
+          amount: cash.round(),
+          dateTime: dateTime,
+          season: season,
+          seasonId: seasonId,
+          description: formatBillPaymentDescription(invoiceNumber),
+          notes: notes,
+        );
+      }
+
+      if (lastPaymentId == null) {
+        throw StateError('Settlement produced no payment rows.');
+      }
+      resolvedPaymentId = lastPaymentId;
 
       await _recalculateZamindarBalanceOn(txn, zamindarId);
     });
@@ -10947,15 +11289,28 @@ END
   }
 
   /// Allocates a bulk Kisaan payment across unpaid invoices oldest-first (FIFO).
+  ///
+  /// [amountPaid] is the total settlement. When [walletDeductionAmount] > 0,
+  /// wallet is applied first, then remaining cash.
   Future<BillSettlementResult> settleKisaanBulkPayment({
     required int zamindarId,
     required String kisaanName,
     required double amountPaid,
     required String paymentMethod,
     required String season,
+    double walletDeductionAmount = 0,
+    String? remarks,
   }) async {
     if (amountPaid <= 0) {
       throw ArgumentError('amountPaid must be greater than zero.');
+    }
+
+    final wallet = walletDeductionAmount < 0 ? 0.0 : walletDeductionAmount;
+    final cash = amountPaid - wallet;
+    if (wallet > amountPaid + 0.01 || cash < -0.01) {
+      throw StateError(
+        'Deduction amount cannot exceed available wallet balance or outstanding dues.',
+      );
     }
 
     final outstanding = await getKisaanSalesOutstandingDebt(
@@ -10967,6 +11322,19 @@ END
         'Payment amount exceeds Kisaan outstanding debt '
         '(Rs ${outstanding.toStringAsFixed(0)}).',
       );
+    }
+    if (wallet > outstanding + 0.01) {
+      throw StateError(
+        'Deduction amount cannot exceed available wallet balance or outstanding dues.',
+      );
+    }
+    if (wallet > 0) {
+      final advance = await getAdvanceBalance(zamindarId);
+      if (wallet > advance + 0.01) {
+        throw StateError(
+          'Deduction amount cannot exceed available wallet balance or outstanding dues.',
+        );
+      }
     }
 
     final zamindar = await getZamindar(zamindarId);
@@ -10984,9 +11352,11 @@ END
     }
 
     final settledInvoices = <String>[];
-    final paymentIds = <String>[];
+    final walletPaymentIds = <String>[];
+    final cashPaymentIds = <String>[];
     final cashPaidNowByInvoice = <String, double>{};
     final now = DateTime.now();
+    final notes = _normalizedRemarks(remarks);
 
     String resolvedSeason = season.trim();
     int? resolvedSeasonId;
@@ -11002,7 +11372,8 @@ END
         resolvedSeasonId = await _lookupSeasonIdForLabel(txn, resolvedSeason);
       }
 
-      double remainingCash = amountPaid;
+      double remainingWallet = wallet;
+      double remainingCash = cash;
 
       final List<Map<String, dynamic>> invoices = await txn.rawQuery(
         '''
@@ -11024,7 +11395,7 @@ END
       );
 
       for (var inv in invoices) {
-        if (remainingCash <= 0) break;
+        if (remainingWallet <= 0 && remainingCash <= 0) break;
 
         final invoiceNumber = inv[SalesTable.invoiceNumber] as String;
         final totalPayable = (inv[SalesTable.totalPayable] as num).toDouble();
@@ -11044,32 +11415,55 @@ END
         final remainingDebt = totalPayable - initialPaid - additionalPayments;
         if (remainingDebt <= 0) continue;
 
-        final allocation = remainingCash >= remainingDebt
+        final walletAlloc = remainingWallet >= remainingDebt
             ? remainingDebt
+            : remainingWallet;
+        final cashAlloc = (remainingDebt - walletAlloc) <= remainingCash
+            ? (remainingDebt - walletAlloc)
             : remainingCash;
-        final paymentId = await generateNextPaymentId(txn, isAdvance: false);
+        if (walletAlloc <= 0 && cashAlloc <= 0) continue;
 
         settledInvoices.add(invoiceNumber);
-        paymentIds.add(paymentId);
-        cashPaidNowByInvoice[invoiceNumber] = allocation;
+        cashPaidNowByInvoice[invoiceNumber] = walletAlloc + cashAlloc;
 
-        await txn.insert(PaymentsTable.name, {
-          PaymentsTable.paymentId: paymentId,
-          PaymentsTable.invoiceNumber: invoiceNumber,
-          PaymentsTable.dateTime: _formatDateTime(now),
-          PaymentsTable.zamindarId: zamindarId,
-          PaymentsTable.kisaanId: kisaanId,
-          PaymentsTable.amountPaid: allocation.round(),
-          PaymentsTable.paymentMethod: paymentMethod,
-          PaymentsTable.season: resolvedSeason,
-          PaymentsTable.seasonId: resolvedSeasonId,
-        });
+        if (walletAlloc > 0) {
+          final paymentId = await _insertInvoicePaymentRow(
+            txn,
+            invoiceNumber: invoiceNumber,
+            dateTime: now,
+            zamindarId: zamindarId,
+            kisaanId: kisaanId,
+            amount: walletAlloc,
+            paymentMethod: 'Advance Wallet Deduction',
+            season: resolvedSeason,
+            seasonId: resolvedSeasonId,
+            notes: notes,
+          );
+          walletPaymentIds.add(paymentId);
+          remainingWallet -= walletAlloc;
+        }
 
-        remainingCash -= allocation;
+        if (cashAlloc > 0) {
+          final paymentId = await _insertInvoicePaymentRow(
+            txn,
+            invoiceNumber: invoiceNumber,
+            dateTime: now,
+            zamindarId: zamindarId,
+            kisaanId: kisaanId,
+            amount: cashAlloc,
+            paymentMethod: paymentMethod,
+            season: resolvedSeason,
+            seasonId: resolvedSeasonId,
+            notes: notes,
+          );
+          cashPaymentIds.add(paymentId);
+          remainingCash -= cashAlloc;
+        }
       }
 
-      if (paymentIds.isNotEmpty) {
-        for (final paymentId in paymentIds) {
+      final allPaymentIds = [...walletPaymentIds, ...cashPaymentIds];
+      if (allPaymentIds.isNotEmpty) {
+        for (final paymentId in allPaymentIds) {
           await txn.delete(
             LedgerTransactionTable.name,
             where: '${LedgerTransactionTable.paymentId} = ?',
@@ -11077,26 +11471,56 @@ END
           );
         }
 
-        final description =
-            formatBillPaymentDescriptionForInvoices(settledInvoices);
-        await txn.insert(LedgerTransactionTable.name, {
-          LedgerTransactionTable.zamindarId: zamindarId,
-          LedgerTransactionTable.kisaanId: kisaanId,
-          LedgerTransactionTable.invoiceNumber: settledInvoices.first,
-          LedgerTransactionTable.paymentId: paymentIds.first,
-          LedgerTransactionTable.type: LedgerTransactionType.credit,
-          LedgerTransactionTable.category: paymentMethod == 'Cash'
-              ? 'CASH_PAYMENT'
-              : 'PAYMENT',
-          LedgerTransactionTable.description: description,
-          LedgerTransactionTable.amount: amountPaid.round(),
-          LedgerTransactionTable.dateTime: _formatDateTime(now),
-          LedgerTransactionTable.season: resolvedSeason,
-          if (resolvedSeasonId != null)
-            LedgerTransactionTable.seasonId: resolvedSeasonId,
-        });
+        if (walletPaymentIds.isNotEmpty) {
+          await txn.insert(LedgerTransactionTable.name, {
+            LedgerTransactionTable.zamindarId: zamindarId,
+            LedgerTransactionTable.kisaanId: kisaanId,
+            LedgerTransactionTable.invoiceNumber: settledInvoices.first,
+            LedgerTransactionTable.paymentId: walletPaymentIds.first,
+            LedgerTransactionTable.type: LedgerTransactionType.credit,
+            LedgerTransactionTable.category: 'WALLET_DEDUCTION',
+            LedgerTransactionTable.description: _withSettlementNotes(
+              formatWalletDeductionDescription(settledInvoices),
+              notes,
+            ),
+            LedgerTransactionTable.amount: wallet.round(),
+            LedgerTransactionTable.dateTime: _formatDateTime(now),
+            LedgerTransactionTable.season: resolvedSeason,
+            if (resolvedSeasonId != null)
+              LedgerTransactionTable.seasonId: resolvedSeasonId,
+            if (notes.isNotEmpty) LedgerTransactionTable.notes: notes,
+          });
+        }
+
+        if (cashPaymentIds.isNotEmpty) {
+          await txn.insert(LedgerTransactionTable.name, {
+            LedgerTransactionTable.zamindarId: zamindarId,
+            LedgerTransactionTable.kisaanId: kisaanId,
+            LedgerTransactionTable.invoiceNumber: settledInvoices.first,
+            LedgerTransactionTable.paymentId: cashPaymentIds.first,
+            LedgerTransactionTable.type: LedgerTransactionType.credit,
+            LedgerTransactionTable.category: _ledgerCategoryForPaymentMethod(
+              paymentMethod,
+            ),
+            LedgerTransactionTable.description: _withSettlementNotes(
+              formatBillPaymentDescriptionForInvoices(settledInvoices),
+              notes,
+            ),
+            LedgerTransactionTable.amount: cash.round(),
+            LedgerTransactionTable.dateTime: _formatDateTime(now),
+            LedgerTransactionTable.season: resolvedSeason,
+            if (resolvedSeasonId != null)
+              LedgerTransactionTable.seasonId: resolvedSeasonId,
+            if (notes.isNotEmpty) LedgerTransactionTable.notes: notes,
+          });
+        }
       }
 
+      await _decrementAdvanceWalletOn(
+        txn,
+        zamindarId: zamindarId,
+        amount: wallet,
+      );
       await _recalculateZamindarBalanceOn(txn, zamindarId);
     });
 
@@ -11112,17 +11536,31 @@ END
       );
     }
 
+    final resolvedMethod = _splitSettlementPaymentMethod(
+      walletDeductionAmount: wallet,
+      cashReceivedAmount: cash,
+    );
+    final description = _withSettlementNotes(
+      formatBillPaymentDescriptionForInvoices(settledInvoices),
+      notes,
+    );
+
     return BillSettlementResult(
       zamindarId: zamindarId,
       zamindarName: zamindar.name,
       kisaanId: kisaanId,
       kisaanName: kisaanName,
       amountPaid: amountPaid,
+      walletDeductionAmount: wallet,
+      cashReceivedAmount: cash,
+      remarks: notes.isEmpty ? null : notes,
       invoiceNumbers: List.unmodifiable(settledInvoices),
-      paymentId: paymentIds.isNotEmpty ? paymentIds.first : null,
+      paymentId: cashPaymentIds.isNotEmpty
+          ? cashPaymentIds.first
+          : (walletPaymentIds.isNotEmpty ? walletPaymentIds.first : null),
       dateTime: now,
-      description: formatBillPaymentDescriptionForInvoices(settledInvoices),
-      paymentMethod: paymentMethod,
+      description: description,
+      paymentMethod: resolvedMethod,
       invoiceSummaries: List.unmodifiable(invoiceSummaries),
     );
   }
@@ -11134,6 +11572,8 @@ END
     required double amountPaid,
     required String season,
     String paymentMethod = 'Cash',
+    double walletDeductionAmount = 0,
+    String? remarks,
   }) async {
     final kisaan = await getKisaan(kisaanId);
     if (kisaan == null) {
@@ -11145,6 +11585,8 @@ END
       amountPaid: amountPaid,
       paymentMethod: paymentMethod,
       season: season,
+      walletDeductionAmount: walletDeductionAmount,
+      remarks: remarks,
     );
   }
 
@@ -11261,6 +11703,7 @@ END
   /// Triggers rebuild the linked `ledger_transactions` CREDIT row.
   /// Cash-drawer impact follows from live SUM of Cash payments — no
   /// separate drawer mutation is required.
+  /// Wallet deductions adjust [ZamindarTable.advanceBalance] by the amount delta.
   Future<void> updatePaymentEntry({
     required String paymentId,
     required DateTime dateTime,
@@ -11275,9 +11718,6 @@ END
     final method = paymentMethod.trim();
     if (method.isEmpty) {
       throw ArgumentError('Payment method is required');
-    }
-    if (method == 'Advance Wallet Deduction') {
-      throw StateError('Wallet deduction entries cannot be edited.');
     }
 
     final db = await database;
@@ -11296,8 +11736,16 @@ END
     final existing = existingRows.first;
     final existingMethod =
         (existing[PaymentsTable.paymentMethod] as String?)?.trim() ?? '';
-    if (existingMethod == 'Advance Wallet Deduction') {
-      throw StateError('Wallet deduction entries cannot be edited.');
+    final isWallet = existingMethod == 'Advance Wallet Deduction';
+    if (isWallet && method != 'Advance Wallet Deduction') {
+      throw StateError(
+        'Wallet deduction entries cannot be converted to another payment mode.',
+      );
+    }
+    if (!isWallet && method == 'Advance Wallet Deduction') {
+      throw StateError(
+        'Cash payments cannot be converted to a wallet deduction.',
+      );
     }
     final season = (existing[PaymentsTable.season] as String?)?.trim() ?? '';
     if (season.isNotEmpty && await isSeasonArchived(season)) {
@@ -11319,8 +11767,16 @@ END
       final row = rows.first;
       final oldMethod =
           (row[PaymentsTable.paymentMethod] as String?)?.trim() ?? '';
-      if (oldMethod == 'Advance Wallet Deduction') {
-        throw StateError('Wallet deduction entries cannot be edited.');
+      final wasWallet = oldMethod == 'Advance Wallet Deduction';
+      if (wasWallet && method != 'Advance Wallet Deduction') {
+        throw StateError(
+          'Wallet deduction entries cannot be converted to another payment mode.',
+        );
+      }
+      if (!wasWallet && method == 'Advance Wallet Deduction') {
+        throw StateError(
+          'Cash payments cannot be converted to a wallet deduction.',
+        );
       }
 
       final oldAmount =
@@ -11330,40 +11786,14 @@ END
       final isAdvanceCollection =
           invoiceNumber == null || invoiceNumber.isEmpty;
 
-      int? zamindarId = row[PaymentsTable.zamindarId] as int?;
-      if (zamindarId == null && !isAdvanceCollection) {
-        final saleRows = await txn.query(
-          SalesTable.name,
-          columns: [SalesTable.zamindarId],
-          where: '${SalesTable.invoiceNumber} = ?',
-          whereArgs: [invoiceNumber],
-          limit: 1,
-        );
-        if (saleRows.isNotEmpty) {
-          zamindarId = saleRows.first[SalesTable.zamindarId] as int?;
-        }
-      }
+      final zamindarId = await _resolvePaymentZamindarIdOn(txn, row);
       if (zamindarId == null) {
         throw StateError('Payment $paymentId is not linked to a Zamindar');
       }
 
       // Invoice-scoped: new amount cannot exceed remaining + current payment.
       if (!isAdvanceCollection) {
-        final remRows = await txn.rawQuery(
-          '''
-          SELECT
-            s.${SalesTable.totalPayable} - ($_sqlSaleCollectedExpr) AS remaining
-          FROM ${SalesTable.name} s
-          WHERE s.${SalesTable.invoiceNumber} = ?
-          LIMIT 1
-          ''',
-          [invoiceNumber],
-        );
-        if (remRows.isEmpty) {
-          throw StateError('Linked invoice $invoiceNumber not found');
-        }
-        final remaining =
-            (remRows.first['remaining'] as num?)?.toDouble() ?? 0;
+        final remaining = await _invoiceRemainingOn(txn, invoiceNumber);
         final maxAllowed = remaining + oldAmount;
         if (amountPaid > maxAllowed + 0.01) {
           throw StateError(
@@ -11373,37 +11803,20 @@ END
         }
       }
 
-      // Advance collections: adjust wallet by amount delta.
+      final amountDelta = amountPaid.round() - oldAmount.round();
       if (isAdvanceCollection) {
-        final delta = amountPaid.round() - oldAmount.round();
-        if (delta != 0) {
-          final balRows = await txn.query(
-            ZamindarTable.name,
-            columns: [ZamindarTable.advanceBalance],
-            where: '${ZamindarTable.id} = ?',
-            whereArgs: [zamindarId],
-            limit: 1,
-          );
-          if (balRows.isEmpty) {
-            throw StateError('Zamindar $zamindarId not found');
-          }
-          final current = _readIntValue(
-            balRows.first[ZamindarTable.advanceBalance],
-          );
-          final next = current + delta;
-          if (next < 0) {
-            throw StateError(
-              'Cannot reduce advance below zero '
-              '(current wallet Rs $current).',
-            );
-          }
-          await txn.update(
-            ZamindarTable.name,
-            {ZamindarTable.advanceBalance: next},
-            where: '${ZamindarTable.id} = ?',
-            whereArgs: [zamindarId],
-          );
-        }
+        await _adjustAdvanceWalletOn(
+          txn,
+          zamindarId: zamindarId,
+          delta: amountDelta,
+        );
+      } else if (wasWallet) {
+        // Larger deduction draws more from the wallet.
+        await _adjustAdvanceWalletOn(
+          txn,
+          zamindarId: zamindarId,
+          delta: -amountDelta,
+        );
       }
 
       final existingOriginal = row[PaymentsTable.originalAmount];
@@ -11427,6 +11840,9 @@ END
       );
       // after_payment_update rebuilds ledger_transactions CREDIT row.
 
+      if (!isAdvanceCollection) {
+        await _syncInvoicePaidAmountOn(txn, invoiceNumber);
+      }
       await _recalculateZamindarBalanceOn(txn, zamindarId);
 
       await _writeAuditLog(
@@ -11436,6 +11852,114 @@ END
             'Edited payment $paymentId: '
             'Rs ${oldAmount.round()} ($oldMethod) → '
             'Rs ${amountPaid.round()} ($method)',
+        executor: txn,
+      );
+    });
+
+    notifyListeners();
+  }
+
+  Future<double> _invoiceRemainingOn(
+    DatabaseExecutor txn,
+    String invoiceNumber,
+  ) async {
+    final remRows = await txn.rawQuery(
+      '''
+      SELECT
+        s.${SalesTable.totalPayable} - ($_sqlSaleCollectedExpr) AS remaining
+      FROM ${SalesTable.name} s
+      WHERE s.${SalesTable.invoiceNumber} = ?
+      LIMIT 1
+      ''',
+      [invoiceNumber],
+    );
+    if (remRows.isEmpty) {
+      throw StateError('Linked invoice $invoiceNumber not found');
+    }
+    return (remRows.first['remaining'] as num?)?.toDouble() ?? 0;
+  }
+
+  /// Deletes a cash settlement or wallet-deduction payment and reverses
+  /// outstanding / advance-wallet impact. Linked ledger CREDIT rows are
+  /// removed by `after_payment_delete` (and payment_id ON DELETE CASCADE).
+  Future<void> deletePaymentEntry({required String paymentId}) async {
+    final db = await database;
+    await _ensurePaymentEditAuditSchema(db);
+
+    final existingRows = await db.query(
+      PaymentsTable.name,
+      where: '${PaymentsTable.paymentId} = ?',
+      whereArgs: [paymentId],
+      limit: 1,
+    );
+    if (existingRows.isEmpty) {
+      throw StateError('Payment $paymentId not found');
+    }
+    final existing = existingRows.first;
+    final season = (existing[PaymentsTable.season] as String?)?.trim() ?? '';
+    if (season.isNotEmpty && await isSeasonArchived(season)) {
+      throw StateError(
+        'This payment belongs to a closed/settled season and cannot be modified.',
+      );
+    }
+
+    await db.transaction((txn) async {
+      final rows = await txn.query(
+        PaymentsTable.name,
+        where: '${PaymentsTable.paymentId} = ?',
+        whereArgs: [paymentId],
+        limit: 1,
+      );
+      if (rows.isEmpty) {
+        throw StateError('Payment $paymentId not found');
+      }
+      final row = rows.first;
+      final oldMethod =
+          (row[PaymentsTable.paymentMethod] as String?)?.trim() ?? '';
+      final oldAmount =
+          (row[PaymentsTable.amountPaid] as num?)?.round() ?? 0;
+      final invoiceNumber =
+          (row[PaymentsTable.invoiceNumber] as String?)?.trim();
+      final isAdvanceCollection =
+          invoiceNumber == null || invoiceNumber.isEmpty;
+      final isWallet = oldMethod == 'Advance Wallet Deduction';
+
+      final zamindarId = await _resolvePaymentZamindarIdOn(txn, row);
+      if (zamindarId == null) {
+        throw StateError('Payment $paymentId is not linked to a Zamindar');
+      }
+
+      if (isAdvanceCollection) {
+        await _adjustAdvanceWalletOn(
+          txn,
+          zamindarId: zamindarId,
+          delta: -oldAmount,
+        );
+      } else if (isWallet) {
+        await _adjustAdvanceWalletOn(
+          txn,
+          zamindarId: zamindarId,
+          delta: oldAmount,
+        );
+      }
+
+      await txn.delete(
+        PaymentsTable.name,
+        where: '${PaymentsTable.paymentId} = ?',
+        whereArgs: [paymentId],
+      );
+
+      if (!isAdvanceCollection) {
+        await _syncInvoicePaidAmountOn(txn, invoiceNumber);
+      }
+      await _recalculateZamindarBalanceOn(txn, zamindarId);
+
+      await _writeAuditLog(
+        actionType: AuditActionType.deletePayment,
+        referenceId: paymentId,
+        description:
+            'Deleted payment $paymentId: '
+            'Rs $oldAmount ($oldMethod)',
         executor: txn,
       );
     });
@@ -11997,6 +12521,7 @@ class LedgerTransactionTable {
   static const String dateTime = 'date_time';
   static const String season = 'season';
   static const String seasonId = 'season_id';
+  static const String notes = 'notes';
 }
 
 class LedgerTransactionType {

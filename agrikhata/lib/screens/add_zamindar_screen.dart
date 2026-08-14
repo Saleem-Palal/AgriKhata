@@ -1,6 +1,7 @@
 import 'package:agrikhata/Core/constants/payment_terms.dart';
 import 'package:agrikhata/Data/agri_header.dart';
 import 'package:agrikhata/Database/database_helper.dart';
+import 'package:agrikhata/Widgets/app_auto_suggest_field.dart';
 import 'package:agrikhata/Widgets/season_selector.dart';
 import 'package:agrikhata/screens/zamindar_profile_screen.dart';
 import 'package:agrikhata/theme/theme.dart';
@@ -269,13 +270,19 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
                                 Row(
                                   children: [
                                     Expanded(
-                                      child: _buildTextField(
-                                        "Full name",
-                                        "e.g. Atta Muhammad",
+                                      child: AppAutoSuggestField(
+                                        controller: _nameController,
+                                        labelText: 'Full name',
+                                        hintText: 'e.g. Atta Muhammad',
                                         isRequired: true,
                                         prefixIcon:
                                             Icons.person_outline_rounded,
-                                        controller: _nameController,
+                                        fetchSuggestions: (text) =>
+                                            DatabaseHelper.instance
+                                                .fetchNameSuggestions(
+                                          ZamindarTable.name,
+                                          text,
+                                        ),
                                       ),
                                     ),
                                     const SizedBox(width: 20),
@@ -289,6 +296,7 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
                                     ),
                                   ],
                                 ),
+                                const SizedBox(height: 8),
                                 Row(
                                   children: [
                                     Expanded(
@@ -302,11 +310,17 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
                                     ),
                                     const SizedBox(width: 20),
                                     Expanded(
-                                      child: _buildTextField(
-                                        "Village",
-                                        "e.g. Shahan Palal",
-                                        prefixIcon: Icons.location_on_outlined,
+                                      child: AppAutoSuggestField(
                                         controller: _villageController,
+                                        labelText: 'Village',
+                                        hintText: 'e.g. Shahan Palal',
+                                        prefixIcon:
+                                            Icons.location_on_outlined,
+                                        suggestionIcon:
+                                            Icons.location_on_outlined,
+                                        fetchSuggestions: (text) =>
+                                            DatabaseHelper.instance
+                                                .fetchVillageSuggestions(text),
                                       ),
                                     ),
                                   ],
@@ -330,6 +344,7 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
                               vertical: 4,
                             ),
                             child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 _buildPaymentTermsPills(),
                                 const SizedBox(height: 10),
@@ -344,6 +359,7 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
                                 Wrap(
                                   spacing: 8,
                                   runSpacing: 8,
+                                  alignment: WrapAlignment.start,
                                   children: [
                                     _buildAmountPill(
                                       "Rs 50,000",
@@ -673,32 +689,18 @@ class _AddZamindarScreenState extends State<AddZamindarScreen> {
                               ),
                             ),
                     ),
-                    const SizedBox(width: 8),
-                    Flexible(
-                      child: SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        reverse: true,
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            AppButton.secondary(
-                              label: 'Save as Draft',
-                              icon: Icons.save_outlined,
-                              onPressed: _minimalFieldsFilled
-                                  ? _handleSaveDraft
-                                  : null,
-                            ),
-                            const SizedBox(width: 12),
-                            AppButton.primary(
-                              label: 'Save & go to profile',
-                              icon: Icons.arrow_forward,
-                              onPressed: _allFieldsFilled
-                                  ? _handleSaveAndGoToProfile
-                                  : null,
-                            ),
-                          ],
-                        ),
-                      ),
+                    const SizedBox(width: 12),
+                    AppButton.secondary(
+                      label: 'Save as Draft',
+                      icon: Icons.save_outlined,
+                      onPressed: _minimalFieldsFilled ? _handleSaveDraft : null,
+                    ),
+                    const SizedBox(width: 12),
+                    AppButton.primary(
+                      label: 'Save & go to profile',
+                      icon: Icons.arrow_forward,
+                      onPressed:
+                          _allFieldsFilled ? _handleSaveAndGoToProfile : null,
                     ),
                   ],
                 ),

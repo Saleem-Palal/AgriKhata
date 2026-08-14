@@ -3,8 +3,10 @@ import 'package:agrikhata/Widgets/edit_cash_advance_dialog.dart';
 import 'package:agrikhata/Widgets/edit_payment_dialog.dart';
 import 'package:agrikhata/Widgets/ledger_widgets.dart';
 import 'package:agrikhata/Widgets/past_season_guard.dart';
+import 'package:agrikhata/Widgets/settlement_split_fields.dart';
 import 'package:agrikhata/models/season.dart';
 import 'package:agrikhata/screens/new_sale_screen.dart';
+import 'package:agrikhata/services/payment_service.dart';
 import 'package:agrikhata/services/season_service.dart';
 import 'package:agrikhata/services/whatsapp_urdu_service.dart';
 import 'package:agrikhata/theme/theme.dart';
@@ -28,7 +30,9 @@ class ZamindarLedgerTab extends StatefulWidget {
 
 class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
   final TextEditingController _searchController = TextEditingController();
+  final ScrollController _tableHScrollController = ScrollController();
   String _selectedSeason = SeasonFilterOption.current;
+  int _ledgerSubTab = 0; // 0 = Purchases, 1 = Payment History
   List<Map<String, dynamic>> _allTransactions = [];
   Map<String, String> _invoiceItemSummaries = {};
   Map<String, Map<String, double>> _invoiceCollections = {};
@@ -42,7 +46,10 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
   String _zamindarName = 'Zamindar';
   String _zamindarWhatsapp = '';
 
-  List<String> _seasons = [SeasonFilterOption.current, SeasonFilterOption.allTime];
+  List<String> _seasons = [
+    SeasonFilterOption.current,
+    SeasonFilterOption.allTime,
+  ];
 
   @override
   void initState() {
@@ -56,8 +63,11 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
   @override
   void dispose() {
     _searchController.dispose();
+    _tableHScrollController.dispose();
     DatabaseHelper.instance.removeListener(_onDatabaseChanged);
-    SeasonService.instance.activeSeasonNotifier.removeListener(_onSeasonChanged);
+    SeasonService.instance.activeSeasonNotifier.removeListener(
+      _onSeasonChanged,
+    );
     super.dispose();
   }
 
@@ -168,16 +178,15 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
 
       final invoiceNumber =
           row[LedgerTransactionTable.invoiceNumber] as String? ?? '';
-      final invoiceRemarks =
-          (_invoiceSaleRemarks[invoiceNumber] ?? '').toLowerCase();
+      final invoiceRemarks = (_invoiceSaleRemarks[invoiceNumber] ?? '')
+          .toLowerCase();
       final kisaan = (row['kisaan_name'] as String? ?? '').toLowerCase();
       final description =
           (row[LedgerTransactionTable.description] as String? ?? '')
               .toLowerCase();
-      final category =
-          (row[LedgerTransactionTable.category] as String? ?? '').toLowerCase();
-      final items =
-          (_invoiceItemSummaries[invoiceNumber] ?? '').toLowerCase();
+      final category = (row[LedgerTransactionTable.category] as String? ?? '')
+          .toLowerCase();
+      final items = (_invoiceItemSummaries[invoiceNumber] ?? '').toLowerCase();
 
       return invoiceNumber.toLowerCase().contains(query) ||
           kisaan.contains(query) ||
@@ -220,27 +229,26 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
     final seen = <String>{};
     for (final row in _filteredTransactions) {
       final type = row[LedgerTransactionTable.type] as String?;
-      final category =
-          (row[LedgerTransactionTable.category] as String? ?? '').toUpperCase();
+      final category = (row[LedgerTransactionTable.category] as String? ?? '')
+          .toUpperCase();
       if (type != LedgerTransactionType.debit || category != 'SALE') continue;
-      final invoice =
-          (row[LedgerTransactionTable.invoiceNumber] as String?)?.trim();
+      final invoice = (row[LedgerTransactionTable.invoiceNumber] as String?)
+          ?.trim();
       if (invoice == null || invoice.isEmpty || !seen.add(invoice)) continue;
 
-      final joinedGross =
-          (row[SaleJoinColumns.subtotal] as num?)?.toDouble();
+      final joinedGross = (row[SaleJoinColumns.subtotal] as num?)?.toDouble();
       final joinedSeasonal =
           (row[SaleJoinColumns.seasonalIncrementTotal] as num?)?.toDouble();
-      final joinedItemDisc =
-          (row[SaleJoinColumns.itemDiscountsTotal] as num?)?.toDouble();
-      final joinedOverall =
-          (row[SaleJoinColumns.overallDiscount] as num?)?.toDouble();
+      final joinedItemDisc = (row[SaleJoinColumns.itemDiscountsTotal] as num?)
+          ?.toDouble();
+      final joinedOverall = (row[SaleJoinColumns.overallDiscount] as num?)
+          ?.toDouble();
       final batch = _invoiceSaleDiscounts[invoice];
 
       gross += joinedGross ?? batch?['subtotal'] ?? 0;
-      seasonal +=
-          joinedSeasonal ?? batch?['seasonal_increment_total'] ?? 0;
-      discounts += (joinedItemDisc ?? batch?['item_discounts_total'] ?? 0) +
+      seasonal += joinedSeasonal ?? batch?['seasonal_increment_total'] ?? 0;
+      discounts +=
+          (joinedItemDisc ?? batch?['item_discounts_total'] ?? 0) +
           (joinedOverall ?? batch?['overall_discount'] ?? 0);
     }
     return {
@@ -254,7 +262,7 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
     if (_isExporting) return;
     setState(() => _isExporting = true);
     try {
-      final rows = _filteredTransactions;
+      final rows = _visibleTransactions;
       final file = await PdfGenerator.saveZamindarTransactionLedgerToDocuments(
         zamindarName: _zamindarName,
         seasonLabel: _selectedSeason,
@@ -279,7 +287,7 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
     if (_isExporting) return;
     setState(() => _isExporting = true);
     try {
-      final rows = _filteredTransactions;
+      final rows = _visibleTransactions;
       final file = await PdfGenerator.saveZamindarTransactionLedgerToDocuments(
         zamindarName: _zamindarName,
         seasonLabel: _selectedSeason,
@@ -312,7 +320,7 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
     if (_isExporting) return;
     setState(() => _isExporting = true);
     try {
-      final rows = _filteredTransactions;
+      final rows = _visibleTransactions;
       final pdf = await PdfGenerator.generateZamindarTransactionLedgerPdf(
         zamindarName: _zamindarName,
         seasonLabel: _selectedSeason,
@@ -361,77 +369,14 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
     return Material(
       color: Colors.transparent,
       child: Padding(
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Builder(
-              builder: (context) {
-                final adj = _filteredSaleAdjustments;
-                return Column(
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _summaryCard(
-                            'Gross sales (base)',
-                            'Rs ${_fmt(adj['grossSales'] ?? 0)}',
-                            const Color(0xFF1B4332),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: _summaryCard(
-                            'Seasonal increments',
-                            'Rs ${_fmt(adj['seasonalIncrements'] ?? 0)}',
-                            const Color(0xFF0C447C),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: _summaryCard(
-                            'Discounts given',
-                            'Rs ${_fmt(adj['totalDiscounts'] ?? 0)}',
-                            const Color(0xFF28A745),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _summaryCard(
-                            'Net sales (debit)',
-                            'Rs ${_fmt(_filteredTotalDebit.toDouble())}',
-                            const Color(0xFFA32D2D),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: _summaryCard(
-                            'Payments received',
-                            'Rs ${_fmt(_filteredTotalCredit.toDouble())}',
-                            const Color(0xFF0C447C),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: _summaryCard(
-                            'Outstanding balance',
-                            _outstandingBalanceDisplay,
-                            const Color(0xFF27500A),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                );
-              },
-            ),
-            const SizedBox(height: 14),
+            _buildStatsBar(),
+            const SizedBox(height: 8),
             _buildFilterBar(),
-            const SizedBox(height: 14),
+            const SizedBox(height: 8),
             Expanded(child: _buildLedgerList()),
           ],
         ),
@@ -439,34 +384,91 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
     );
   }
 
-  Widget _summaryCard(String label, String value, Color valueColor) {
+  Widget _buildStatsBar() {
+    final adj = _filteredSaleAdjustments;
+    final stats = [
+      _LedgerStat(
+        label: 'Gross Base',
+        value: 'Rs ${_fmt(adj['grossSales'] ?? 0)}',
+        color: const Color(0xFF1B4332),
+      ),
+      _LedgerStat(
+        label: 'Seasonal Inc',
+        value: 'Rs ${_fmt(adj['seasonalIncrements'] ?? 0)}',
+        color: const Color(0xFF0C447C),
+      ),
+      _LedgerStat(
+        label: 'Discounts',
+        value: 'Rs ${_fmt(adj['totalDiscounts'] ?? 0)}',
+        color: const Color(0xFF28A745),
+      ),
+      _LedgerStat(
+        label: 'Net Debit',
+        value: 'Rs ${_fmt(_filteredTotalDebit.toDouble())}',
+        color: const Color(0xFFA32D2D),
+      ),
+      _LedgerStat(
+        label: 'Payments',
+        value: 'Rs ${_fmt(_filteredTotalCredit.toDouble())}',
+        color: const Color(0xFF0C447C),
+      ),
+      _LedgerStat(
+        label: 'Outstanding',
+        value: _outstandingBalanceDisplay,
+        color: const Color(0xFF27500A),
+        emphasize: true,
+      ),
+    ];
+
     return Container(
-      padding: const EdgeInsets.all(14),
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(8),
         border: Border.all(color: AppColors.border, width: 0.5),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            label,
-            style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
-          ),
-          const SizedBox(height: 5),
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 17,
-              fontWeight: FontWeight.w600,
-              color: valueColor,
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ],
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            for (var i = 0; i < stats.length; i++) ...[
+              if (i > 0)
+                Container(
+                  width: 1,
+                  height: 18,
+                  margin: const EdgeInsets.symmetric(horizontal: 12),
+                  color: AppColors.border,
+                ),
+              _statCell(stats[i]),
+            ],
+          ],
+        ),
       ),
+    );
+  }
+
+  Widget _statCell(_LedgerStat stat) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          '${stat.label}: ',
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: stat.emphasize ? FontWeight.w600 : FontWeight.w500,
+            color: AppColors.textMuted,
+          ),
+        ),
+        Text(
+          stat.value,
+          style: TextStyle(
+            fontSize: stat.emphasize ? 13 : 12,
+            fontWeight: FontWeight.w700,
+            color: stat.color,
+          ),
+        ),
+      ],
     );
   }
 
@@ -474,7 +476,7 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
     return AppSearchBar(
       controller: _searchController,
       hintText: 'Search Invoice #, Kisaan or items...',
-      breakpoint: 720,
+      breakpoint: 1100,
       filters: [
         AppFilterDropdown(
           options: _seasons,
@@ -484,22 +486,25 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
           },
         ),
         Text(
-          "${_filteredTransactions.length} transactions",
+          "${_visibleLedgerRows.length} txns",
           style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
         ),
         AppButton.secondary(
           label: 'Print',
           icon: Icons.print_outlined,
+          compact: true,
           loading: _isExporting,
           onPressed: _isExporting ? null : _handlePrint,
         ),
         AppButton.whatsapp(
           label: 'WhatsApp PDF',
+          compact: true,
           loading: _isExporting,
           onPressed: _isExporting ? null : _handleShareWhatsAppPdf,
         ),
         AppButton.pdf(
           label: 'Export PDF',
+          compact: true,
           loading: _isExporting,
           onPressed: _isExporting ? null : _handleExportPdf,
         ),
@@ -517,46 +522,150 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
     );
   }
 
-  Widget _buildLedgerList() {
+  List<ZamindarLedgerRow> get _visibleLedgerRows {
     final rows = _filteredLedgerRows;
-
-    if (rows.isEmpty) {
-      return Container(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: AppColors.border, width: 0.5),
-        ),
-        child: const Center(
-          child: Padding(
-            padding: EdgeInsets.all(24),
-            child: Text(
-              'No ledger entries yet',
-              style: TextStyle(fontSize: 12, color: AppColors.textMuted),
-            ),
-          ),
-        ),
-      );
+    if (_ledgerSubTab == 1) {
+      return rows.where((row) => row.isPaymentHistoryRow).toList();
     }
+    return rows.where((row) => row.isPurchaseRow).toList();
+  }
 
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final minWidth = 1120.0;
-        final width =
-            constraints.maxWidth < minWidth ? minWidth : constraints.maxWidth;
-        return SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: SizedBox(
-            width: width,
-            height: constraints.maxHeight,
-            child: ZamindarLedgerTable(
-              rows: rows,
-              actionsWidth: 120,
-              actionsBuilder: (context, row) => _buildRowActions(row),
-            ),
+  List<Map<String, dynamic>> get _visibleTransactions =>
+      _visibleLedgerRows.map((row) => row.source).toList();
+
+  Widget _buildLedgerSubTabs() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 6, 8, 4),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Container(
+          height: 30,
+          padding: const EdgeInsets.all(2),
+          decoration: BoxDecoration(
+            color: const Color(0xFFF0F4EE),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppColors.border, width: 0.5),
           ),
-        );
-      },
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _ledgerSubTabButton(
+                index: 0,
+                label: 'Purchases',
+                icon: Icons.shopping_bag_outlined,
+              ),
+              _ledgerSubTabButton(
+                index: 1,
+                label: 'Payment History',
+                icon: Icons.payments_outlined,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _ledgerSubTabButton({
+    required int index,
+    required String label,
+    required IconData icon,
+  }) {
+    final isActive = _ledgerSubTab == index;
+    return InkWell(
+      onTap: () => setState(() => _ledgerSubTab = index),
+      borderRadius: BorderRadius.circular(6),
+      child: Container(
+        height: 26,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        decoration: BoxDecoration(
+          color: isActive ? Colors.white : Colors.transparent,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(
+            color: isActive ? const Color(0xFFC6DEC9) : Colors.transparent,
+            width: 0.5,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              size: 13,
+              color: isActive ? AppColors.darkGreen : AppColors.textMuted,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
+                color: isActive ? AppColors.darkGreen : AppColors.textMuted,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLedgerList() {
+    final rows = _visibleLedgerRows;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.border, width: 0.5),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _buildLedgerSubTabs(),
+          Expanded(
+            child: rows.isEmpty
+                ? Center(
+                    child: Text(
+                      _ledgerSubTab == 1
+                          ? 'No payment records yet'
+                          : 'No purchase invoices yet',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textMuted,
+                      ),
+                    ),
+                  )
+                : LayoutBuilder(
+                    builder: (context, constraints) {
+                      final minWidth = 1120.0;
+                      final width = constraints.maxWidth < minWidth
+                          ? minWidth
+                          : constraints.maxWidth;
+                      return Scrollbar(
+                        controller: _tableHScrollController,
+                        thumbVisibility: constraints.maxWidth < minWidth,
+                        child: SingleChildScrollView(
+                          controller: _tableHScrollController,
+                          scrollDirection: Axis.horizontal,
+                          child: SizedBox(
+                            width: width,
+                            height: constraints.maxHeight,
+                            child: ZamindarLedgerTable(
+                              rows: rows,
+                              embedded: true,
+                              actionsWidth: _ledgerSubTab == 1 ? 80 : 120,
+                              actionsBuilder: (context, row) =>
+                                  _buildRowActions(row),
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -568,7 +677,8 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
         source[LedgerTransactionTable.invoiceNumber] as String?;
     final hasInvoice = invoiceNumber != null && invoiceNumber.isNotEmpty;
     final isSale = category == 'SALE' && isDebit && hasInvoice;
-    final isAdvance = isDebit &&
+    final isAdvance =
+        isDebit &&
         hasInvoice &&
         (category == 'ADVANCE_LOAN_RECORD' ||
             category == 'CASH_ADVANCE' ||
@@ -581,21 +691,36 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
     return Row(
       mainAxisAlignment: MainAxisAlignment.end,
       children: [
-        if (isPayment)
+        if (isPayment) ...[
           _actionIconButton(
-            icon: Icons.edit_outlined,
+            icon: Icons.edit,
             iconColor: const Color(0xFF1B4332),
             borderColor: const Color(0xFFC6DEC9),
-            tooltip: 'Edit Payment',
+            tooltip: row.isWalletDeduction
+                ? 'Edit Wallet Deduction'
+                : 'Edit Payment',
             onTap: () => _handleEditPayment(
               row.paymentId!,
               seasonLabel: source[LedgerTransactionTable.season] as String?,
               seasonId: source[LedgerTransactionTable.seasonId] as int?,
             ),
           ),
+          const SizedBox(width: 6),
+          _actionIconButton(
+            icon: Icons.delete,
+            iconColor: const Color(0xFFDC3545),
+            borderColor: const Color(0xFFF5C6C6),
+            tooltip: 'Delete',
+            onTap: () => _handleDeletePayment(
+              row.paymentId!,
+              seasonLabel: source[LedgerTransactionTable.season] as String?,
+              seasonId: source[LedgerTransactionTable.seasonId] as int?,
+            ),
+          ),
+        ],
         if (isSale || isAdvance) ...[
           _actionIconButton(
-            icon: Icons.edit_outlined,
+            icon: Icons.edit,
             iconColor: const Color(0xFF1B4332),
             borderColor: const Color(0xFFC6DEC9),
             tooltip: 'Edit',
@@ -615,7 +740,7 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
           ),
           const SizedBox(width: 6),
           _actionIconButton(
-            icon: Icons.delete_outline,
+            icon: Icons.delete,
             iconColor: const Color(0xFFDC3545),
             borderColor: const Color(0xFFF5C6C6),
             tooltip: 'Delete',
@@ -657,6 +782,40 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
     if (updated && mounted) {
       AppToast.showSuccess(context, 'Payment updated');
       await _loadLedgerData(showLoading: false);
+    }
+  }
+
+  Future<void> _handleDeletePayment(
+    String paymentId, {
+    String? seasonLabel,
+    int? seasonId,
+  }) async {
+    final allowed = await ensurePastSeasonWriteAccess(
+      context,
+      seasonId: seasonId,
+      seasonLabel: seasonLabel,
+    );
+    if (!allowed || !mounted) return;
+
+    final confirmed = await AppDialog.confirm(
+      context: context,
+      title: 'Delete Payment?',
+      message:
+          'Are you sure you want to delete this payment record? This will revert the balance changes.',
+      confirmLabel: 'Delete',
+      danger: true,
+    );
+    if (confirmed != true) return;
+
+    try {
+      await PaymentService.instance.deletePayment(paymentId: paymentId);
+      if (mounted) {
+        AppToast.showSuccess(context, 'Payment deleted');
+      }
+    } catch (e) {
+      if (mounted) {
+        AppToast.showError(context, 'Failed to delete payment: $e');
+      }
     }
   }
 
@@ -835,6 +994,20 @@ class _ZamindarLedgerTabState extends State<ZamindarLedgerTab> {
   }
 }
 
+class _LedgerStat {
+  final String label;
+  final String value;
+  final Color color;
+  final bool emphasize;
+
+  const _LedgerStat({
+    required this.label,
+    required this.value,
+    required this.color,
+    this.emphasize = false,
+  });
+}
+
 class _InvoiceBillSettlementDialog extends StatefulWidget {
   final Map<String, dynamic> row;
   final LedgerTransaction transaction;
@@ -862,8 +1035,12 @@ class _InvoiceBillSettlementDialog extends StatefulWidget {
 class _InvoiceBillSettlementDialogState
     extends State<_InvoiceBillSettlementDialog> {
   late final TextEditingController _amountController;
+  final _walletAmountController = TextEditingController();
+  final _remarksController = TextEditingController();
   bool _showReceiptActions = false;
   bool _isSubmitting = false;
+  bool _deductFromWallet = false;
+  double _availableAdvance = 0;
   BillSettlementResult? _settlementResult;
 
   @override
@@ -875,23 +1052,46 @@ class _InvoiceBillSettlementDialogState
           : '',
     );
     _amountController.addListener(() => setState(() {}));
+    _walletAmountController.addListener(() => setState(() {}));
+    _loadAdvanceBalance();
   }
 
   @override
   void dispose() {
     _amountController.dispose();
+    _walletAmountController.dispose();
+    _remarksController.dispose();
     super.dispose();
   }
 
-  double? get _enteredAmount =>
-      double.tryParse(_amountController.text.trim());
+  Future<void> _loadAdvanceBalance() async {
+    try {
+      final balance = await DatabaseHelper.instance.getAdvanceBalance(
+        widget.transaction.zamindarId,
+      );
+      if (!mounted) return;
+      setState(() => _availableAdvance = balance.toDouble());
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _availableAdvance = 0);
+    }
+  }
+
+  double? get _enteredAmount => double.tryParse(_amountController.text.trim());
 
   bool get _canSubmit {
     if (_isSubmitting) return false;
     final amt = _enteredAmount;
     if (amt == null || amt <= 0) return false;
     if (amt > widget.remainingBalance) return false;
-    return widget.remainingBalance > 0;
+    if (widget.remainingBalance <= 0) return false;
+    return SettlementSplitFields.isWalletDeductionValid(
+      deductFromWallet: _deductFromWallet,
+      rawText: _walletAmountController.text,
+      availableAdvance: _availableAdvance,
+      outstandingDues: widget.remainingBalance,
+      settlementAmount: amt,
+    );
   }
 
   String _fmt(double value) {
@@ -930,6 +1130,11 @@ class _InvoiceBillSettlementDialogState
 
   Future<void> _submitPayment() async {
     final amount = _enteredAmount!;
+    final walletDeduction = SettlementSplitFields.walletDeductionAmount(
+      deductFromWallet: _deductFromWallet,
+      rawText: _walletAmountController.text,
+    );
+    final remarks = _remarksController.text.trim();
     setState(() => _isSubmitting = true);
 
     try {
@@ -956,13 +1161,15 @@ class _InvoiceBillSettlementDialogState
         amountPaid: amount,
         paymentMethod: 'Cash',
         season: widget.transaction.season,
+        walletDeductionAmount: walletDeduction,
+        remarks: remarks.isEmpty ? null : remarks,
       );
 
       final invoiceSummary = await DatabaseHelper.instance
           .getInvoiceSettlementSnapshot(
-        widget.invoiceNumber,
-        cashPaidNow: amount,
-      );
+            widget.invoiceNumber,
+            cashPaidNow: amount,
+          );
 
       await widget.onSettlementComplete();
 
@@ -974,13 +1181,20 @@ class _InvoiceBillSettlementDialogState
           kisaanId: widget.transaction.kisaanId,
           kisaanName: kisaanName ?? 'Self',
           amountPaid: amount,
+          walletDeductionAmount: walletDeduction,
+          cashReceivedAmount: amount - walletDeduction,
+          remarks: remarks.isEmpty ? null : remarks,
           invoiceNumbers: [widget.invoiceNumber],
           paymentId: paymentId,
           dateTime: now,
           description: DatabaseHelper.formatBillPaymentDescription(
             widget.invoiceNumber,
           ),
-          paymentMethod: 'Cash',
+          paymentMethod: walletDeduction > 0 && amount - walletDeduction > 0
+              ? 'Cash + Advance Wallet'
+              : walletDeduction > 0
+              ? 'Advance Wallet Deduction'
+              : 'Cash',
           invoiceSummaries: [invoiceSummary],
         );
         _showReceiptActions = true;
@@ -1033,10 +1247,7 @@ class _InvoiceBillSettlementDialogState
         shopName: shopName,
         amount: result.amountPaid,
         pdfPath: file.path,
-        detailLines: [
-          'کسان: ${result.kisaanName}',
-          result.description,
-        ],
+        detailLines: ['کسان: ${result.kisaanName}', result.description],
         subject: 'Bill Settlement — ${result.zamindarName}',
       );
     } catch (e) {
@@ -1102,105 +1313,126 @@ class _InvoiceBillSettlementDialogState
                 ),
               ),
               if (!_showReceiptActions) ...[
-                Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _buildDialogRow('Invoice:', widget.invoiceNumber),
-                      const SizedBox(height: 8),
-                      _buildDialogRow(
-                        'Invoice Total:',
-                        'Rs ${_fmt(widget.totalAmount)}',
-                      ),
-                      const SizedBox(height: 8),
-                      _buildDialogRow(
-                        'Remaining Balance:',
-                        'Rs ${_fmt(widget.remainingBalance)}',
-                        valueColor: const Color(0xFFA32D2D),
-                      ),
-                      const SizedBox(height: 16),
-                      const Divider(),
-                      const SizedBox(height: 16),
-                      const Text(
-                        'Amount Paid',
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold,
-                          color: AppColors.textMuted,
+                ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxHeight: MediaQuery.of(context).size.height * 0.7,
+                  ),
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _buildDialogRow('Invoice:', widget.invoiceNumber),
+                        const SizedBox(height: 8),
+                        _buildDialogRow(
+                          'Invoice Total:',
+                          'Rs ${_fmt(widget.totalAmount)}',
                         ),
-                      ),
-                      const SizedBox(height: 6),
-                      TextField(
-                        controller: _amountController,
-                        keyboardType: TextInputType.number,
-                        style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: AppColors.darkGreen,
+                        const SizedBox(height: 8),
+                        _buildDialogRow(
+                          'Remaining Balance:',
+                          'Rs ${_fmt(widget.remainingBalance)}',
+                          valueColor: const Color(0xFFA32D2D),
                         ),
-                        onChanged: (value) {
-                          final amt = double.tryParse(value.trim());
-                          if (amt != null &&
-                              amt > widget.remainingBalance) {
-                            _amountController.text = widget.remainingBalance
-                                .toStringAsFixed(0);
-                            _amountController.selection =
-                                TextSelection.fromPosition(
-                              TextPosition(
-                                offset: _amountController.text.length,
-                              ),
-                            );
-                          }
-                        },
-                        decoration: InputDecoration(
-                          isDense: true,
-                          prefixText: 'Rs ',
-                          prefixStyle: const TextStyle(
+                        const SizedBox(height: 16),
+                        const Divider(),
+                        const SizedBox(height: 16),
+                        const Text(
+                          'Total Settlement Amount',
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: AppColors.textMuted,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        TextField(
+                          controller: _amountController,
+                          keyboardType: TextInputType.number,
+                          style: const TextStyle(
+                            fontSize: 16,
                             fontWeight: FontWeight.bold,
                             color: AppColors.darkGreen,
                           ),
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 12,
-                          ),
-                          hintText: '0',
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(7),
-                            borderSide: const BorderSide(
-                              color: AppColors.sidebarBg,
-                              width: 0.5,
-                            ),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(7),
-                            borderSide: const BorderSide(
+                          onChanged: (value) {
+                            final amt = double.tryParse(value.trim());
+                            if (amt != null && amt > widget.remainingBalance) {
+                              _amountController.text = widget.remainingBalance
+                                  .toStringAsFixed(0);
+                              _amountController.selection =
+                                  TextSelection.fromPosition(
+                                    TextPosition(
+                                      offset: _amountController.text.length,
+                                    ),
+                                  );
+                            }
+                          },
+                          decoration: InputDecoration(
+                            isDense: true,
+                            prefixText: 'Rs ',
+                            prefixStyle: const TextStyle(
+                              fontWeight: FontWeight.bold,
                               color: AppColors.darkGreen,
-                              width: 1,
+                            ),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 12,
+                            ),
+                            hintText: '0',
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(7),
+                              borderSide: const BorderSide(
+                                color: AppColors.sidebarBg,
+                                width: 0.5,
+                              ),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(7),
+                              borderSide: const BorderSide(
+                                color: AppColors.darkGreen,
+                                width: 1,
+                              ),
+                            ),
+                            errorText:
+                                _amountController.text.trim().isNotEmpty &&
+                                    (_enteredAmount ?? 0) >
+                                        widget.remainingBalance
+                                ? 'Cannot exceed remaining balance (Rs ${_fmt(widget.remainingBalance)})'
+                                : _amountController.text.trim().isNotEmpty &&
+                                      (_enteredAmount ?? 0) <= 0
+                                ? 'Enter a valid amount'
+                                : null,
+                            errorStyle: const TextStyle(fontSize: 9),
+                          ),
+                        ),
+                        if (widget.remainingBalance <= 0) ...[
+                          const SizedBox(height: 8),
+                          const Text(
+                            'This invoice is already fully settled.',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Color(0xFFA32D2D),
                             ),
                           ),
-                          errorText: _amountController.text.trim().isNotEmpty &&
-                                  (_enteredAmount ?? 0) >
-                                      widget.remainingBalance
-                              ? 'Cannot exceed remaining balance (Rs ${_fmt(widget.remainingBalance)})'
-                              : _amountController.text.trim().isNotEmpty &&
-                                      (_enteredAmount ?? 0) <= 0
-                                  ? 'Enter a valid amount'
-                                  : null,
-                          errorStyle: const TextStyle(fontSize: 9),
-                        ),
-                      ),
-                      if (widget.remainingBalance <= 0) ...[
-                        const SizedBox(height: 8),
-                        const Text(
-                          'This invoice is already fully settled.',
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: Color(0xFFA32D2D),
-                          ),
+                        ],
+                        const SizedBox(height: 16),
+                        SettlementSplitFields(
+                          availableAdvance: _availableAdvance,
+                          outstandingDues: widget.remainingBalance,
+                          settlementAmount: _enteredAmount ?? 0,
+                          deductFromWallet: _deductFromWallet,
+                          onDeductFromWalletChanged: (value) {
+                            setState(() {
+                              _deductFromWallet = value;
+                              if (!value) _walletAmountController.clear();
+                            });
+                          },
+                          walletAmountController: _walletAmountController,
+                          remarksController: _remarksController,
+                          formatAmount: _fmt,
                         ),
                       ],
-                    ],
+                    ),
                   ),
                 ),
                 Container(
@@ -1246,7 +1478,7 @@ class _InvoiceBillSettlementDialogState
                                 ),
                               )
                             : const Text(
-                                'Save Payment',
+                                'Confirm Settlement',
                                 style: TextStyle(fontSize: 12),
                               ),
                       ),
@@ -1298,24 +1530,76 @@ class _InvoiceBillSettlementDialogState
                             width: 0.5,
                           ),
                         ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        child: Column(
                           children: [
-                            const Text(
-                              'Amount Settled:',
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w500,
-                              ),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text(
+                                  'Amount Settled:',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                                Text(
+                                  'Rs ${_fmt(_settlementResult?.amountPaid ?? 0)}',
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF27500A),
+                                  ),
+                                ),
+                              ],
                             ),
-                            Text(
-                              'Rs ${_amountController.text}',
-                              style: const TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.bold,
-                                color: Color(0xFF27500A),
+                            if ((_settlementResult?.walletDeductionAmount ??
+                                    0) >
+                                0) ...[
+                              const SizedBox(height: 6),
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  const Text(
+                                    'Wallet Deducted:',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                  Text(
+                                    'Rs ${_fmt(_settlementResult!.walletDeductionAmount)}',
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                      color: Color(0xFF0C447C),
+                                    ),
+                                  ),
+                                ],
                               ),
-                            ),
+                              const SizedBox(height: 4),
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  const Text(
+                                    'Cash Received:',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                  Text(
+                                    'Rs ${_fmt(_settlementResult!.cashReceivedAmount)}',
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                      color: AppColors.darkGreen,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
                           ],
                         ),
                       ),

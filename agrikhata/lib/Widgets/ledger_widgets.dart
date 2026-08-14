@@ -910,6 +910,12 @@ class ZamindarLedgerRow {
 
   double get outstanding => (total - paid).clamp(0.0, double.infinity);
 
+  bool get isPurchaseRow => isDebit;
+
+  bool get isPaymentHistoryRow => !isDebit;
+
+  bool get isWalletDeduction => category == 'WALLET_DEDUCTION';
+
   bool get isEditablePayment {
     if (isDebit || paymentId == null || paymentId!.isEmpty) return false;
     switch (category) {
@@ -918,9 +924,8 @@ class ZamindarLedgerRow {
       case 'DEBT_SETTLEMENT':
       case 'ADVANCE_PAYMENT':
       case 'ADVANCE':
-        return true;
       case 'WALLET_DEDUCTION':
-        return false;
+        return true;
       default:
         return false;
     }
@@ -1166,7 +1171,7 @@ class _ZamindarLedgerExpandableRowState
                 : null,
             hoverColor: const Color(0xFFF0F7EB),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -1342,6 +1347,45 @@ class _ZamindarLedgerExpandableRowState
   }
 }
 
+/// Vertical list with a dedicated [ScrollController] so [Scrollbar] never
+/// falls back to [PrimaryScrollController] (which is unattached here).
+class _PinnedScrollbarList extends StatefulWidget {
+  final int itemCount;
+  final IndexedWidgetBuilder itemBuilder;
+
+  const _PinnedScrollbarList({
+    required this.itemCount,
+    required this.itemBuilder,
+  });
+
+  @override
+  State<_PinnedScrollbarList> createState() => _PinnedScrollbarListState();
+}
+
+class _PinnedScrollbarListState extends State<_PinnedScrollbarList> {
+  final ScrollController _controller = ScrollController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scrollbar(
+      controller: _controller,
+      thumbVisibility: true,
+      child: ListView.builder(
+        controller: _controller,
+        primary: false,
+        itemCount: widget.itemCount,
+        itemBuilder: widget.itemBuilder,
+      ),
+    );
+  }
+}
+
 /// Sales-style ledger table for Zamindar profile screens.
 /// Keeps debit/credit type dots; optional trailing [actionsBuilder] per row.
 class ZamindarLedgerTable extends StatelessWidget {
@@ -1396,7 +1440,7 @@ class ZamindarLedgerTable extends StatelessWidget {
             _buildRow(context, rows[i], i == rows.length - 1)
         else
           Expanded(
-            child: ListView.builder(
+            child: _PinnedScrollbarList(
               itemCount: rows.length,
               itemBuilder: (context, index) {
                 return _buildRow(
@@ -1424,7 +1468,7 @@ class ZamindarLedgerTable extends StatelessWidget {
 
   Widget _buildHeader() {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
       decoration: BoxDecoration(
         color: const Color(0xFFF7F9F4),
         border: const Border(
@@ -2012,12 +2056,24 @@ class _InvoiceDetailDialogState extends State<InvoiceDetailDialog> {
 class PaymentsLedgerTable extends StatelessWidget {
   final List<PaymentLedgerEntry> entries;
   final void Function(PaymentLedgerEntry entry)? onEditPayment;
+  final void Function(PaymentLedgerEntry entry)? onDeletePayment;
 
   const PaymentsLedgerTable({
     super.key,
     required this.entries,
     this.onEditPayment,
+    this.onDeletePayment,
   });
+
+  bool get _showActions => onEditPayment != null || onDeletePayment != null;
+
+  double get _actionsWidth {
+    var buttons = 0;
+    if (onEditPayment != null) buttons++;
+    if (onDeletePayment != null) buttons++;
+    if (buttons == 0) return 0;
+    return buttons * 28.0 + (buttons - 1) * 6.0 + 8.0;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2170,10 +2226,10 @@ class PaymentsLedgerTable extends StatelessWidget {
               ),
             ),
           ),
-          if (onEditPayment != null)
-            const SizedBox(
-              width: 44,
-              child: Text(
+          if (_showActions)
+            SizedBox(
+              width: _actionsWidth,
+              child: const Text(
                 '',
                 textAlign: TextAlign.right,
               ),
@@ -2219,7 +2275,6 @@ class PaymentsLedgerTable extends StatelessWidget {
   Widget _buildRow(PaymentLedgerEntry entry, int index) {
     final isEven = index.isEven;
     final isWallet = entry.isWalletDeduction;
-    final canEdit = onEditPayment != null && !isWallet;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
@@ -2390,40 +2445,62 @@ class PaymentsLedgerTable extends StatelessWidget {
               ),
             ),
           ),
-          if (onEditPayment != null)
+          if (_showActions)
             SizedBox(
-              width: 44,
-              child: canEdit
-                  ? Align(
-                      alignment: Alignment.centerRight,
-                      child: Tooltip(
-                        message: 'Edit Payment',
-                        child: InkWell(
-                          onTap: () => onEditPayment!(entry),
-                          borderRadius: BorderRadius.circular(7),
-                          child: Container(
-                            width: 28,
-                            height: 28,
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(7),
-                              border: Border.all(
-                                color: const Color(0xFFC6DEC9),
-                                width: 0.5,
-                              ),
-                            ),
-                            child: const Icon(
-                              Icons.edit_outlined,
-                              size: 14,
-                              color: Color(0xFF1B4332),
-                            ),
-                          ),
-                        ),
-                      ),
-                    )
-                  : const SizedBox.shrink(),
+              width: _actionsWidth,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  if (onEditPayment != null)
+                    _paymentActionButton(
+                      icon: Icons.edit,
+                      iconColor: const Color(0xFF1B4332),
+                      borderColor: const Color(0xFFC6DEC9),
+                      tooltip: isWallet
+                          ? 'Edit Wallet Deduction'
+                          : 'Edit Payment',
+                      onTap: () => onEditPayment!(entry),
+                    ),
+                  if (onEditPayment != null && onDeletePayment != null)
+                    const SizedBox(width: 6),
+                  if (onDeletePayment != null)
+                    _paymentActionButton(
+                      icon: Icons.delete,
+                      iconColor: const Color(0xFFDC3545),
+                      borderColor: const Color(0xFFF5C6C6),
+                      tooltip: 'Delete',
+                      onTap: () => onDeletePayment!(entry),
+                    ),
+                ],
+              ),
             ),
         ],
+      ),
+    );
+  }
+
+  Widget _paymentActionButton({
+    required IconData icon,
+    required Color iconColor,
+    required Color borderColor,
+    required VoidCallback onTap,
+    required String tooltip,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(7),
+        child: Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(7),
+            border: Border.all(color: borderColor, width: 0.5),
+          ),
+          child: Icon(icon, size: 14, color: iconColor),
+        ),
       ),
     );
   }

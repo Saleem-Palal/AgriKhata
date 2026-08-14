@@ -214,8 +214,10 @@ class LineItem {
   final double quantity;
   final String unit;
   final double unitPrice;
+
   /// Per-unit seasonal increment.
   final double seasonalIncrement;
+
   /// Per-unit discount.
   final double discount;
 
@@ -232,6 +234,7 @@ class LineItem {
   double get subtotal => effectiveUnitPrice * quantity;
   double get totalItemDiscount => discount * quantity;
   double get totalItemSeasonalInc => seasonalIncrement * quantity;
+
   /// Net line total (discount already applied in [subtotal]).
   double get total => subtotal;
 }
@@ -240,10 +243,13 @@ class LedgerSummary {
   final double totalVolume;
   final double totalCashReceived;
   final double outstandingCredit;
+
   /// Σ base sales (`sum(qty * unit_price)`).
   final double grossSales;
+
   /// Σ seasonal increments applied.
   final double totalSeasonalIncrements;
+
   /// Σ item discounts + overall discounts.
   final double totalDiscountsGiven;
 
@@ -286,11 +292,8 @@ class LedgerSummary {
     );
   }
 
-  static LedgerSummary empty() => LedgerSummary(
-        totalVolume: 0,
-        totalCashReceived: 0,
-        outstandingCredit: 0,
-      );
+  static LedgerSummary empty() =>
+      LedgerSummary(totalVolume: 0, totalCashReceived: 0, outstandingCredit: 0);
 }
 
 class PaymentLedgerEntry {
@@ -435,6 +438,9 @@ class BillSettlementResult {
   final int? kisaanId;
   final String kisaanName;
   final double amountPaid;
+  final double walletDeductionAmount;
+  final double cashReceivedAmount;
+  final String? remarks;
   final List<String> invoiceNumbers;
   final String? paymentId;
   final DateTime dateTime;
@@ -448,11 +454,15 @@ class BillSettlementResult {
     this.kisaanId,
     required this.kisaanName,
     required this.amountPaid,
+    this.walletDeductionAmount = 0,
+    double? cashReceivedAmount,
+    this.remarks,
     required this.invoiceNumbers,
     this.paymentId,
     required this.dateTime,
     required this.description,
     required this.paymentMethod,
     required this.invoiceSummaries,
-  });
+  }) : cashReceivedAmount =
+           cashReceivedAmount ?? (amountPaid - walletDeductionAmount);
 }

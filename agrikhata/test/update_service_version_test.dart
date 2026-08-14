@@ -18,21 +18,21 @@ void main() {
 
   group('UpdateService.isNewerVersion', () {
     test('detects newer patch / minor / major', () {
-      expect(UpdateService.isNewerVersion('1.0.17', '1.0.16'), isTrue);
+      expect(UpdateService.isNewerVersion('1.0.18', '1.0.17'), isTrue);
       expect(UpdateService.isNewerVersion('1.1.0', '1.0.99'), isTrue);
       expect(UpdateService.isNewerVersion('2.0.0', '1.9.9'), isTrue);
     });
 
     test('rejects equal or older', () {
-      expect(UpdateService.isNewerVersion('1.0.17', '1.0.17'), isFalse);
-      expect(UpdateService.isNewerVersion('1.0.16', '1.0.17'), isFalse);
-      expect(UpdateService.isNewerVersion('1.0.17.0', '1.0.17'), isFalse);
-      expect(UpdateService.isNewerVersion('1.0.17', '1.0.17.0'), isFalse);
+      expect(UpdateService.isNewerVersion('1.0.18', '1.0.18'), isFalse);
+      expect(UpdateService.isNewerVersion('1.0.17', '1.0.18'), isFalse);
+      expect(UpdateService.isNewerVersion('1.0.18.0', '1.0.18'), isFalse);
+      expect(UpdateService.isNewerVersion('1.0.18', '1.0.18.0'), isFalse);
     });
 
     test('ignores build metadata', () {
-      expect(UpdateService.isNewerVersion('1.0.17+17', '1.0.16+16'), isTrue);
-      expect(UpdateService.isNewerVersion('1.0.17', '1.0.17+16'), isFalse);
+      expect(UpdateService.isNewerVersion('1.0.18+18', '1.0.17+17'), isTrue);
+      expect(UpdateService.isNewerVersion('1.0.18', '1.0.18+17'), isFalse);
     });
   });
 }

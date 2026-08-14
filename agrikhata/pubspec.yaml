@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.17+17
+version: 1.0.18+18
 
 environment:
   sdk: ^3.11.3
@@ -109,12 +109,13 @@ flutter:
 
 msix_config:
   display_name: AgriKhata
-  publisher_display_name: "Saleem Palal"
-  identity_name: "com.saleempalal.agrikhata"
-  publisher: "CN=SaleemPalal, O=AgriKhata, C=PK"
-  msix_version: 1.0.17.0
+  publisher_display_name: "RetroSoft"
+  identity_name: "com.RetroSoft.agrikhata"
+  publisher: "CN=RetroSoft, O=AgriKhata, C=PK"
+  msix_version: 1.0.18.0
   languages: en-us
   capabilities: internetClient
+  logo_path: F:\Work\Flutter\AgriKhata\agrikhata\windows\runner\resources\app_icon.ico
   certificate_path: windows/signing/certificate.pfx
   certificate_password: AgriKhataSign1
-  install_certificate: false
+  install_certificate: true

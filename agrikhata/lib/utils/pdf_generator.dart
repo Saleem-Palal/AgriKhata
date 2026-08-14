@@ -32,8 +32,7 @@ class PdfGenerator {
 
     final buffer = StringBuffer();
     for (final rune in text.runes) {
-      if ((rune >= 0x20 && rune <= 0x7E) ||
-          (rune >= 0xA0 && rune <= 0xFF)) {
+      if ((rune >= 0x20 && rune <= 0x7E) || (rune >= 0xA0 && rune <= 0xFF)) {
         buffer.writeCharCode(rune);
       }
     }
@@ -92,16 +91,13 @@ class PdfGenerator {
         pw.Text('Built With ', style: style),
         _buildHeartIcon(size: fontSize, color: PdfColor.fromHex('#E53935')),
         pw.SizedBox(width: 1.5),
-        pw.Text(
-          'by Saleem Palal · WA 03331245518',
-          style: style,
-        ),
+        pw.Text('by Saleem Palal · WA 03331245518', style: style),
       ],
     );
   }
 
   static Future<({String name, String phone, String address})>
-      _loadShopBranding() async {
+  _loadShopBranding() async {
     final name = await ShopSettings.getShopName();
     final phone = await ShopSettings.getShopPhone();
     final address = await ShopSettings.getShopAddress();
@@ -122,10 +118,7 @@ class PdfGenerator {
         crossAxisAlignment: pw.CrossAxisAlignment.center,
         children: [
           _buildMadeWithAgriKhata(),
-          pw.Text(
-            pageText,
-            style: const pw.TextStyle(fontSize: 9),
-          ),
+          pw.Text(pageText, style: const pw.TextStyle(fontSize: 9)),
         ],
       ),
     );
@@ -154,10 +147,7 @@ class PdfGenerator {
       children: [
         pw.Text(
           'AgriKhata',
-          style: pw.TextStyle(
-            color: resolvedBrand,
-            fontSize: brandSize,
-          ),
+          style: pw.TextStyle(color: resolvedBrand, fontSize: brandSize),
         ),
         pw.SizedBox(height: 2),
         pw.Text(
@@ -172,10 +162,7 @@ class PdfGenerator {
           pw.SizedBox(height: 2),
           pw.Text(
             _pdfSafeText(phone),
-            style: pw.TextStyle(
-              color: resolvedContact,
-              fontSize: contactSize,
-            ),
+            style: pw.TextStyle(color: resolvedContact, fontSize: contactSize),
           ),
         ],
         if (address.isNotEmpty) ...[
@@ -189,6 +176,87 @@ class PdfGenerator {
           ),
         ],
       ],
+    );
+  }
+
+  /// Unified ledger PDF banner: entity name is the large primary title,
+  /// document type is the smaller subtitle, shop branding sits on the right.
+  static pw.Widget buildStandardBannerHeader({
+    required String primaryTitle,
+    required String secondaryTitle,
+    required String companyName,
+    required String companyPhone,
+    String? metaLine,
+  }) {
+    final accent = PdfColor.fromHex('#D1E7DD');
+    final phone = companyPhone.trim();
+    final meta = metaLine?.trim() ?? '';
+    return pw.Container(
+      padding: const pw.EdgeInsets.all(16),
+      decoration: pw.BoxDecoration(
+        color: PdfColor.fromHex('#1B4332'),
+        borderRadius: const pw.BorderRadius.all(pw.Radius.circular(8)),
+      ),
+      child: pw.Row(
+        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+        crossAxisAlignment: pw.CrossAxisAlignment.center,
+        children: [
+          pw.Expanded(
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text(
+                  _pdfSafeText(primaryTitle),
+                  style: pw.TextStyle(
+                    fontSize: 22,
+                    fontWeight: pw.FontWeight.bold,
+                    color: PdfColors.white,
+                  ),
+                ),
+                pw.SizedBox(height: 4),
+                pw.Text(
+                  _pdfSafeText(secondaryTitle).toUpperCase(),
+                  style: pw.TextStyle(
+                    fontSize: 11,
+                    fontWeight: pw.FontWeight.normal,
+                    color: accent,
+                  ),
+                ),
+                if (meta.isNotEmpty) ...[
+                  pw.SizedBox(height: 2),
+                  pw.Text(
+                    _pdfSafeText(meta),
+                    style: pw.TextStyle(fontSize: 10, color: accent),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          pw.SizedBox(width: 12),
+          pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.end,
+            children: [
+              pw.Text(
+                'AgriKhata',
+                style: pw.TextStyle(fontSize: 10, color: accent),
+              ),
+              pw.Text(
+                _pdfSafeText(companyName),
+                style: pw.TextStyle(
+                  fontSize: 16,
+                  fontWeight: pw.FontWeight.bold,
+                  color: PdfColors.white,
+                ),
+              ),
+              if (phone.isNotEmpty)
+                pw.Text(
+                  _pdfSafeText(phone),
+                  style: pw.TextStyle(fontSize: 10, color: accent),
+                ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 
@@ -323,7 +391,6 @@ class PdfGenerator {
               ledgerType,
               shop.name,
               shopPhone: shop.phone,
-              shopAddress: shop.address,
             ),
             pw.SizedBox(height: 20),
             _buildSummaryCards(summary, ledgerType),
@@ -344,10 +411,7 @@ class PdfGenerator {
       padding: const pw.EdgeInsets.symmetric(vertical: 12),
       decoration: pw.BoxDecoration(
         color: PdfColor.fromHex('#FFF3CD'),
-        border: pw.Border.all(
-          color: PdfColor.fromHex('#FFC107'),
-          width: 2,
-        ),
+        border: pw.Border.all(color: PdfColor.fromHex('#FFC107'), width: 2),
       ),
       child: pw.Center(
         child: pw.Text(
@@ -369,9 +433,7 @@ class PdfGenerator {
   }) {
     return pw.Container(
       padding: const pw.EdgeInsets.all(20),
-      decoration: pw.BoxDecoration(
-        color: PdfColor.fromHex('#1B4332'),
-      ),
+      decoration: pw.BoxDecoration(color: PdfColor.fromHex('#1B4332')),
       child: pw.Row(
         mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
         children: [
@@ -430,10 +492,7 @@ class PdfGenerator {
           children: [
             pw.Text(
               'Invoice #: ${_pdfSafeText(entry.invoiceNumber)}',
-              style: pw.TextStyle(
-                fontSize: 12,
-                fontWeight: pw.FontWeight.bold,
-              ),
+              style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold),
             ),
             pw.SizedBox(height: 5),
             pw.Text(
@@ -480,9 +539,7 @@ class PdfGenerator {
       },
       children: [
         pw.TableRow(
-          decoration: pw.BoxDecoration(
-            color: PdfColor.fromHex('#F7F9F4'),
-          ),
+          decoration: pw.BoxDecoration(color: PdfColor.fromHex('#F7F9F4')),
           children: [
             _buildTableHeader('Product'),
             _buildTableHeader('Qty'),
@@ -496,9 +553,7 @@ class PdfGenerator {
           (item) => pw.TableRow(
             children: [
               _buildTableCell(_pdfSafeText(item.productName)),
-              _buildTableCell(
-                '${item.quantity} ${_pdfSafeText(item.unit)}',
-              ),
+              _buildTableCell('${item.quantity} ${_pdfSafeText(item.unit)}'),
               _buildTableCell('Rs ${_currencyFormat.format(item.unitPrice)}'),
               _buildTableCell(
                 item.seasonalIncrement > 0
@@ -555,10 +610,7 @@ class PdfGenerator {
       summaryChildren.addAll([
         _buildTotalRow('Base Sales Revenue:', entry.grossSubtotal!),
         if ((entry.seasonalIncrementTotal ?? 0) > 0)
-          _buildTotalRow(
-            'Seasonal Increment:',
-            entry.seasonalIncrementTotal!,
-          ),
+          _buildTotalRow('Seasonal Increment:', entry.seasonalIncrementTotal!),
         if ((entry.itemDiscountsTotal ?? 0) > 0)
           _buildTotalRow('Item Discount:', entry.itemDiscountsTotal!),
         if ((entry.overallDiscount ?? 0) > 0)
@@ -567,7 +619,9 @@ class PdfGenerator {
         _buildTotalRow('Net Payable:', entry.netPayable, bold: true),
       ]);
     } else {
-      summaryChildren.add(_buildTotalRow('Total Amount:', entry.total, bold: true));
+      summaryChildren.add(
+        _buildTotalRow('Total Amount:', entry.total, bold: true),
+      );
     }
 
     summaryChildren.addAll([
@@ -589,8 +643,8 @@ class PdfGenerator {
           color: entry.status == PaymentStatus.paid
               ? PdfColor.fromHex('#28A745')
               : entry.status == PaymentStatus.partial
-                  ? PdfColor.fromHex('#FFA500')
-                  : PdfColor.fromHex('#DC3545'),
+              ? PdfColor.fromHex('#FFA500')
+              : PdfColor.fromHex('#DC3545'),
         ),
       ),
     ]);
@@ -621,23 +675,17 @@ class PdfGenerator {
     required double overallDiscount,
     required double netPayable,
   }) {
-    final parts = <String>[
-      'Base: Rs ${_currencyFormat.format(grossSubtotal)}',
-    ];
+    final parts = <String>['Base: Rs ${_currencyFormat.format(grossSubtotal)}'];
     if (seasonalIncrementTotal > 0) {
       parts.add(
         'Seasonal Inc: Rs ${_currencyFormat.format(seasonalIncrementTotal)}',
       );
     }
     if (itemDiscountsTotal > 0) {
-      parts.add(
-        'Item Disc: Rs ${_currencyFormat.format(itemDiscountsTotal)}',
-      );
+      parts.add('Item Disc: Rs ${_currencyFormat.format(itemDiscountsTotal)}');
     }
     if (overallDiscount > 0) {
-      parts.add(
-        'Overall Disc: Rs ${_currencyFormat.format(overallDiscount)}',
-      );
+      parts.add('Overall Disc: Rs ${_currencyFormat.format(overallDiscount)}');
     }
     parts.add('Net: Rs ${_currencyFormat.format(netPayable)}');
     return parts.join(' · ');
@@ -681,46 +729,13 @@ class PdfGenerator {
     LedgerType ledgerType,
     String shopName, {
     String shopPhone = '',
-    String shopAddress = '',
   }) {
-    return pw.Container(
-      padding: const pw.EdgeInsets.all(15),
-      decoration: pw.BoxDecoration(
-        color: PdfColor.fromHex('#1B4332'),
-      ),
-      child: pw.Row(
-        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-        children: [
-          pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.start,
-            children: [
-              pw.Text(
-                ledgerType.displayName.toUpperCase(),
-                style: pw.TextStyle(
-                  color: PdfColors.white,
-                  fontSize: 20,
-                  fontWeight: pw.FontWeight.bold,
-                ),
-              ),
-              pw.Text(
-                'Season: ${_pdfSafeText(season.displayName)}',
-                style: const pw.TextStyle(
-                  color: PdfColors.white,
-                  fontSize: 12,
-                ),
-              ),
-            ],
-          ),
-          _buildBrandBlock(
-            shopName: shopName,
-            shopPhone: shopPhone,
-            shopAddress: shopAddress,
-            brandSize: 10,
-            shopTitleSize: 14,
-            align: pw.CrossAxisAlignment.end,
-          ),
-        ],
-      ),
+    return buildStandardBannerHeader(
+      primaryTitle: shopName,
+      secondaryTitle: ledgerType.displayName,
+      companyName: shopName,
+      companyPhone: shopPhone,
+      metaLine: 'Season: ${season.displayName}',
     );
   }
 
@@ -832,10 +847,7 @@ class PdfGenerator {
         ),
         child: pw.Column(
           children: [
-            pw.Text(
-              label,
-              style: const pw.TextStyle(fontSize: 10),
-            ),
+            pw.Text(label, style: const pw.TextStyle(fontSize: 10)),
             pw.SizedBox(height: 5),
             pw.Text(
               _pdfSafeText(value),
@@ -854,9 +866,7 @@ class PdfGenerator {
   static pw.Widget _buildLedgerTable(List<LedgerEntry> entries) {
     final tableRows = <pw.TableRow>[
       pw.TableRow(
-        decoration: pw.BoxDecoration(
-          color: PdfColor.fromHex('#F7F9F4'),
-        ),
+        decoration: pw.BoxDecoration(color: PdfColor.fromHex('#F7F9F4')),
         children: [
           _buildTableHeader('Invoice'),
           _buildTableHeader('Date'),
@@ -899,8 +909,7 @@ class PdfGenerator {
               _buildTableCell(
                 _formatSaleDiscountDetail(
                   grossSubtotal: entry.grossSubtotal!,
-                  seasonalIncrementTotal:
-                      entry.seasonalIncrementTotal ?? 0,
+                  seasonalIncrementTotal: entry.seasonalIncrementTotal ?? 0,
                   itemDiscountsTotal: entry.itemDiscountsTotal ?? 0,
                   overallDiscount: entry.overallDiscount ?? 0,
                   netPayable: entry.netPayable,
@@ -983,8 +992,10 @@ class PdfGenerator {
     final pdf = await generateInvoicePdf(entry, isEdited: isEdited);
     final bytes = await pdf.save();
     final output = await getTemporaryDirectory();
-    final safeInvoice =
-        entry.invoiceNumber.replaceAll(RegExp(r'[^\w\-.]'), '_');
+    final safeInvoice = entry.invoiceNumber.replaceAll(
+      RegExp(r'[^\w\-.]'),
+      '_',
+    );
     final file = File(p.join(output.path, 'invoice_$safeInvoice.pdf'));
     await file.writeAsBytes(bytes, flush: true);
     return file;
@@ -1007,19 +1018,13 @@ class PdfGenerator {
         pageFormat: PdfPageFormat.a4.landscape,
         build: (pw.Context context) {
           return [
-            _buildConsolidatedCover(
-              season,
-              shop.name,
-              shopPhone: shop.phone,
-              shopAddress: shop.address,
-            ),
+            _buildConsolidatedCover(season, shop.name, shopPhone: shop.phone),
             pw.SizedBox(height: 24),
             _buildStatementHeader(
               season,
               LedgerType.sales,
               shop.name,
               shopPhone: shop.phone,
-              shopAddress: shop.address,
             ),
             pw.SizedBox(height: 12),
             _buildSummaryCards(salesSummary, LedgerType.sales),
@@ -1031,7 +1036,6 @@ class PdfGenerator {
               LedgerType.purchases,
               shop.name,
               shopPhone: shop.phone,
-              shopAddress: shop.address,
             ),
             pw.SizedBox(height: 12),
             _buildSummaryCards(purchasesSummary, LedgerType.purchases),
@@ -1042,7 +1046,6 @@ class PdfGenerator {
               season,
               shop.name,
               shopPhone: shop.phone,
-              shopAddress: shop.address,
             ),
             pw.SizedBox(height: 12),
             _buildPaymentSummaryCards(paymentSummary),
@@ -1061,49 +1064,13 @@ class PdfGenerator {
     Season season,
     String shopName, {
     String shopPhone = '',
-    String shopAddress = '',
   }) {
-    return pw.Container(
-      padding: const pw.EdgeInsets.all(20),
-      decoration: pw.BoxDecoration(
-        color: PdfColor.fromHex('#1B4332'),
-        borderRadius: const pw.BorderRadius.all(pw.Radius.circular(8)),
-      ),
-      child: pw.Row(
-        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-        children: [
-          pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.start,
-            children: [
-              pw.Text(
-                'CONSOLIDATED FINANCE LEDGER',
-                style: pw.TextStyle(
-                  color: PdfColors.white,
-                  fontSize: 22,
-                  fontWeight: pw.FontWeight.bold,
-                ),
-              ),
-              pw.SizedBox(height: 6),
-              pw.Text(
-                'Season: ${_pdfSafeText(season.displayName)}',
-                style: const pw.TextStyle(color: PdfColors.white, fontSize: 12),
-              ),
-              pw.Text(
-                'Sales - Purchases - Payments',
-                style: const pw.TextStyle(color: PdfColors.white, fontSize: 11),
-              ),
-            ],
-          ),
-          _buildBrandBlock(
-            shopName: shopName,
-            shopPhone: shopPhone,
-            shopAddress: shopAddress,
-            brandSize: 10,
-            shopTitleSize: 14,
-            align: pw.CrossAxisAlignment.end,
-          ),
-        ],
-      ),
+    return buildStandardBannerHeader(
+      primaryTitle: shopName,
+      secondaryTitle: 'General Cash Ledger',
+      companyName: shopName,
+      companyPhone: shopPhone,
+      metaLine: 'Season: ${season.displayName}',
     );
   }
 
@@ -1111,43 +1078,13 @@ class PdfGenerator {
     Season season,
     String shopName, {
     String shopPhone = '',
-    String shopAddress = '',
   }) {
-    return pw.Container(
-      padding: const pw.EdgeInsets.all(15),
-      decoration: pw.BoxDecoration(
-        color: PdfColor.fromHex('#2D6A4F'),
-      ),
-      child: pw.Row(
-        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-        children: [
-          pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.start,
-            children: [
-              pw.Text(
-                'PAYMENTS LEDGER',
-                style: pw.TextStyle(
-                  color: PdfColors.white,
-                  fontSize: 20,
-                  fontWeight: pw.FontWeight.bold,
-                ),
-              ),
-              pw.Text(
-                'Season: ${_pdfSafeText(season.displayName)}',
-                style: const pw.TextStyle(color: PdfColors.white, fontSize: 12),
-              ),
-            ],
-          ),
-          _buildBrandBlock(
-            shopName: shopName,
-            shopPhone: shopPhone,
-            shopAddress: shopAddress,
-            brandSize: 10,
-            shopTitleSize: 14,
-            align: pw.CrossAxisAlignment.end,
-          ),
-        ],
-      ),
+    return buildStandardBannerHeader(
+      primaryTitle: shopName,
+      secondaryTitle: 'Payments Ledger',
+      companyName: shopName,
+      companyPhone: shopPhone,
+      metaLine: 'Season: ${season.displayName}',
     );
   }
 
@@ -1194,9 +1131,7 @@ class PdfGenerator {
       },
       children: [
         pw.TableRow(
-          decoration: pw.BoxDecoration(
-            color: PdfColor.fromHex('#E8F4EA'),
-          ),
+          decoration: pw.BoxDecoration(color: PdfColor.fromHex('#E8F4EA')),
           children: [
             _buildTableHeader('Receipt'),
             _buildTableHeader('Description'),
@@ -1206,31 +1141,30 @@ class PdfGenerator {
             _buildTableHeader('Method'),
           ],
         ),
-        ...entries.map(
-          (entry) {
-            final description = entry.invoiceNumber != null &&
-                    entry.invoiceNumber!.trim().isNotEmpty
-                ? formatBillPaymentDescription(entry.invoiceNumber)
-                : entry.itemsSummary;
-            return pw.TableRow(
-              children: [
-                _buildTableCell(entry.paymentId),
-                _buildTableCell(description),
-                _buildTableCell(entry.invoiceNumber ?? 'Advance Collection'),
-                _buildTableCell(
-                  entry.kisaanName != null
-                      ? '${entry.zamindarName}\n${entry.kisaanName}'
-                      : entry.zamindarName,
-                ),
-                _buildTableCell(
-                  'Rs ${_currencyFormat.format(entry.amountPaid)}',
-                  bold: true,
-                ),
-                _buildTableCell(entry.paymentMethod),
-              ],
-            );
-          },
-        ),
+        ...entries.map((entry) {
+          final description =
+              entry.invoiceNumber != null &&
+                  entry.invoiceNumber!.trim().isNotEmpty
+              ? formatBillPaymentDescription(entry.invoiceNumber)
+              : entry.itemsSummary;
+          return pw.TableRow(
+            children: [
+              _buildTableCell(entry.paymentId),
+              _buildTableCell(description),
+              _buildTableCell(entry.invoiceNumber ?? 'Advance Collection'),
+              _buildTableCell(
+                entry.kisaanName != null
+                    ? '${entry.zamindarName}\n${entry.kisaanName}'
+                    : entry.zamindarName,
+              ),
+              _buildTableCell(
+                'Rs ${_currencyFormat.format(entry.amountPaid)}',
+                bold: true,
+              ),
+              _buildTableCell(entry.paymentMethod),
+            ],
+          );
+        }),
       ],
     );
   }
@@ -1285,14 +1219,12 @@ class PdfGenerator {
     String? servedBy,
   }) async {
     final pdf = pw.Document();
-    final resolvedShopName =
-        (shopName == null || shopName.trim().isEmpty)
-            ? await ShopSettings.getShopName()
-            : shopName.trim();
+    final resolvedShopName = (shopName == null || shopName.trim().isEmpty)
+        ? await ShopSettings.getShopName()
+        : shopName.trim();
     final shopPhone = await ShopSettings.getShopPhone();
     final shopAddress = await ShopSettings.getShopAddress();
-    final showThumb =
-        await ShopSettings.getShowThumbprintBlockOnThermal();
+    final showThumb = await ShopSettings.getShowThumbprintBlockOnThermal();
     final pageHeightMm = showThumb ? 235.0 : 160.0;
 
     pdf.addPage(
@@ -1346,10 +1278,7 @@ class PdfGenerator {
                   color: PdfColors.grey400,
                 ),
                 pw.SizedBox(height: 10),
-                _buildReceiptRow(
-                  'Received From:',
-                  _pdfSafeText(zamindarName),
-                ),
+                _buildReceiptRow('Received From:', _pdfSafeText(zamindarName)),
                 if (servedBy != null && servedBy.trim().isNotEmpty) ...[
                   pw.SizedBox(height: 6),
                   _buildReceiptRow(
@@ -1443,17 +1372,11 @@ class PdfGenerator {
       children: [
         pw.Text(
           label,
-          style: const pw.TextStyle(
-            fontSize: 9,
-            color: PdfColors.grey700,
-          ),
+          style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey700),
         ),
         pw.Text(
           _pdfSafeText(value),
-          style: pw.TextStyle(
-            fontSize: 9,
-            fontWeight: pw.FontWeight.bold,
-          ),
+          style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold),
         ),
       ],
     );
@@ -1508,32 +1431,36 @@ class PdfGenerator {
     String? paymentMethod,
   }) async {
     final pdf = pw.Document();
-    final resolvedShopName =
-        (shopName == null || shopName.trim().isEmpty)
-            ? await ShopSettings.getShopName()
-            : shopName.trim();
+    final resolvedShopName = (shopName == null || shopName.trim().isEmpty)
+        ? await ShopSettings.getShopName()
+        : shopName.trim();
     final shopPhone = await ShopSettings.getShopPhone();
     final shopAddress = await ShopSettings.getShopAddress();
-    final showThumb =
-        await ShopSettings.getShowThumbprintBlockOnThermal();
+    final showThumb = await ShopSettings.getShowThumbprintBlockOnThermal();
     final summaries = invoiceSummaries.isNotEmpty
         ? invoiceSummaries
         : invoiceNumbers
-            .map(
-              (invoice) => BillSettlementInvoiceSummary(
-                invoiceNumber: invoice,
-                cashPaidNow: invoiceNumbers.length == 1 ? amount.toDouble() : 0,
-                totalPaidCash: 0,
-                remainingBalance: 0,
-                invoiceTotal: 0,
-              ),
-            )
-            .toList();
+              .map(
+                (invoice) => BillSettlementInvoiceSummary(
+                  invoiceNumber: invoice,
+                  cashPaidNow: invoiceNumbers.length == 1
+                      ? amount.toDouble()
+                      : 0,
+                  totalPaidCash: 0,
+                  remainingBalance: 0,
+                  invoiceTotal: 0,
+                ),
+              )
+              .toList();
     final invoiceBlockMm = 46.0;
     final baseHeightMm = showThumb ? 188.0 : 138.0;
     final pageHeightMm =
-        baseHeightMm + summaries.length * invoiceBlockMm + (showThumb ? 40.0 : 0);
-    final invoiceLabel = formatBillPaymentDescriptionForInvoices(invoiceNumbers);
+        baseHeightMm +
+        summaries.length * invoiceBlockMm +
+        (showThumb ? 40.0 : 0);
+    final invoiceLabel = formatBillPaymentDescriptionForInvoices(
+      invoiceNumbers,
+    );
     final method = (paymentMethod ?? 'Cash').trim();
 
     pdf.addPage(
@@ -1587,15 +1514,9 @@ class PdfGenerator {
                   color: PdfColors.grey400,
                 ),
                 pw.SizedBox(height: 10),
-                _buildReceiptRow(
-                  'Received From:',
-                  _pdfSafeText(zamindarName),
-                ),
+                _buildReceiptRow('Received From:', _pdfSafeText(zamindarName)),
                 pw.SizedBox(height: 6),
-                _buildReceiptRow(
-                  'Kisaan Account:',
-                  _pdfSafeText(kisaanName),
-                ),
+                _buildReceiptRow('Kisaan Account:', _pdfSafeText(kisaanName)),
                 pw.SizedBox(height: 6),
                 _buildReceiptRow('Payment Method:', _pdfSafeText(method)),
                 pw.SizedBox(height: 6),
@@ -1609,7 +1530,9 @@ class PdfGenerator {
                   ),
                   decoration: pw.BoxDecoration(
                     color: PdfColor.fromHex('#E8F4EA'),
-                    borderRadius: const pw.BorderRadius.all(pw.Radius.circular(4)),
+                    borderRadius: const pw.BorderRadius.all(
+                      pw.Radius.circular(4),
+                    ),
                   ),
                   child: pw.Row(
                     mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
@@ -1642,8 +1565,9 @@ class PdfGenerator {
                         border: pw.Border.all(
                           color: PdfColor.fromHex('#D8E6DA'),
                         ),
-                        borderRadius:
-                            const pw.BorderRadius.all(pw.Radius.circular(4)),
+                        borderRadius: const pw.BorderRadius.all(
+                          pw.Radius.circular(4),
+                        ),
                       ),
                       child: pw.Column(
                         crossAxisAlignment: pw.CrossAxisAlignment.start,
@@ -1783,53 +1707,12 @@ class PdfGenerator {
         pageFormat: PdfPageFormat.a4.landscape,
         build: (pw.Context context) {
           return [
-            pw.Container(
-              padding: const pw.EdgeInsets.all(16),
-              decoration: pw.BoxDecoration(
-                color: PdfColor.fromHex('#1B4332'),
-                borderRadius: const pw.BorderRadius.all(pw.Radius.circular(8)),
-              ),
-              child: pw.Row(
-                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                children: [
-                  pw.Column(
-                    crossAxisAlignment: pw.CrossAxisAlignment.start,
-                    children: [
-                      pw.Text(
-                        'ZAMINDAR LEDGER',
-                        style: pw.TextStyle(
-                          color: PdfColors.white,
-                          fontSize: 20,
-                          fontWeight: pw.FontWeight.bold,
-                        ),
-                      ),
-                      pw.SizedBox(height: 4),
-                      pw.Text(
-                        _pdfSafeText(zamindarName),
-                        style: const pw.TextStyle(
-                          color: PdfColors.white,
-                          fontSize: 13,
-                        ),
-                      ),
-                      pw.Text(
-                        'Season: ${_pdfSafeText(seasonLabel)}',
-                        style: const pw.TextStyle(
-                          color: PdfColors.white,
-                          fontSize: 11,
-                        ),
-                      ),
-                    ],
-                  ),
-                  _buildBrandBlock(
-                    shopName: shop.name,
-                    shopPhone: shop.phone,
-                    shopAddress: shop.address,
-                    brandSize: 10,
-                    shopTitleSize: 14,
-                    align: pw.CrossAxisAlignment.end,
-                  ),
-                ],
-              ),
+            buildStandardBannerHeader(
+              primaryTitle: zamindarName,
+              secondaryTitle: 'Zamindar Ledger',
+              companyName: shop.name,
+              companyPhone: shop.phone,
+              metaLine: 'Season: $seasonLabel',
             ),
             pw.SizedBox(height: 16),
             pw.Row(
@@ -1919,9 +1802,7 @@ class PdfGenerator {
       },
       children: [
         pw.TableRow(
-          decoration: pw.BoxDecoration(
-            color: PdfColor.fromHex('#E8F4EA'),
-          ),
+          decoration: pw.BoxDecoration(color: PdfColor.fromHex('#E8F4EA')),
           children: [
             _buildTableHeader('Inv-No'),
             _buildTableHeader('Date/Time'),
@@ -1947,7 +1828,8 @@ class PdfGenerator {
               (row['item_discounts_total'] as num?)?.toDouble() ?? 0;
           final overallDiscount =
               (row['overall_discount'] as num?)?.toDouble() ?? 0;
-          final hasDiscountDetail = subtotal > 0 ||
+          final hasDiscountDetail =
+              subtotal > 0 ||
               seasonalIncrementTotal > 0 ||
               itemDiscountsTotal > 0 ||
               overallDiscount > 0;
@@ -2003,9 +1885,7 @@ class PdfGenerator {
           ];
         }),
         pw.TableRow(
-          decoration: pw.BoxDecoration(
-            color: PdfColor.fromHex('#F7F9F4'),
-          ),
+          decoration: pw.BoxDecoration(color: PdfColor.fromHex('#F7F9F4')),
           children: [
             _buildTableCell('Cumulative', bold: true),
             _buildTableCell(''),
@@ -2067,53 +1947,12 @@ class PdfGenerator {
         pageFormat: PdfPageFormat.a4.landscape,
         build: (pw.Context context) {
           return [
-            pw.Container(
-              padding: const pw.EdgeInsets.all(16),
-              decoration: pw.BoxDecoration(
-                color: PdfColor.fromHex('#1B4332'),
-                borderRadius: const pw.BorderRadius.all(pw.Radius.circular(8)),
-              ),
-              child: pw.Row(
-                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                children: [
-                  pw.Column(
-                    crossAxisAlignment: pw.CrossAxisAlignment.start,
-                    children: [
-                      pw.Text(
-                        'ZAMINDAR LEDGER',
-                        style: pw.TextStyle(
-                          color: PdfColors.white,
-                          fontSize: 20,
-                          fontWeight: pw.FontWeight.bold,
-                        ),
-                      ),
-                      pw.SizedBox(height: 4),
-                      pw.Text(
-                        _pdfSafeText(zamindarName),
-                        style: const pw.TextStyle(
-                          color: PdfColors.white,
-                          fontSize: 13,
-                        ),
-                      ),
-                      pw.Text(
-                        'Season: ${_pdfSafeText(seasonLabel)}',
-                        style: const pw.TextStyle(
-                          color: PdfColors.white,
-                          fontSize: 11,
-                        ),
-                      ),
-                    ],
-                  ),
-                  _buildBrandBlock(
-                    shopName: shop.name,
-                    shopPhone: shop.phone,
-                    shopAddress: shop.address,
-                    brandSize: 10,
-                    shopTitleSize: 14,
-                    align: pw.CrossAxisAlignment.end,
-                  ),
-                ],
-              ),
+            buildStandardBannerHeader(
+              primaryTitle: zamindarName,
+              secondaryTitle: 'Zamindar Ledger',
+              companyName: shop.name,
+              companyPhone: shop.phone,
+              metaLine: 'Season: $seasonLabel',
             ),
             pw.SizedBox(height: 16),
             pw.Row(
@@ -2171,12 +2010,10 @@ class PdfGenerator {
                   ),
                   ...transactions.expand((row) {
                     final type = row['type'] as String? ?? '';
-                    final amount =
-                        (row['amount'] as num?)?.toDouble() ?? 0.0;
-                    final description =
-                        row['description'] as String? ?? '';
-                    final category =
-                        (row['category'] as String? ?? '').toUpperCase();
+                    final amount = (row['amount'] as num?)?.toDouble() ?? 0.0;
+                    final description = row['description'] as String? ?? '';
+                    final category = (row['category'] as String? ?? '')
+                        .toUpperCase();
                     final kisaanName =
                         (row['kisaan_name'] as String?)?.trim() ?? '';
                     final invoiceNumber =
@@ -2190,22 +2027,21 @@ class PdfGenerator {
                         ? _dateFormat.format(parsed)
                         : dateRaw;
 
-                    final isSaleDebit =
-                        category == 'SALE' && type == 'DEBIT';
+                    final isSaleDebit = category == 'SALE' && type == 'DEBIT';
                     final grossSubtotal =
                         (row[SaleJoinColumns.subtotal] as num?)?.toDouble();
                     final seasonalIncrementTotal =
                         (row[SaleJoinColumns.seasonalIncrementTotal] as num?)
-                                ?.toDouble() ??
-                            0;
+                            ?.toDouble() ??
+                        0;
                     final itemDiscountsTotal =
                         (row[SaleJoinColumns.itemDiscountsTotal] as num?)
-                                ?.toDouble() ??
-                            0;
+                            ?.toDouble() ??
+                        0;
                     final overallDiscount =
                         (row[SaleJoinColumns.overallDiscount] as num?)
-                                ?.toDouble() ??
-                            0;
+                            ?.toDouble() ??
+                        0;
                     final hasDiscountDetail =
                         isSaleDebit &&
                         (grossSubtotal != null ||
@@ -2216,13 +2052,14 @@ class PdfGenerator {
                     String itemsCell;
                     String invoiceDescCell;
                     if (isSaleDebit && invoiceNumber.isNotEmpty) {
-                      itemsCell = itemSummaries?[invoiceNumber]?.trim().isNotEmpty ==
+                      itemsCell =
+                          itemSummaries?[invoiceNumber]?.trim().isNotEmpty ==
                               true
                           ? itemSummaries![invoiceNumber]!.trim()
                           : '—';
                       final joinedRemarks =
                           (row[SaleJoinColumns.remarks] as String?)?.trim() ??
-                              '';
+                          '';
                       final batchRemarks =
                           saleRemarks?[invoiceNumber]?.trim() ?? '';
                       invoiceDescCell = joinedRemarks.isNotEmpty
@@ -2240,17 +2077,12 @@ class PdfGenerator {
                     final mainRow = pw.TableRow(
                       children: [
                         _buildTableCell(dateLabel),
-                        _buildTableCell(
-                          kisaanName.isEmpty ? '-' : kisaanName,
-                        ),
+                        _buildTableCell(kisaanName.isEmpty ? '-' : kisaanName),
                         _buildTableCell(itemsCell),
                         _buildTableCell(invoiceDescCell),
                         _buildTableCell(category),
                         _buildTableCell(type.toUpperCase()),
-                        _buildTableCell(
-                          _formatMoney(amount),
-                          bold: true,
-                        ),
+                        _buildTableCell(_formatMoney(amount), bold: true),
                       ],
                     );
 
@@ -2343,47 +2175,11 @@ class PdfGenerator {
         pageFormat: PdfPageFormat.a4.landscape,
         build: (pw.Context context) {
           return [
-            pw.Container(
-              padding: const pw.EdgeInsets.all(16),
-              decoration: pw.BoxDecoration(
-                color: PdfColor.fromHex('#1B4332'),
-                borderRadius: const pw.BorderRadius.all(pw.Radius.circular(8)),
-              ),
-              child: pw.Row(
-                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                crossAxisAlignment: pw.CrossAxisAlignment.start,
-                children: [
-                  pw.Column(
-                    crossAxisAlignment: pw.CrossAxisAlignment.start,
-                    children: [
-                      pw.Text(
-                        'KISAAN SUMMARY',
-                        style: pw.TextStyle(
-                          color: PdfColors.white,
-                          fontSize: 20,
-                          fontWeight: pw.FontWeight.bold,
-                        ),
-                      ),
-                      pw.SizedBox(height: 4),
-                      pw.Text(
-                        _pdfSafeText(zamindarName),
-                        style: const pw.TextStyle(
-                          color: PdfColors.white,
-                          fontSize: 13,
-                        ),
-                      ),
-                    ],
-                  ),
-                  _buildBrandBlock(
-                    shopName: shop.name,
-                    shopPhone: shop.phone,
-                    shopAddress: shop.address,
-                    brandSize: 10,
-                    shopTitleSize: 14,
-                    align: pw.CrossAxisAlignment.end,
-                  ),
-                ],
-              ),
+            buildStandardBannerHeader(
+              primaryTitle: zamindarName,
+              secondaryTitle: 'Kisaan Summary',
+              companyName: shop.name,
+              companyPhone: shop.phone,
             ),
             pw.SizedBox(height: 16),
             pw.Row(
@@ -2468,10 +2264,8 @@ class PdfGenerator {
               ),
           ];
         },
-        footer: (pw.Context context) => _buildDocumentFooter(
-          context,
-          docLabel: 'AgriKhata Kisaan Summary',
-        ),
+        footer: (pw.Context context) =>
+            _buildDocumentFooter(context, docLabel: 'AgriKhata Kisaan Summary'),
       ),
     );
 
@@ -2513,53 +2307,12 @@ class PdfGenerator {
         pageFormat: PdfPageFormat.a4.landscape,
         build: (pw.Context context) {
           return [
-            pw.Container(
-              padding: const pw.EdgeInsets.all(16),
-              decoration: pw.BoxDecoration(
-                color: PdfColor.fromHex('#1B4332'),
-                borderRadius: const pw.BorderRadius.all(pw.Radius.circular(8)),
-              ),
-              child: pw.Row(
-                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                children: [
-                  pw.Column(
-                    crossAxisAlignment: pw.CrossAxisAlignment.start,
-                    children: [
-                      pw.Text(
-                        'PRODUCT-WISE LEDGER',
-                        style: pw.TextStyle(
-                          color: PdfColors.white,
-                          fontSize: 20,
-                          fontWeight: pw.FontWeight.bold,
-                        ),
-                      ),
-                      pw.SizedBox(height: 4),
-                      pw.Text(
-                        _pdfSafeText(zamindarName),
-                        style: const pw.TextStyle(
-                          color: PdfColors.white,
-                          fontSize: 13,
-                        ),
-                      ),
-                      pw.Text(
-                        'Filter: ${_pdfSafeText(filterLabel)}',
-                        style: const pw.TextStyle(
-                          color: PdfColors.white,
-                          fontSize: 11,
-                        ),
-                      ),
-                    ],
-                  ),
-                  _buildBrandBlock(
-                    shopName: shop.name,
-                    shopPhone: shop.phone,
-                    shopAddress: shop.address,
-                    brandSize: 10,
-                    shopTitleSize: 14,
-                    align: pw.CrossAxisAlignment.end,
-                  ),
-                ],
-              ),
+            buildStandardBannerHeader(
+              primaryTitle: zamindarName,
+              secondaryTitle: 'Product-Wise Ledger',
+              companyName: shop.name,
+              companyPhone: shop.phone,
+              metaLine: 'Filter: $filterLabel',
             ),
             pw.SizedBox(height: 16),
             pw.Row(
@@ -2629,8 +2382,8 @@ class PdfGenerator {
                         (row['item_discount'] as num?)?.toDouble() ?? 0;
                     final overallDisc =
                         (row['allocated_overall_discount'] as num?)
-                                ?.toDouble() ??
-                            0;
+                            ?.toDouble() ??
+                        0;
                     final lineTotal =
                         (row['line_total'] as num?)?.toDouble() ?? 0;
                     return pw.TableRow(
@@ -2638,29 +2391,19 @@ class PdfGenerator {
                         _buildTableCell(
                           row['invoice_number']?.toString() ?? '-',
                         ),
-                        _buildTableCell(
-                          _formatDateTimeValue(row['date_time']),
-                        ),
+                        _buildTableCell(_formatDateTimeValue(row['date_time'])),
                         _buildTableCell(row['kisaan_name']?.toString() ?? '-'),
-                        _buildTableCell(
-                          row['product_name']?.toString() ?? '-',
-                        ),
+                        _buildTableCell(row['product_name']?.toString() ?? '-'),
                         _buildTableCell(qtyLabel),
                         _buildTableCell(_formatMoney(unitPrice)),
                         _buildTableCell(
-                          seasonalInc > 0
-                              ? _formatMoney(seasonalInc)
-                              : '-',
+                          seasonalInc > 0 ? _formatMoney(seasonalInc) : '-',
                         ),
                         _buildTableCell(
-                          itemDiscount > 0
-                              ? _formatMoney(itemDiscount)
-                              : '-',
+                          itemDiscount > 0 ? _formatMoney(itemDiscount) : '-',
                         ),
                         _buildTableCell(
-                          overallDisc > 0
-                              ? _formatMoney(overallDisc)
-                              : '-',
+                          overallDisc > 0 ? _formatMoney(overallDisc) : '-',
                         ),
                         _buildTableCell(_formatMoney(lineTotal), bold: true),
                       ],
@@ -2670,10 +2413,8 @@ class PdfGenerator {
               ),
           ];
         },
-        footer: (pw.Context context) => _buildDocumentFooter(
-          context,
-          docLabel: 'AgriKhata Product Ledger',
-        ),
+        footer: (pw.Context context) =>
+            _buildDocumentFooter(context, docLabel: 'AgriKhata Product Ledger'),
       ),
     );
 
@@ -2799,8 +2540,8 @@ class PdfGenerator {
                     ],
                   ),
                   ...products.map((product) {
-                    final retailPrice =
-                        (product['retail_price'] as num?)?.toDouble();
+                    final retailPrice = (product['retail_price'] as num?)
+                        ?.toDouble();
                     final stock = product['available_stock'];
                     final threshold = product['low_stock_threshold'];
                     return pw.TableRow(
@@ -2814,9 +2555,7 @@ class PdfGenerator {
                           product['packaging_size']?.toString() ?? '-',
                         ),
                         _buildTableCell(
-                          retailPrice != null
-                              ? _formatMoney(retailPrice)
-                              : '-',
+                          retailPrice != null ? _formatMoney(retailPrice) : '-',
                         ),
                         _buildTableCell(stock?.toString() ?? '-'),
                         _buildTableCell(product['uom']?.toString() ?? '-'),
@@ -2832,10 +2571,8 @@ class PdfGenerator {
               ),
           ];
         },
-        footer: (pw.Context context) => _buildDocumentFooter(
-          context,
-          docLabel: 'AgriKhata Stock Report',
-        ),
+        footer: (pw.Context context) =>
+            _buildDocumentFooter(context, docLabel: 'AgriKhata Stock Report'),
       ),
     );
 

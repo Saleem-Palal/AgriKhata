@@ -73,6 +73,7 @@ class AppButton extends StatelessWidget {
     String label = 'WhatsApp',
     required VoidCallback? onPressed,
     bool loading = false,
+    bool compact = false,
     bool expanded = false,
   }) =>
       AppButton(
@@ -82,6 +83,7 @@ class AppButton extends StatelessWidget {
         variant: AppButtonVariant.whatsapp,
         icon: Icons.chat,
         loading: loading,
+        compact: compact,
         expanded: expanded,
       );
 
